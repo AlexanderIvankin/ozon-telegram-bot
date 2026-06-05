@@ -7,6 +7,13 @@ const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
 const ADMIN_USER_ID = 762451011; // <<-- Administrator's Telegram ID
 
+// --- Функция для логирования действий администратора ---
+async function logAdminAction(adminId, action, details = '') {
+    const admin = await db.getEmployee(adminId);
+    const adminName = admin ? admin.name : 'Unknown Admin';
+    console.log(`[ADMIN ACTION] ${adminName} (${adminId}): ${action} ${details}`);
+}
+
 // Функция-посредник для проверки доступа
 async function isAuthorizedUser(tgUserId) {
     const employee = await db.getEmployee(tgUserId);
@@ -23,7 +30,114 @@ function isAdmin(tgUserId) {
 (async () => {
     await db.initDB();
 
-    // "/add_user_by_id" администратор добавляет пользователя по его ID
+    // --- "/start" Команда с доп. информацией для админа ---
+    bot.onText(/\/start/, async (msg) => {
+        const chatId = msg.chat.id;
+        const userId = msg.from.id.toString();
+        const isAdministrator = (userId === ADMIN_USER_ID);
+
+        const employee = await db.getEmployee(userId);
+
+        if (employee) {
+            const statusText = employee.is_busy ? 'занят' : 'свободен';
+            await bot.sendMessage(chatId, `С возвращением, ${employee.name}! Вы ${statusText}. Используйте /next для нового заказа или /done для завершения текущего.`);
+            if (isAdministrator) {
+                await bot.sendMessage(chatId, `🔧 *Администраторский режим*\nДоступны команды:\n/status_all — статус всех сотрудников\n/active_orders — активные заказы\n/clear_assignments — сброс зависших заданий\n/help_admin — справка`, { parse_mode: 'Markdown' });
+            }
+        } else {
+            if (isAdministrator) {
+                await bot.sendMessage(chatId, `👋 Привет, Администратор! Вы ещё не добавлены в БД. Хотите добавить себя? Отправьте /add_self`);
+            } else {
+                await bot.sendMessage(chatId, '🤖 Здравствуйте! Этот бот для сотрудников склада. Если вы здесь по работе, обратитесь к администратору для получения доступа.');
+            }
+        }
+    });
+
+    // --- "/add_self" Команда для администратора: добавить самого себя ---
+    bot.onText(/\/add_self/, async (msg) => {
+        const chatId = msg.chat.id;
+        const userId = msg.from.id.toString();
+        if (userId !== ADMIN_USER_ID) {
+            await bot.sendMessage(chatId, '⛔ Только администратор может использовать эту команду.');
+            return;
+        }
+        const existing = await db.getEmployee(userId);
+        if (existing) {
+            await bot.sendMessage(chatId, `Вы уже в БД как ${existing.name}`);
+            return;
+        }
+        await db.addEmployee(userId, 'Admin');
+        await bot.sendMessage(chatId, '✅ Администратор добавлен в БД. Теперь вы можете использовать /next и другие команды.');
+    });
+
+    // --- "/status_all" Команда для администратора: статус всех сотрудников ---
+    bot.onText(/\/status_all/, async (msg) => {
+        const userId = msg.from.id.toString();
+        if (userId !== ADMIN_USER_ID) {
+            await bot.sendMessage(msg.chat.id, '⛔ Нет прав.');
+            return;
+        }
+        const employees = await db.db.all('SELECT tg_user_id, name, is_busy FROM employees');
+        if (employees.length === 0) {
+            await bot.sendMessage(msg.chat.id, 'Нет сотрудников в базе.');
+            return;
+        }
+        let reply = '*Статус сотрудников:*\n';
+        for (const emp of employees) {
+            const busyIcon = emp.is_busy ? '🔴 занят' : '🟢 свободен';
+            reply += `• ${emp.name} (${emp.tg_user_id}) — ${busyIcon}\n`;
+        }
+        await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'Markdown' });
+    });
+
+    // --- "/active_orders" Команда для администратора: список активных (взятых) заказов ---
+    bot.onText(/\/active_orders/, async (msg) => {
+        const userId = msg.from.id.toString();
+        if (userId !== ADMIN_USER_ID) return;
+        const assignments = await db.db.all(`
+        SELECT a.order_id, e.name as employee_name 
+        FROM assignments a 
+        JOIN employees e ON a.employee_id = e.id 
+        WHERE a.status = 'taken'
+    `);
+        if (assignments.length === 0) {
+            await bot.sendMessage(msg.chat.id, 'Нет активных назначенных заказов.');
+            return;
+        }
+        let reply = '*Активные заказы:*\n';
+        for (const a of assignments) {
+            reply += `• Заказ ${a.order_id} — обрабатывает ${a.employee_name}\n`;
+        }
+        await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'Markdown' });
+    });
+
+    // --- "/clear_assignments" Команда для администратора: сброс всех назначений (при зависании) ---
+    bot.onText(/\/clear_assignments/, async (msg) => {
+        const userId = msg.from.id.toString();
+        if (userId !== ADMIN_USER_ID) return;
+        await db.db.run('DELETE FROM assignments');
+        await db.db.run('UPDATE employees SET is_busy = 0');
+        await bot.sendMessage(msg.chat.id, '✅ Все назначения сброшены, сотрудники освобождены.');
+    });
+
+    // --- "/help_admin" Команда для администратора: список всех команд администратора ---
+    bot.onText(/\/help_admin/, async (msg) => {
+        const userId = msg.from.id.toString();
+        if (userId !== ADMIN_USER_ID) return;
+        const helpText = `
+*Административные команды:*
+/status_all — показать всех сотрудников и их занятость
+/active_orders — показать текущие взятые заказы
+/clear_assignments — сбросить все активные задания (при сбоях)
+/add_user_by_id <id> — добавить сотрудника по Telegram ID
+/remove_user <id> — удалить сотрудника
+/set_employee_name <id> <имя> — изменить имя
+/logs — показать последние логи (если сохраняете в файл)
+    `;
+        await bot.sendMessage(msg.chat.id, helpText, { parse_mode: 'Markdown' });
+    });
+
+    // --- "/add_user_by_id" Команда для администратора: добавления пользователя по его ID ---
     bot.onText(/\/add_user_by_id (\d+)/, async (msg, match) => {
         const chatId = msg.chat.id;
         const fromUserId = msg.from.id.toString();
@@ -46,22 +160,28 @@ function isAdmin(tgUserId) {
         }
     });
 
-    // "/start" только приветствие и информация о статусе
-    bot.onText(/\/start/, async (msg) => {
-        const chatId = msg.chat.id;
+    // --- "/remove_user" Команда для удаления сотрудника ---
+    bot.onText(/\/remove_user (\d+)/, async (msg, match) => {
         const userId = msg.from.id.toString();
-
-        const employee = await db.getEmployee(userId);
-        if (employee) {
-            const statusText = employee.is_busy ? 'занят' : 'свободен';
-            bot.sendMessage(chatId, `С возвращением, ${employee.name}! Вы ${statusText}. Используйте /next для нового заказа или /done для завершения текущего.`);
-        } else {
-            // Если пользователь не авторизован, то просто показываем общее сообщение
-            bot.sendMessage(chatId, '🤖 Здравствуйте! Этот бот для сотрудников склада. Если вы здесь по работе, обратитесь к администратору для получения доступа.');
-        }
+        if (userId !== ADMIN_USER_ID) return;
+        const targetId = match[1];
+        await db.db.run('DELETE FROM employees WHERE tg_user_id = ?', targetId);
+        await db.db.run('DELETE FROM assignments WHERE employee_id IN (SELECT id FROM employees WHERE tg_user_id = ?)', targetId);
+        await bot.sendMessage(msg.chat.id, `Пользователь ${targetId} удалён.`);
     });
 
-    // "/next" Взять следующий доступный заказ с проверкой доступа
+    // --- "/set_employee_name" Команда для смены имени сотрудника ---
+    bot.onText(/\/set_employee_name (\d+) (.+)/, async (msg, match) => {
+        const userId = msg.from.id.toString();
+        if (userId !== ADMIN_USER_ID) return;
+        const targetId = match[1];
+        const newName = match[2];
+        await db.db.run('UPDATE employees SET name = ? WHERE tg_user_id = ?', newName, targetId);
+        await bot.sendMessage(msg.chat.id, `Имя сотрудника ${targetId} изменено на ${newName}.`);
+    });
+
+
+    // --- "/next" Команда Взять следующий доступный заказ с проверкой доступа ---
     bot.onText(/\/next/, async (msg) => {
         const chatId = msg.chat.id;
         const userId = msg.from.id.toString();
@@ -117,7 +237,7 @@ function isAdmin(tgUserId) {
         bot.sendMessage(chatId, `✅ Ты взял заказ №${orderId}${detailsText}\n\nКогда упакуешь, нажми /done`);
     });
 
-    // "/done" Завершить текущий заказ
+    // --- "/done" Завершить текущий заказ ---
     bot.onText(/\/done/, async (msg) => {
         const chatId = msg.chat.id;
         const userId = msg.from.id.toString();

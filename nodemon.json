@@ -1,0 +1,9 @@
+{
+  "watch": ["bot.js", "db.js", "ozon.js", ".env"],
+  "ignore": ["bot.db", "node_modules"],
+  "ext": "js,json",
+  "delay": 1000,
+  "env": {
+    "NODE_ENV": "development"
+  }
+}

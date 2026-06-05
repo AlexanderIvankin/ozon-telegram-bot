@@ -2,9 +2,11 @@
   "name": "ozontaskmanager",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "bot.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node bot.js",
+    "dev": "nodemon bot.js",
+    "debug": "nodemon --inspect bot.js"
   },
   "keywords": [],
   "author": "",
@@ -14,6 +16,10 @@
     "dotenv": "^17.4.2",
     "node-telegram-bot-api": "^0.67.0",
     "ozon-seller-api-extended": "^1.1.6",
+    "sqlite": "^5.1.1",
     "sqlite3": "^6.0.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
   }
 }

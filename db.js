@@ -1,13 +1,14 @@
 const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
 const { open } = require('sqlite');
+const path = require('path');
 
 let db;
 
 async function initDB() {
     db = await open({
         filename: path.join(__dirname, 'bot.db'),
-        driver: sqlite3.Database
+        driver: sqlite3.Database,
+        trace: process.env.NODE_ENV === 'development' ? console.log : undefined
     });
 
     // Таблица сотрудников

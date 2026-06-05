@@ -3,6 +3,7 @@ const TelegramBot = require('node-telegram-bot-api');
 const db = require('./db');
 const ozon = require('./ozon');
 const bwipjs = require('bwip-js');
+const debugMode = require('./debugMode');
 
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
@@ -41,6 +42,12 @@ function isAdmin(tgUserId) {
         console.warn('Не удалось загрузить склады с Ozon. Будет использован кеш из БД.');
     }
 
+    // --- Вывод статуса отладочного режима ---
+    console.log(debugMode.getDebugModeStatusMessage());
+    if (debugMode.isDebugMode()) {
+        console.log('⚠️ ВНИМАНИЕ: Назначения заказов хранятся в памяти, при перезапуске бота данные потеряются. Изменения статусов в Ozon не отправляются.');
+    }
+
     // --- "/start" Команда с доп. информацией для админа ---
     bot.onText(/\/start/, async (msg) => {
         const chatId = msg.chat.id;
@@ -65,11 +72,17 @@ function isAdmin(tgUserId) {
             adminMessage += `/set_warehouse <id> <warehouse_id> — назначить склад сотруднику\n`;
             adminMessage += `/remove_user <id> — удалить сотрудника\n`;
             adminMessage += `/set_employee_name <id> <имя> — изменить имя\n`;
+            adminMessage += `/debug_orders [warehouse_id] — показать заказы из API (отладка)\n`;
+            adminMessage += `/debug_order_details <posting_number> — детали заказа (отладка)\n`;
+            if (debugMode.isDebugMode()) {
+                adminMessage += `/debug_clear — сбросить отладочные назначения\n`;
+            }
             adminMessage += `/warehouses — список складов из Ozon\n`;
             adminMessage += `/help_admin — полная справка\n\n`;
             adminMessage += `👤 Команды для работы с заказами:\n`;
             adminMessage += `/next — взять следующий заказ\n`;
             adminMessage += `/done — завершить текущий заказ`;
+
 
             await bot.sendMessage(chatId, adminMessage); // без parse_mode
             return;
@@ -159,28 +172,6 @@ function isAdmin(tgUserId) {
         await bot.sendMessage(msg.chat.id, '✅ Все назначения сброшены, сотрудники освобождены.');
     });
 
-    // --- "/help_admin" Команда для администратора: список всех команд администратора ---
-    bot.onText(/\/help_admin/, async (msg) => {
-        const userId = msg.from.id.toString();
-        if (!isAdmin(userId)) {
-            await bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
-            return;
-        }
-        const helpText = `
-Административные команды:
-/status_all — показать всех сотрудников и их занятость
-/active_orders — показать текущие взятые заказы
-/clear_assignments — сбросить все активные задания (при сбоях)
-/add_user_by_id <id> — добавить сотрудника по Telegram ID
-/set_warehouse <id> <warehouse_id> — назначить склад сотруднику
-/remove_user <id> — удалить сотрудника
-/set_employee_name <id> <имя> — изменить имя
-/warehouses — показать список складов из Ozon
-/logs — показать последние логи (если сохраняете в файл)
-    `;
-        await bot.sendMessage(msg.chat.id, helpText);
-    });
-
     // --- "/add_user_by_id" Команда для администратора: добавления пользователя по его ID ---
     bot.onText(/\/add_user_by_id (\d+)(?: (\S+))?/, async (msg, match) => {
         const chatId = msg.chat.id;
@@ -241,7 +232,10 @@ function isAdmin(tgUserId) {
     // --- "/warehouses" Команда для администратора: показать список всех складов ---
     bot.onText(/\/warehouses/, async (msg) => {
         const userId = msg.from.id.toString();
-        if (!isAdmin(userId)) return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
+        if (!isAdmin(userId)) {
+            await bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
+            return;
+        }
 
         const warehouses = await db.getAllWarehouses();
         if (!warehouses.length) {
@@ -254,6 +248,118 @@ function isAdmin(tgUserId) {
         await bot.sendMessage(msg.chat.id, reply);
     });
 
+    // --- "/debug_orders" Команда для администратора: просмотр списка заказов из API (отладка) ---
+    bot.onText(/\/debug_orders(?:\s+(\d+))?/, async (msg, match) => {
+        const userId = msg.from.id.toString();
+        if (!isAdmin(userId)) {
+            return bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
+        }
+
+        const warehouseId = match[1] || null; // если передан ID склада, используем его
+        try {
+            // Используем ту же функцию, что и для выдачи заказов сотрудникам
+            const orders = await ozon.fetchAwaitingOrders(warehouseId);
+
+            if (!orders || orders.length === 0) {
+                return bot.sendMessage(msg.chat.id,
+                    warehouseId
+                        ? `📭 Нет заказов в статусе "awaiting_packaging" для склада ${warehouseId}.`
+                        : '📭 Нет заказов в статусе "awaiting_packaging".'
+                );
+            }
+
+            let reply = `📋 *Список заказов (awaiting_packaging)*${warehouseId ? ` для склада ${warehouseId}` : ''}:\n\n`;
+            for (const order of orders) {
+                const orderNumber = order.posting_number;
+                const productsCount = order.products ? order.products.length : (order.products_count || '?');
+                // Если в объекте есть информация о складе (может быть warehouse_id или warehouse)
+                const whInfo = order.warehouse_id || order.delivery_method?.warehouse_id || 'не указан';
+                reply += `• Заказ \`${orderNumber}\` — товаров: ${productsCount}, склад: ${whInfo}\n`;
+            }
+            // Добавляем подсказку: если нужны детали, можно использовать /debug_order_details <posting_number>
+            reply += `\n_Для просмотра деталей заказа используйте /debug_order_details <posting_number>_`;
+            await bot.sendMessage(msg.chat.id, reply); // без parse_mode
+        } catch (err) {
+            console.error('Ошибка в /debug_orders:', err);
+            bot.sendMessage(msg.chat.id, '❌ Ошибка при получении списка заказов. Проверьте логи.');
+        }
+    });
+
+    // --- "/debug_order_details" Команда для администратора: просмотр деталей конкретного заказа ---
+    bot.onText(/\/debug_order_details (\S+)/, async (msg, match) => {
+        const userId = msg.from.id.toString();
+        if (!isAdmin(userId)) {
+            return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
+        }
+        const postingNumber = match[1];
+        try {
+            const details = await ozon.getOrderDetails(postingNumber);
+            if (!details) {
+                return bot.sendMessage(msg.chat.id, `❌ Не удалось получить детали заказа ${postingNumber}.`);
+            }
+            let reply = `📄 *Детали заказа ${postingNumber}*\n\n`;
+            if (details.products && details.products.length) {
+                reply += `*Состав:*\n`;
+                for (const p of details.products) {
+                    reply += `- ${p.name} — ${p.quantity} шт.\n`;
+                }
+            } else {
+                reply += `Состав не указан.\n`;
+            }
+            if (details.customer && details.customer.address) {
+                reply += `\n*Адрес доставки:*\n${details.customer.address.address_tail || 'не указан'}\n`;
+            }
+            if (details.status) {
+                reply += `\n*Статус:* ${details.status}`;
+            }
+            await bot.sendMessage(msg.chat.id, reply); // без parse_mode
+        } catch (err) {
+            console.error('Ошибка в /debug_order_details:', err);
+            bot.sendMessage(msg.chat.id, '❌ Ошибка получения деталей заказа.');
+        }
+    });
+
+    // --- "/debug_clear" Команда для администратора: очистить все отладочные данные ---
+    bot.onText(/\/debug_clear/, async (msg) => {
+        const userId = msg.from.id.toString();
+        if (!isAdmin(userId)) {
+            await bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
+            return;
+        }
+        if (!debugMode.isDebugMode()) {
+            return bot.sendMessage(msg.chat.id, 'Эта команда доступна только в отладочном режиме (DEBUG_ORDERS_MODE=true).');
+        }
+        debugMode.clearAssignments();
+        bot.sendMessage(msg.chat.id, '✅ Все отладочные назначения сброшены.');
+    });
+
+    // --- "/help_admin" Команда для администратора: список всех команд администратора ---
+    bot.onText(/\/help_admin/, async (msg) => {
+        const userId = msg.from.id.toString();
+        if (!isAdmin(userId)) {
+            await bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
+            return;
+        }
+        let helpText = `
+Административные команды:
+/status_all — показать всех сотрудников и их занятость
+/active_orders — показать текущие взятые заказы
+/clear_assignments — сбросить все активные задания (при сбоях)
+/add_user_by_id <id> — добавить сотрудника по Telegram ID
+/set_warehouse <id> <warehouse_id> — назначить склад сотруднику
+/remove_user <id> — удалить сотрудника
+/set_employee_name <id> <имя> — изменить имя
+/warehouses — показать список складов из Ozon
+/logs — показать последние логи (если сохраняете в файл)
+    `;
+        helpText += `/debug_orders [warehouse_id] — показать заказы из API (awaiting_packaging)\n`;
+        helpText += `/debug_order_details <posting_number> — детали заказа\n`;
+        if (debugMode.isDebugMode()) {
+            helpText += `/debug_clear — сбросить отладочные назначения (только в DEBUG_ORDERS_MODE)\n`;
+        }
+        await bot.sendMessage(msg.chat.id, helpText);
+    });
+
 
     // --- "/next" Команда Взять следующий доступный заказ с проверкой доступа ---
     bot.onText(/\/next/, async (msg) => {
@@ -261,20 +367,34 @@ function isAdmin(tgUserId) {
         const userId = msg.from.id.toString();
 
         if (!(await isAuthorizedUser(userId))) {
-            return bot.sendMessage(chatId, '⛔ У вас нет доступа. Обратитесь к администратору.');
+            return bot.sendMessage(chatId, '⛔ У вас нет доступа.');
         }
 
         const employee = await db.getEmployee(userId);
         if (!employee) return bot.sendMessage(chatId, 'Сначала используй /start.');
-        if (employee.is_busy) return bot.sendMessage(chatId, 'У тебя уже есть активный заказ. Заверши его командой /done.');
 
-        // Получаем заказы, отфильтрованные по складу сотрудника
+        // Проверка занятости в зависимости от режима
+        let isBusy;
+        if (debugMode.isDebugMode()) {
+            isBusy = debugMode.isEmployeeBusy(userId);
+        } else {
+            isBusy = employee.is_busy;
+        }
+        if (isBusy) return bot.sendMessage(chatId, 'У тебя уже есть активный заказ. Заверши его командой /done.');
+
+        // Получаем заказы (реальные или мок-данные в зависимости от MOCK_MODE)
         const orders = await ozon.fetchAwaitingOrders(employee.warehouse);
         if (!orders.length) {
             return bot.sendMessage(chatId, `Нет заказов, ожидающих обработки${employee.warehouse ? ` на складе ${employee.warehouse}` : ''}.`);
         }
 
-        const takenOrderIds = await db.getActiveOrderIds();
+        // Получаем список уже взятых заказов
+        let takenOrderIds;
+        if (debugMode.isDebugMode()) {
+            takenOrderIds = debugMode.getAllTakenOrders();
+        } else {
+            takenOrderIds = await db.getActiveOrderIds();
+        }
         const availableOrders = orders.filter(order => !takenOrderIds.includes(order.posting_number));
 
         if (availableOrders.length === 0) {
@@ -284,11 +404,15 @@ function isAdmin(tgUserId) {
         const chosenOrder = availableOrders[0];
         const orderId = chosenOrder.posting_number;
 
-        // Помечаем сотрудника занятым и сохраняем назначение
-        await db.setEmployeeBusy(userId, true);
-        await db.assignOrder(orderId, employee.id);
+        // Назначение заказа
+        if (debugMode.isDebugMode()) {
+            debugMode.setEmployeeBusy(userId, true, orderId);
+        } else {
+            await db.setEmployeeBusy(userId, true);
+            await db.assignOrder(orderId, employee.id);
+        }
 
-        // Детали заказа (состав)
+        // Детали заказа
         const details = await ozon.getOrderDetails(orderId);
         let detailsText = '';
         if (details && details.products) {
@@ -296,21 +420,19 @@ function isAdmin(tgUserId) {
             detailsText = `\nСостав:\n${items}`;
         }
 
-        // Генерируем штрихкод (Code 128) номера заказа
+        // Генерация штрихкода
         try {
             const barcodeBuffer = await bwipjs.toBuffer({
-                bcid: 'code128',       // тип штрихкода
+                bcid: 'code128',
                 text: orderId,
-                scale: 3,             // масштаб
-                height: 10,           // высота в мм (условно)
-                includetext: true,    // показывать текст под штрихкодом
+                scale: 3,
+                height: 10,
+                includetext: true,
                 textxalign: 'center',
             });
-            // Отправляем картинку
             await bot.sendPhoto(chatId, barcodeBuffer, { caption: `✅ Ты взял заказ №${orderId}${detailsText}\n\nШтрихкод для сканирования:\nКогда упакуешь, нажми /done` });
         } catch (barcodeError) {
             console.error('Ошибка генерации штрихкода:', barcodeError);
-            // Если не удалось сгенерировать, отправляем текст без картинки
             await bot.sendMessage(chatId, `✅ Ты взял заказ №${orderId}${detailsText}\n\n(Штрихкод не сгенерирован)\nКогда упакуешь, нажми /done`);
         }
     });
@@ -320,41 +442,38 @@ function isAdmin(tgUserId) {
         const chatId = msg.chat.id;
         const userId = msg.from.id.toString();
 
-        // --- ПРОВЕРКА ДОСТУПА ---
         if (!(await isAuthorizedUser(userId))) {
-            bot.sendMessage(chatId, '⛔ У вас нет доступа к этому боту. Обратитесь к администратору.');
-            return;
+            return bot.sendMessage(chatId, '⛔ У вас нет доступа.');
         }
 
         const employee = await db.getEmployee(userId);
-        if (!employee) {
-            bot.sendMessage(chatId, 'Сначала используй /start.');
-            return;
-        }
-        if (!employee.is_busy) {
-            bot.sendMessage(chatId, 'У тебя нет активного заказа.');
-            return;
-        }
+        if (!employee) return bot.sendMessage(chatId, 'Сначала используй /start.');
 
-        // Находим назначенный заказ
-        const assignment = await db.db.get('SELECT order_id FROM assignments WHERE employee_id = ? AND status = "taken"', employee.id);
-        if (!assignment) {
-            // странный случай — освободим сотрудника вручную
+        let currentOrderId;
+        if (debugMode.isDebugMode()) {
+            currentOrderId = debugMode.getCurrentOrder(userId);
+            if (!currentOrderId) {
+                return bot.sendMessage(chatId, 'У тебя нет активного заказа.');
+            }
+            // Освобождаем в отладочном режиме
+            debugMode.setEmployeeBusy(userId, false, currentOrderId);
+            await bot.sendMessage(chatId, `✅ Заказ ${currentOrderId} завершён (отладочный режим). Теперь ты свободен.`);
+        } else {
+            // Рабочий режим
+            if (!employee.is_busy) {
+                return bot.sendMessage(chatId, 'У тебя нет активного заказа.');
+            }
+            const assignment = await db.db.get('SELECT order_id FROM assignments WHERE employee_id = ? AND status = "taken"', employee.id);
+            if (!assignment) {
+                await db.setEmployeeBusy(userId, false);
+                return bot.sendMessage(chatId, 'Активный заказ не найден, но я освободил тебя.');
+            }
+            currentOrderId = assignment.order_id;
+            await db.releaseOrder(currentOrderId);
             await db.setEmployeeBusy(userId, false);
-            bot.sendMessage(chatId, 'Активный заказ не найден, но я освободил тебя.');
-            return;
+            // TODO: Здесь вызвать ozon.confirmPosting(currentOrderId) для реального подтверждения сборки
+            await bot.sendMessage(chatId, `✅ Заказ ${currentOrderId} завершён. Теперь ты свободен.`);
         }
-
-        const orderId = assignment.order_id;
-
-        // Здесь можно вызвать API Ozon для смены статуса заказа (если нужно)
-        // Например, ozon.actPosting(orderId) — чтобы подтвердить сборку.
-        // Пока просто удаляем из наших таблиц.
-
-        await db.releaseOrder(orderId);
-        await db.setEmployeeBusy(userId, false);
-
-        bot.sendMessage(chatId, `✅ Заказ ${orderId} завершён. Теперь ты свободен. Используй /next для нового заказа.`);
     });
 
     console.log('Бот запущен...');

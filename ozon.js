@@ -17,7 +17,7 @@ const apiClient = axios.create({
 });
 
 // Флаг для тестов (MOCK-режим)
-const MOCK_MODE = true;
+const MOCK_MODE = false;
 
 // Тестовые заказы (включают warehouse_id для проверки фильтрации)
 const mockOrders = [
@@ -38,13 +38,13 @@ const mockOrders = [
  * @returns {Promise<Array>} - Массив объектов складов.
  */
 async function fetchWarehousesFromOzon() {
-    // if (MOCK_MODE) {
-    //     console.log('[Ozon MOCK] Возвращаем тестовый список складов');
-    //     return [
-    //         { warehouse_id: "1234567890", name: "Склад 'Северный' (FBS)", address: "г. Москва, ул. Северная, д.1", is_rfbs: false },
-    //         { warehouse_id: "9876543210", name: "Склад 'Южный' (realFBS)", address: "г. Подольск, ул. Южная, д.10", is_rfbs: true }
-    //     ];
-    // }
+    if (MOCK_MODE) {
+        console.log('[Ozon MOCK] Возвращаем тестовый список складов');
+        return [
+            { warehouse_id: "1234567890", name: "Склад 'Северный' (FBS)", address: "г. Москва, ул. Северная, д.1", is_rfbs: false },
+            { warehouse_id: "9876543210", name: "Склад 'Южный' (realFBS)", address: "г. Подольск, ул. Южная, д.10", is_rfbs: true }
+        ];
+    }
 
     try {
         console.log('[Ozon] Запрос списка складов...');
@@ -81,7 +81,6 @@ async function fetchAwaitingOrders(warehouseId = null) {
     console.log('[Ozon] Запрос списка заказов...');
     if (MOCK_MODE) {
         console.log('[Ozon MOCK] Возвращаем тестовые заказы');
-        // Если указан warehouseId, фильтруем мок-заказы по складу
         if (warehouseId) {
             return mockOrders.filter(order => order.warehouse_id === warehouseId);
         }
@@ -89,21 +88,32 @@ async function fetchAwaitingOrders(warehouseId = null) {
     }
 
     try {
-        const filter = { statuses: ['awaiting_packaging'] };
+        // Диапазон дат: от 90 дней назад до сегодня
+        const since = new Date();
+        since.setDate(since.getDate() - 90);
+        const to = new Date();
+
+        const filter = {
+            statuses: ['awaiting_packaging'],
+            since: since.toISOString(),
+            to: to.toISOString()
+        };
+
         if (warehouseId) {
             filter.warehouse_id = [warehouseId];
         }
+
         const requestBody = {
             filter,
             limit: 20
         };
+
         const response = await apiClient.post('/v4/posting/fbs/list', requestBody);
-        const orders = response.data.result?.postings || [];
+        const orders = response.data.postings || [];   // Исправлено: данные напрямую в поле postings
         console.log(`[Ozon] Успешно получено ${orders.length} заказов.`);
         return orders;
     } catch (error) {
-        console.error('[Ozon] Ошибка при получении заказов:',
-            error.response?.data || error.message);
+        console.error('[Ozon] Ошибка при получении заказов:', error.response?.data || error.message);
         return [];
     }
 }

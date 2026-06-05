@@ -106,16 +106,13 @@ async function setEmployeeWarehouse(tgUserId, warehouseId) {
  * @param {Array} warehouses - Массив складов от Ozon API.
  */
 async function syncWarehouses(warehouses) {
+    await database.run('DELETE FROM warehouses'); // очищаем старые
     const now = Date.now();
     for (const wh of warehouses) {
         await database.run(
-            `INSERT OR REPLACE INTO warehouses (warehouse_id, name, address, is_rfbs, last_synced_at)
+            `INSERT INTO warehouses (warehouse_id, name, address, is_rfbs, last_synced_at)
              VALUES (?, ?, ?, ?, ?)`,
-            wh.warehouse_id,
-            wh.name,
-            wh.address || null,
-            wh.is_rfbs ? 1 : 0,
-            now
+            wh.warehouse_id, wh.name, wh.address || null, wh.is_rfbs ? 1 : 0, now
         );
     }
     console.log(`[DB] Синхронизировано складов: ${warehouses.length}`);

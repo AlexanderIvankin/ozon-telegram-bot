@@ -32,6 +32,34 @@ const mockOrders = [
         warehouse_id: "9876543210"
     }
 ];
+
+/**
+ * Получает список складов продавца через API Ozon.
+ * @returns {Promise<Array>} - Массив объектов складов.
+ */
+async function fetchWarehousesFromOzon() {
+    if (MOCK_MODE) {
+        console.log('[Ozon MOCK] Возвращаем тестовый список складов');
+        return [
+            { warehouse_id: "1234567890", name: "Склад 'Северный' (FBS)", address: "г. Москва, ул. Северная, д.1", is_rfbs: false },
+            { warehouse_id: "9876543210", name: "Склад 'Южный' (realFBS)", address: "г. Подольск, ул. Южная, д.10", is_rfbs: true }
+        ];
+    }
+
+    try {
+        console.log('[Ozon] Запрос списка складов...');
+        const response = await apiClient.post('/v2/warehouse/list');
+        // Ожидаемая структура ответа: { result: [ { warehouse_id, name, address, is_rfbs, ... } ] }
+        const warehouses = response.data.result || [];
+        console.log(`[Ozon] Успешно получено ${warehouses.length} складов.`);
+        return warehouses;
+    } catch (error) {
+        console.error('[Ozon] Ошибка при получении списка складов:',
+            error.response?.data || error.message);
+        return [];
+    }
+}
+
 // Получить список заказов FBS со статусом "awaiting_packaging" (ожидает упаковки)
 // Документация: метод /v4/posting/fbs/list
 async function fetchAwaitingOrders(warehouseId = null) {
@@ -46,13 +74,13 @@ async function fetchAwaitingOrders(warehouseId = null) {
     }
 
     try {
+        const filter = { statuses: ['awaiting_packaging'] };
+        if (warehouseId) {
+            filter.warehouse_id = [warehouseId];
+        }
         const requestBody = {
-            filter: {
-                statuses: ['awaiting_packaging'],   // массив статусов, как в документации
-            },
-            limit: 20,
-            // Если передан warehouseId, добавляем фильтр по складу
-            ...(warehouseId && { filter: { warehouse_id: [warehouseId], statuses: ['awaiting_packaging'] } })
+            filter,
+            limit: 20
         };
         const response = await apiClient.post('/v4/posting/fbs/list', requestBody);
         const orders = response.data.result?.postings || [];
@@ -83,4 +111,4 @@ async function getOrderDetails(orderId) {
     }
 }
 
-module.exports = { fetchAwaitingOrders, getOrderDetails };
+module.exports = { fetchAwaitingOrders, getOrderDetails, fetchWarehousesFromOzon };

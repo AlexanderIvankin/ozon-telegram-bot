@@ -31,6 +31,16 @@ function isAdmin(tgUserId) {
 (async () => {
     await db.initDB();
 
+    // --- Загрузка складов при запуске ---
+    console.log('Загрузка списка складов с Ozon...');
+    const warehousesFromApi = await ozon.fetchWarehousesFromOzon();
+    if (warehousesFromApi.length > 0) {
+        await db.syncWarehouses(warehousesFromApi);
+        console.log('Список складов успешно обновлён.');
+    } else {
+        console.warn('Не удалось загрузить склады с Ozon. Будет использован кеш из БД.');
+    }
+
     // --- "/start" Команда с доп. информацией для админа ---
     bot.onText(/\/start/, async (msg) => {
         const chatId = msg.chat.id;
@@ -55,6 +65,7 @@ function isAdmin(tgUserId) {
             adminMessage += `/set_warehouse <id> <warehouse_id> — назначить склад сотруднику\n`;
             adminMessage += `/remove_user <id> — удалить сотрудника\n`;
             adminMessage += `/set_employee_name <id> <имя> — изменить имя\n`;
+            adminMessage += `/warehouses — список складов из Ozon\n`;
             adminMessage += `/help_admin — полная справка\n\n`;
             adminMessage += `👤 Команды для работы с заказами:\n`;
             adminMessage += `/next — взять следующий заказ\n`;
@@ -164,6 +175,7 @@ function isAdmin(tgUserId) {
 /set_warehouse <id> <warehouse_id> — назначить склад сотруднику
 /remove_user <id> — удалить сотрудника
 /set_employee_name <id> <имя> — изменить имя
+/warehouses — показать список складов из Ozon
 /logs — показать последние логи (если сохраняете в файл)
     `;
         await bot.sendMessage(msg.chat.id, helpText);
@@ -200,7 +212,7 @@ function isAdmin(tgUserId) {
         bot.sendMessage(msg.chat.id, `✅ Сотруднику ${targetId} назначен склад ${warehouseId}.`);
     });
 
-    // --- "/remove_user" Команда для удаления сотрудника ---
+    // --- "/remove_user" Команда для администратора: удаления сотрудника ---
     bot.onText(/\/remove_user (\d+)/, async (msg, match) => {
         const userId = msg.from.id.toString();
         if (!isAdmin(userId)) {
@@ -213,7 +225,7 @@ function isAdmin(tgUserId) {
         await bot.sendMessage(msg.chat.id, `Пользователь ${targetId} удалён.`);
     });
 
-    // --- "/set_employee_name" Команда для смены имени сотрудника ---
+    // --- "/set_employee_name" Команда для администратора: смена имени сотрудника ---
     bot.onText(/\/set_employee_name (\d+) (.+)/, async (msg, match) => {
         const userId = msg.from.id.toString();
         if (!isAdmin(userId)) {
@@ -224,6 +236,22 @@ function isAdmin(tgUserId) {
         const newName = match[2];
         await db.db.run('UPDATE employees SET name = ? WHERE tg_user_id = ?', newName, targetId);
         await bot.sendMessage(msg.chat.id, `Имя сотрудника ${targetId} изменено на ${newName}.`);
+    });
+
+    // --- "/warehouses" Команда для администратора: показать список всех складов ---
+    bot.onText(/\/warehouses/, async (msg) => {
+        const userId = msg.from.id.toString();
+        if (!isAdmin(userId)) return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
+
+        const warehouses = await db.getAllWarehouses();
+        if (!warehouses.length) {
+            return bot.sendMessage(msg.chat.id, 'Склады не найдены. Возможно, не удалось выполнить синхронизацию.');
+        }
+        let reply = '📦 Список складов (из Ozon):\n';
+        for (const wh of warehouses) {
+            reply += `\n• ${wh.name} (ID: ${wh.warehouse_id})\n   📍 ${wh.address || 'адрес не указан'}\n   Тип: ${wh.is_rfbs ? 'realFBS' : 'FBS'}\n`;
+        }
+        await bot.sendMessage(msg.chat.id, reply);
     });
 
 

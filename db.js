@@ -110,10 +110,10 @@ async function syncWarehouses(warehouses) {
     for (const wh of warehouses) {
         await database.run(
             `INSERT OR REPLACE INTO warehouses (warehouse_id, name, address, is_rfbs, last_synced_at)
-     VALUES (?, ?, ?, ?, ?)`,
+             VALUES (?, ?, ?, ?, ?)`,
             wh.warehouse_id,
             wh.name,
-            wh.address ? wh.address : null,
+            wh.address || null,
             wh.is_rfbs ? 1 : 0,
             now
         );

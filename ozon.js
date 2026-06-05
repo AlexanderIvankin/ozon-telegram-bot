@@ -38,24 +38,39 @@ const mockOrders = [
  * @returns {Promise<Array>} - Массив объектов складов.
  */
 async function fetchWarehousesFromOzon() {
-    if (MOCK_MODE) {
-        console.log('[Ozon MOCK] Возвращаем тестовый список складов');
-        return [
-            { warehouse_id: "1234567890", name: "Склад 'Северный' (FBS)", address: "г. Москва, ул. Северная, д.1", is_rfbs: false },
-            { warehouse_id: "9876543210", name: "Склад 'Южный' (realFBS)", address: "г. Подольск, ул. Южная, д.10", is_rfbs: true }
-        ];
-    }
+    // if (MOCK_MODE) {
+    //     console.log('[Ozon MOCK] Возвращаем тестовый список складов');
+    //     return [
+    //         { warehouse_id: "1234567890", name: "Склад 'Северный' (FBS)", address: "г. Москва, ул. Северная, д.1", is_rfbs: false },
+    //         { warehouse_id: "9876543210", name: "Склад 'Южный' (realFBS)", address: "г. Подольск, ул. Южная, д.10", is_rfbs: true }
+    //     ];
+    // }
 
     try {
         console.log('[Ozon] Запрос списка складов...');
-        const response = await apiClient.post('/v2/warehouse/list');
-        // Ожидаемая структура ответа: { result: [ { warehouse_id, name, address, is_rfbs, ... } ] }
-        const warehouses = response.data.result || [];
+        // Для получения всех складов можно отправить пустой объект или limit: 100
+        const response = await apiClient.post('/v2/warehouse/list', {
+            limit: 100   // Запрашиваем до 100 складов за раз
+        });
+
+        // В реальном ответе данные находятся в поле warehouses
+        const warehousesRaw = response.data.warehouses || [];
+
+        // Приводим к единому формату (warehouse_id как строка)
+        const warehouses = warehousesRaw.map(wh => ({
+            warehouse_id: String(wh.warehouse_id),          // преобразуем число в строку
+            name: wh.name,
+            address: wh.address_info?.address || null,     // адрес может быть вложенным
+            is_rfbs: wh.is_rfbs || false
+        }));
+
         console.log(`[Ozon] Успешно получено ${warehouses.length} складов.`);
         return warehouses;
     } catch (error) {
         console.error('[Ozon] Ошибка при получении списка складов:',
             error.response?.data || error.message);
+        // Детальный вывод для диагностики
+        console.error('[Ozon] Детали ошибки:', JSON.stringify(error.response?.data, null, 2));
         return [];
     }
 }

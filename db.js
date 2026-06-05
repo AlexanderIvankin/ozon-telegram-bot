@@ -52,6 +52,11 @@ async function getEmployee(tgUserId) {
     return db.get('SELECT * FROM employees WHERE tg_user_id = ?', tgUserId);
 }
 
+// Установить склад сотрудника по tg_user_id
+async function setEmployeeWarehouse(tgUserId, warehouseId) {
+    await db.run('UPDATE employees SET warehouse = ? WHERE tg_user_id = ?', warehouseId, tgUserId);
+}
+
 // Сменить статус занятости
 async function setEmployeeBusy(tgUserId, isBusy) {
     await db.run('UPDATE employees SET is_busy = ? WHERE tg_user_id = ?', isBusy ? 1 : 0, tgUserId);
@@ -69,7 +74,6 @@ async function assignOrder(orderId, employeeId) {
 async function releaseOrder(orderId) {
     await db.run('DELETE FROM assignments WHERE order_id = ?', orderId);
 }
-
 // Получить все активные order_id
 async function getActiveOrderIds() {
     const rows = await db.all('SELECT order_id FROM assignments WHERE status = "taken"');
@@ -86,6 +90,7 @@ module.exports = {
     initDB,
     addEmployee,
     getEmployee,
+    setEmployeeWarehouse,
     setEmployeeBusy,
     assignOrder,
     releaseOrder,

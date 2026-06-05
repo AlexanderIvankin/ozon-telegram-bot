@@ -1,51 +1,84 @@
-const ozon = require('ozon-seller-api-extended');
+const axios = require('axios');
 require('dotenv').config();
 
-ozon.useApi(process.env.OZON_API_KEY);
-ozon.useClientId(process.env.OZON_CLIENT_ID);
+// --- Конфигурация ---
+const API_URL = 'https://api-seller.ozon.ru';  // правильный URL для продавцов
+const CLIENT_ID = process.env.OZON_CLIENT_ID;
+const API_KEY = process.env.OZON_API_KEY;
 
-// Флаг для тестов: если true, возвращаем тестовые данные, не обращаясь к реальному API
+// Создаём экземпляр axios с предустановленными заголовками
+const apiClient = axios.create({
+    baseURL: API_URL,
+    headers: {
+        'Client-Id': CLIENT_ID,
+        'Api-Key': API_KEY,
+        'Content-Type': 'application/json',
+    },
+});
+
+// Флаг для тестов (MOCK-режим)
 const MOCK_MODE = true;
 
-// Тестовые заказы
+// Тестовые заказы (включают warehouse_id для проверки фильтрации)
 const mockOrders = [
-    { posting_number: "12345", products: [{ name: "Товар А", quantity: 2 }] },
-    { posting_number: "67890", products: [{ name: "Товар Б", quantity: 1 }] }
+    {
+        posting_number: "12345-1",
+        products: [{ name: "Тестовый товар А", quantity: 2 }],
+        warehouse_id: "1234567890"   // ID склада, для которого предназначен заказ
+    },
+    {
+        posting_number: "67890-2",
+        products: [{ name: "Тестовый товар Б", quantity: 1 }],
+        warehouse_id: "9876543210"
+    }
 ];
-
 // Получить список заказов FBS со статусом "awaiting_packaging" (ожидает упаковки)
-// Документация: метод /v3/posting/fbs/list
-async function fetchAwaitingOrders() {
+// Документация: метод /v4/posting/fbs/list
+async function fetchAwaitingOrders(warehouseId = null) {
     console.log('[Ozon] Запрос списка заказов...');
     if (MOCK_MODE) {
-        console.log('[Ozon] Используется MOCK_MODE, возвращаем тестовые заказы');
+        console.log('[Ozon MOCK] Возвращаем тестовые заказы');
+        // Если указан warehouseId, фильтруем мок-заказы по складу
+        if (warehouseId) {
+            return mockOrders.filter(order => order.warehouse_id === warehouseId);
+        }
         return mockOrders;
     }
+
     try {
-        // Уточните реальный метод и параметры у библиотеки ozon-seller-api-extended
-        const response = await ozon.getSupplyOrderList({
-            status: 'awaiting_packaging',
-            limit: 20
-        });
-        console.log(`[Ozon] Получено заказов: ${response.result?.postings?.length || 0}`);
-        return response.result.postings || [];
+        const requestBody = {
+            filter: {
+                statuses: ['awaiting_packaging'],   // массив статусов, как в документации
+            },
+            limit: 20,
+            // Если передан warehouseId, добавляем фильтр по складу
+            ...(warehouseId && { filter: { warehouse_id: [warehouseId], statuses: ['awaiting_packaging'] } })
+        };
+        const response = await apiClient.post('/v4/posting/fbs/list', requestBody);
+        const orders = response.data.result?.postings || [];
+        console.log(`[Ozon] Успешно получено ${orders.length} заказов.`);
+        return orders;
     } catch (error) {
-        console.error('[Ozon] Ошибка при получении заказов:', error.response?.data || error.message);
+        console.error('[Ozon] Ошибка при получении заказов:',
+            error.response?.data || error.message);
         return [];
     }
 }
 
-// Получить детали одного заказа (если нужно показать состав)
+// Получить детали заказа (состав, адрес и т.д.)
 async function getOrderDetails(orderId) {
     if (MOCK_MODE) {
         const mock = mockOrders.find(o => o.posting_number === orderId);
         return mock || { posting_number: orderId, products: [] };
     }
     try {
-        const details = await ozon.getSupplyOrderInfo(orderId);
-        return details;
+        const response = await apiClient.post('/v3/posting/fbs/get', {
+            posting_number: orderId,
+        });
+        return response.data.result;
     } catch (error) {
-        console.error(`Ошибка получения деталей заказа ${orderId}:`, error);
+        console.error(`[Ozon] Ошибка получения деталей заказа ${orderId}:`,
+            error.response?.data || error.message);
         return null;
     }
 }

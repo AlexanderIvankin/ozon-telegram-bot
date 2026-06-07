@@ -45,6 +45,18 @@ async function initDB() {
         )
     `);
 
+    // Таблица связки сотрудник-склад
+    await database.exec(`
+    CREATE TABLE IF NOT EXISTS employee_warehouses (
+        employee_id INTEGER NOT NULL,
+        warehouse_id TEXT NOT NULL,
+        FOREIGN KEY (employee_id) REFERENCES employees(id),
+        FOREIGN KEY (warehouse_id) REFERENCES warehouses(warehouse_id),
+        PRIMARY KEY (employee_id, warehouse_id)
+    )
+`);
+
+    // Таблица статистики сотрудников
     await database.exec(`
     CREATE TABLE IF NOT EXISTS employee_stats (
         employee_id INTEGER PRIMARY KEY,
@@ -53,6 +65,14 @@ async function initDB() {
         FOREIGN KEY (employee_id) REFERENCES employees(id)
     )
 `);
+
+    // Проверяем и добавляем колонку capacity, если отсутствует
+    const tableInfo = await database.all("PRAGMA table_info(employees)");
+    const hasCapacity = tableInfo.some(col => col.name === 'capacity');
+    if (!hasCapacity) {
+        await database.run('ALTER TABLE employees ADD COLUMN capacity INTEGER DEFAULT 1');
+        console.log('[DB] Добавлена колонка capacity в employees');
+    }
 
     return database;
 }
@@ -70,6 +90,11 @@ async function addEmployee(tgUserId, name, warehouse = null) {
             tgUserId, name, warehouse
         );
     }
+}
+
+// Получить сотрудника по tg_user_id (строковый ID)
+async function getEmployee(tgUserId) {
+    return database.get('SELECT * FROM employees WHERE tg_user_id = ?', tgUserId);
 }
 
 // Получить сотрудника по tg_user_id
@@ -97,18 +122,19 @@ async function completeOrder(orderId) {
 // Получить всех сотрудников со статистикой активных заказов (опицональный фильтр по приоритетным warehouse_id)
 async function getAllEmployeesWithStats(warehouseId = null) {
     let sql = `
-        SELECT e.id, e.tg_user_id, e.name, e.warehouse, e.capacity,
+        SELECT e.id, e.tg_user_id, e.name, e.capacity,
                (SELECT COUNT(*) FROM assignments a WHERE a.employee_id = e.id AND a.status = 'assigned') as active_count
         FROM employees e
-        WHERE 1=1
     `;
     const params = [];
     if (warehouseId) {
-        sql += ` AND e.warehouse = ?`;
+        sql += ` INNER JOIN employee_warehouses ew ON e.id = ew.employee_id WHERE ew.warehouse_id = ?`;
         params.push(warehouseId);
     }
     sql += ` ORDER BY e.name`;
-    return database.all(sql, params);
+    const rows = await database.all(sql, params);
+    // Добавим поле warehouse для совместимости (можно вернуть список складов, но не обязательно)
+    return rows;
 }
 
 // Получить список активных заказов сотрудника (для админа)
@@ -172,6 +198,7 @@ module.exports = {
     initDB,
     getDB,
     addEmployee,
+    getEmployee,
     getEmployeeById,
     assignOrderToEmployee,
     completeOrder,

@@ -1,3 +1,9 @@
 node_modules/
+bot.db
+
+team-info.xlsx
+*.xlsx~
+*.xls~
+~$*.xlsx
 
 .env

@@ -4,8 +4,9 @@ const db = require('./db');
 const ozon = require('./ozon');
 const bwipjs = require('bwip-js');
 const scheduler = require('./scheduler');
-const debugMode = require('./debugMode');
+const { syncEmployeesFromExcel } = require('./syncEmployees');
 const registerCommands = require('./commands');
+const debugMode = require('./debugMode');
 
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
@@ -61,6 +62,7 @@ async function checkAndOfferNewOrders() {
     console.log('Загрузка складов...');
     const warehouses = await ozon.fetchWarehousesFromOzon();
     if (warehouses.length) await db.syncWarehouses(warehouses);
+    await syncEmployeesFromExcel(db);
     scheduler.startOrderChecker(30, checkAndOfferNewOrders);
     console.log(debugMode.getDebugModeStatusMessage());
     // Регистрируем все команды

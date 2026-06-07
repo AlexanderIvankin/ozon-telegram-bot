@@ -7,7 +7,7 @@ module.exports = function registerCommands(bot, db, ozon, bwipjs, scheduler, deb
     const adminId = callbackQuery.from.id.toString();
 
     if (!isAdmin(adminId)) {
-      await bot.sendMessage(chatId, '⛔ Только администратор может использовать эту команду.');
+      await bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
       return;
     }
 
@@ -146,7 +146,7 @@ module.exports = function registerCommands(bot, db, ozon, bwipjs, scheduler, deb
 
     // --- Обычный сотрудник (есть в БД) ---
     if (employee) {
-      const activeCount = await db.getEmployeeActiveOrdersCount ? await db.getEmployeeActiveOrdersCount(employee.id) : 0;
+      const activeCount = await db.getEmployeeActiveOrdersCount(employee.id);
       await bot.sendMessage(chatId, `С возвращением, ${employee.name}! У вас активно заказов: ${activeCount}. Новые заказы назначает администратор.`);
       return;
     }

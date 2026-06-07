@@ -14,15 +14,14 @@ const ADMIN_USER_ID = 762451011; // <<-- Administrator's Telegram ID
 
 // --- Функция для логирования действий администратора ---
 async function logAdminAction(adminId, action, details = '') {
-    const admin = await db.getEmployeeById(adminId);
+    const admin = await db.getEmployee(adminId);
     const adminName = admin ? admin.name : 'Unknown Admin';
     console.log(`[ADMIN ACTION] ${adminName} (${adminId}): ${action} ${details}`);
 }
 
 // Функция-посредник для проверки доступа
 async function isAuthorizedUser(tgUserId) {
-    const employee = await db.getEmployeeById(tgUserId);
-    // Пользователь считается авторизованным, если он есть в БД.
+    const employee = await db.getEmployee(tgUserId); // было getEmployeeById
     return employee !== undefined;
 }
 

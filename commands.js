@@ -127,11 +127,6 @@ module.exports = function registerCommands(bot, db, ozon, bwipjs, scheduler, deb
       adminMessage += `/status_all — статус всех сотрудников\n`;
       adminMessage += `/active_orders — активные заказы\n`;
       adminMessage += `/clear_assignments — сброс зависших заданий\n`;
-      adminMessage += `/add_user_by_id <id> [warehouse_id] — добавить сотрудника\n`;
-      adminMessage += `/set_warehouse <id> <warehouse_id> — назначить склад сотруднику\n`;
-      adminMessage += `/remove_user <id> — удалить сотрудника\n`;
-      adminMessage += `/set_employee_name <id> <имя> — изменить имя\n`;
-      adminMessage += `/set_capacity <id> <число> — установить capacity сотрудника\n`;
       adminMessage += `/employee_orders <id> — показать активные заказы сотрудника\n`;
       adminMessage += `/warehouses — список складов из Ozon\n`;
       adminMessage += `/debug_orders [warehouse_id] — показать заказы из API (отладка)\n`;
@@ -183,7 +178,7 @@ module.exports = function registerCommands(bot, db, ozon, bwipjs, scheduler, deb
     if (!employees.length) return bot.sendMessage(msg.chat.id, 'Нет сотрудников.');
     let reply = 'Статус сотрудников:\n';
     for (const emp of employees) {
-      reply += `• ${emp.name} (ID: ${emp.id}) — активных: ${emp.active_count}, capacity: ${emp.capacity}\n`;
+      reply += `• ${emp.name} (ID: ${emp.id}) — активных: ${emp.active_count}, принтеры: ${emp.capacity}\n`;
     }
     await bot.sendMessage(msg.chat.id, reply);
   });
@@ -218,63 +213,6 @@ module.exports = function registerCommands(bot, db, ozon, bwipjs, scheduler, deb
     bot.sendMessage(msg.chat.id, '✅ Все активные назначения сброшены.');
   });
 
-  // --- "/add_user_by_id" Команда для администратора: добавления пользователя по его ID ---
-  bot.onText(/\/add_user_by_id (\d+)(?: (\S+))?/, async (msg, match) => {
-    const chatId = msg.chat.id;
-    const fromUserId = msg.from.id.toString();
-    if (!isAdmin(fromUserId)) {
-      await bot.sendMessage(chatId, '⛔ Только администратор может использовать эту команду.');
-      return;
-    }
-    const newUserId = match[1];
-    const warehouseId = match[2] || null;
-    const newUserName = 'Новый сотрудник';
-    await db.addEmployee(newUserId, newUserName, warehouseId);
-    bot.sendMessage(chatId, `✅ Пользователь с ID ${newUserId} добавлен${warehouseId ? ` на склад ${warehouseId}` : ''}.`);
-    try {
-      await bot.sendMessage(newUserId, `🎉 Вас добавили в список сотрудников!${warehouseId ? ` Ваш склад: ${warehouseId}` : ''}\nИспользуйте /start.`);
-    } catch (error) { console.error('Не удалось отправить сообщение новому сотруднику:', error); }
-  });
-
-  // --- "/set_warehouse" Команда для администратора: установить/изменить склад сотрудника ---
-  bot.onText(/\/set_warehouse (\d+) (\S+)/, async (msg, match) => {
-    const userId = msg.from.id.toString();
-    if (!isAdmin(userId)) {
-      await bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
-      return;
-    }
-    const targetId = match[1];
-    const warehouseId = match[2];
-    await db.setEmployeeWarehouse(targetId, warehouseId);
-    bot.sendMessage(msg.chat.id, `✅ Сотруднику ${targetId} назначен склад ${warehouseId}.`);
-  });
-
-  // --- "/remove_user" Команда для администратора: удаления сотрудника ---
-  bot.onText(/\/remove_user (\d+)/, async (msg, match) => {
-    const userId = msg.from.id.toString();
-    if (!isAdmin(userId)) {
-      await bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
-      return;
-    }
-    const targetId = match[1];
-    await db.db.run('DELETE FROM employees WHERE tg_user_id = ?', targetId);
-    await db.db.run('DELETE FROM assignments WHERE employee_id IN (SELECT id FROM employees WHERE tg_user_id = ?)', targetId);
-    await bot.sendMessage(msg.chat.id, `Пользователь ${targetId} удалён.`);
-  });
-
-  // --- "/set_employee_name" Команда для администратора: смена имени сотрудника ---
-  bot.onText(/\/set_employee_name (\d+) (.+)/, async (msg, match) => {
-    const userId = msg.from.id.toString();
-    if (!isAdmin(userId)) {
-      await bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
-      return;
-    }
-    const targetId = match[1];
-    const newName = match[2];
-    await db.db.run('UPDATE employees SET name = ? WHERE tg_user_id = ?', newName, targetId);
-    await bot.sendMessage(msg.chat.id, `Имя сотрудника ${targetId} изменено на ${newName}.`);
-  });
-
   // --- "/warehouses" Команда для администратора: показать список всех складов ---
   bot.onText(/\/warehouses/, async (msg) => {
     const userId = msg.from.id.toString();
@@ -304,15 +242,6 @@ module.exports = function registerCommands(bot, db, ozon, bwipjs, scheduler, deb
     let reply = `Активные заказы сотрудника ${emp.name}:\n`;
     orders.forEach(o => { reply += `- ${o.order_id} (назначен ${new Date(o.assigned_at).toLocaleString()})\n`; });
     await bot.sendMessage(msg.chat.id, reply || 'Нет активных заказов');
-  });
-
-  // --- "/set_capacity" Команда для администратора: Установить количество принтеров (capacity) сотрудника ---
-  bot.onText(/\/set_capacity (\d+) (\d+)/, async (msg, match) => {
-    if (!isAdmin(msg.from.id.toString())) return;
-    const employeeId = match[1];
-    const capacity = parseInt(match[2]);
-    await db.db.run('UPDATE employees SET capacity = ? WHERE id = ?', capacity, employeeId);
-    bot.sendMessage(msg.chat.id, `✅ Установлена количество принтеров ${capacity} для сотрудника ID ${employeeId}`);
   });
 
   // --- "/pause" Команда для администратора: Пауза работы бота ---
@@ -463,14 +392,9 @@ module.exports = function registerCommands(bot, db, ozon, bwipjs, scheduler, deb
       return;
     }
     let help = `Административные команды:
-/status_all — статус всех сотрудников (активные заказы / capacity)
+/status_all — статус всех сотрудников (активные заказы / число принтеров)
 /active_orders — список активных назначенных заказов
 /clear_assignments — сбросить все активные назначения
-/add_user_by_id <id> [warehouse_id] — добавить сотрудника
-/set_warehouse <id> <warehouse_id> — назначить склад
-/remove_user <id> — удалить сотрудника
-/set_employee_name <id> <имя> — изменить имя
-/set_capacity <id> <число> — установить capacity
 /employee_orders <id> — показать активные заказы сотрудника
 /warehouses — список складов
 /pause — приостановить авто-проверку

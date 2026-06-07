@@ -118,6 +118,11 @@ async function fetchAwaitingOrders(warehouseId = null) {
     }
 }
 
+async function fetchAwaitingOrdersById(orderId) {
+    const allOrders = await fetchAwaitingOrders();
+    return allOrders.find(order => order.posting_number === orderId);
+}
+
 // Получить детали заказа (состав, адрес и т.д.)
 async function getOrderDetails(orderId) {
     if (MOCK_MODE) {
@@ -136,4 +141,4 @@ async function getOrderDetails(orderId) {
     }
 }
 
-module.exports = { fetchAwaitingOrders, getOrderDetails, fetchWarehousesFromOzon };
+module.exports = { fetchAwaitingOrders, fetchAwaitingOrdersById, getOrderDetails, fetchWarehousesFromOzon };

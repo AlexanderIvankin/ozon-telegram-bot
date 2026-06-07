@@ -7,7 +7,7 @@ module.exports = function registerCommands(bot, db, ozon, bwipjs, scheduler, deb
     const adminId = callbackQuery.from.id.toString();
 
     if (!isAdmin(adminId)) {
-      await bot.answerCallbackQuery(callbackQuery.id, { text: 'Нет прав' });
+      await bot.sendMessage(chatId, '⛔ Только администратор может использовать эту команду.');
       return;
     }
 
@@ -111,7 +111,7 @@ module.exports = function registerCommands(bot, db, ozon, bwipjs, scheduler, deb
     const chatId = msg.chat.id;
     const userId = msg.from.id.toString();
     const isAdministrator = isAdmin(userId);
-    const employee = await db.getEmployee(userId);
+    const employee = await db.getEmployeeById(userId);
 
     // --- Администратор всегда получает полный доступ, даже если не в БД ---
     if (isAdministrator) {
@@ -120,7 +120,7 @@ module.exports = function registerCommands(bot, db, ozon, bwipjs, scheduler, deb
         adminMessage += `⚠️ Вы ещё не добавлены в базу сотрудников.\n`;
         adminMessage += `Для начала работы используйте команду /add_self.\n\n`;
       } else {
-        const activeCount = await db.getActiveOrdersCount ? await db.getActiveOrdersCount(employee.id) : 0;
+        const activeCount = await db.getEmployeeActiveOrdersCount(employee.id);
         adminMessage += `Вы зарегистрированы как ${employee.name} (активных заказов: ${activeCount}, capacity: ${employee.capacity}).\n\n`;
       }
       adminMessage += `🔧 Доступные административные команды:\n`;
@@ -146,7 +146,7 @@ module.exports = function registerCommands(bot, db, ozon, bwipjs, scheduler, deb
 
     // --- Обычный сотрудник (есть в БД) ---
     if (employee) {
-      const activeCount = await db.getActiveOrdersCount ? await db.getActiveOrdersCount(employee.id) : 0;
+      const activeCount = await db.getEmployeeActiveOrdersCount ? await db.getEmployeeActiveOrdersCount(employee.id) : 0;
       await bot.sendMessage(chatId, `С возвращением, ${employee.name}! У вас активно заказов: ${activeCount}. Новые заказы назначает администратор.`);
       return;
     }
@@ -163,7 +163,7 @@ module.exports = function registerCommands(bot, db, ozon, bwipjs, scheduler, deb
       await bot.sendMessage(chatId, '⛔ Только администратор может использовать эту команду.');
       return;
     }
-    const existing = await db.getEmployee(userId);
+    const existing = await db.getEmployeeById(userId);
     if (existing) {
       await bot.sendMessage(chatId, `Вы уже в БД как ${existing.name}`);
       return;

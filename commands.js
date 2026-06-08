@@ -478,3 +478,103 @@ module.exports = function registerCommands(
 
   console.log('Команды зарегистрированы');
 };
+
+// ---------------------- КОМАНДЫ СОТРУДНИКОВ ----------------------
+
+// --- "/my_orders" – список активных заказов сотрудника ---
+bot.onText(/\/my_orders/, async (msg) => {
+  const userId = msg.from.id.toString();
+  const employee = await db.getEmployee(userId);
+  if (!employee) {
+    return bot.sendMessage(msg.chat.id, '❌ Вы не зарегистрированы как сотрудник.');
+  }
+  const orders = await db.getEmployeeActiveOrders(employee.id);
+  if (!orders.length) {
+    return bot.sendMessage(msg.chat.id, '✅ У вас нет активных заказов.');
+  }
+  let reply = '📋 *Ваши активные заказы:*\n';
+  for (const o of orders) {
+    reply += `• \`${o.order_id}\` (назначен ${new Date(o.assigned_at).toLocaleString()})\n`;
+  }
+  await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'Markdown' });
+});
+
+// --- "/finish_order" – подтверждение сборки заказа ---
+bot.onText(/\/finish_order (\S+)/, async (msg, match) => {
+    const userId = msg.from.id.toString();
+    const postingNumber = match[1];
+    const employee = await db.getEmployee(userId);
+    if (!employee) {
+        return bot.sendMessage(msg.chat.id, '❌ Вы не зарегистрированы как сотрудник.');
+    }
+    
+    // Проверяем, что заказ назначен этому сотруднику и ещё не завершён
+    const assignment = await db.db.get(
+        'SELECT * FROM assignments WHERE order_id = ? AND employee_id = ? AND status = "assigned"',
+        postingNumber, employee.id
+    );
+    if (!assignment) {
+        return bot.sendMessage(msg.chat.id, `❌ Заказ ${postingNumber} не найден среди ваших активных заказов.`);
+    }
+
+    // Пытаемся выполнить отладочный режим
+    const isDebugFinished = await safeDebugFinish(
+        assignment.order_id, employee.id, employee.name, msg.chat.id, postingNumber
+    );
+    if (isDebugFinished) return; // Отладочный режим завершён
+
+    // Реальный режим (DEBUG_ORDERS_MODE = false)
+    try {
+        // 1. Подтверждаем сборку в Ozon
+        await ozon.confirmPostingShip(postingNumber);
+        // 2. Получаем этикетку
+        const labelBuffer = await ozon.getPackageLabel(postingNumber);
+        // 3. Обновляем статус заказа в БД
+        await db.completeOrder(postingNumber);
+        // 4. Отправляем результат сотруднику
+        if (labelBuffer) {
+            await bot.sendDocument(msg.chat.id, labelBuffer, {
+                caption: `✅ Заказ ${postingNumber} успешно собран.\nЭтикетка для наклеивания:`,
+                filename: `label_${postingNumber}.pdf`
+            });
+        } else {
+            await bot.sendMessage(msg.chat.id, `✅ Заказ ${postingNumber} подтверждён. Этикетку можно скачать в личном кабинете Ozon.`);
+        }
+        // Уведомить администратора (опционально)
+        const adminId = process.env.ADMIN_USER_ID;
+        if (adminId) {
+            await bot.sendMessage(adminId, `📦 Сотрудник ${employee.name} завершил заказ ${postingNumber}.`);
+        }
+    } catch (err) {
+        console.error('Ошибка завершения заказа:', err);
+        bot.sendMessage(msg.chat.id, `❌ Не удалось подтвердить сборку заказа ${postingNumber}: ${err.message}`);
+    }
+});
+
+// Функция для безопасной эмуляции (только для отладки)
+async function safeDebugFinish(orderId, employeeId, employeeName, chatId, postingNumber) {
+    if (debugMode.isDebugMode()) {
+        // 1. Эмуляция успешного ship (без реального запроса к API)
+        console.log(`[DEBUG] Эмуляция подтверждения сборки заказа ${postingNumber}`);
+        // 2. Получение реальной этикетки (без изменения статуса)
+        const labelBuffer = await ozon.getPackageLabel(postingNumber);
+        // 3. Обновление статуса заказа в локальной БД на "completed"
+        await db.completeOrder(postingNumber);
+        // 4. Отправка этикетки сотруднику в чат
+        if (labelBuffer) {
+            await bot.sendDocument(chatId, labelBuffer, {
+                caption: `✅ [ТЕСТ] Заказ ${postingNumber} успешно собран.\nЭтикетка прилагается.`,
+                filename: `label_${postingNumber}.pdf`
+            });
+        } else {
+            await bot.sendMessage(chatId, `✅ [ТЕСТ] Заказ ${postingNumber} подтверждён. Этикетка не получена.`);
+        }
+        // 5. Уведомление администратора (опционально)
+        const adminChatId = process.env.ADMIN_USER_ID;
+        if (adminChatId) {
+            await bot.sendMessage(adminChatId, `📦 [ТЕСТ] Сотрудник ${employeeName} завершил заказ ${postingNumber}.`);
+        }
+        return true; // Указывает, что отладочный режим обработан
+    }
+    return false; // Продолжить обычное выполнение
+}

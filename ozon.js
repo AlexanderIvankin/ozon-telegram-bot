@@ -184,4 +184,46 @@ async function downloadImage(url) {
     }
 }
 
-module.exports = { fetchAwaitingOrders, fetchAwaitingOrdersById, getOrderDetails, fetchWarehousesFromOzon, fetchProductsImages, downloadImage };
+// Подтвердить сборку заказа (POST /v4/posting/fbs/ship)
+async function confirmPostingShip(postingNumber) {
+    if (debugMode.isDebugMode()) {
+        console.log(`[DEBUG] Эмуляция подтверждения сборки заказа ${postingNumber}`);
+        return { result: [postingNumber] };
+    }
+
+    const details = await getOrderDetails(postingNumber);
+    if (!details || !details.products) throw new Error('Нет состава заказа');
+    const packages = [{
+        products: details.products.map(p => ({
+            product_id: p.product_id || p.sku,
+            quantity: p.quantity
+        }))
+    }];
+    const response = await apiClient.post('/v4/posting/fbs/ship', {
+        packages,
+        posting_number: postingNumber,
+        with: { additional_data: true }
+    });
+    return response.data;
+}
+
+// Получить PDF этикетку для заказа (POST /v2/posting/fbs/package-label)
+async function getPackageLabel(postingNumber) {
+    try {
+        const response = await apiClient.post('/v2/posting/fbs/package-label', {
+            posting_number: [postingNumber]
+        });
+        if (response.data.file_content && response.data.content_type === 'application/pdf') {
+            return Buffer.from(response.data.file_content, 'base64');
+        }
+        return null;
+    } catch (err) {
+        console.error('Ошибка этикетки:', err.message);
+        return null;
+    }
+}
+
+module.exports = {
+    fetchAwaitingOrders, fetchAwaitingOrdersById, getOrderDetails, fetchWarehousesFromOzon, fetchProductsImages, downloadImage, confirmPostingShip,
+    getPackageLabel
+};

@@ -99,7 +99,7 @@ module.exports = function registerCommands(
           const items = orderDetails.products.map(p => `${p.name} — ${p.quantity} шт.`).join('\n');
           detailsText = `\nСостав:\n${items}`;
         }
-        let caption = `✅ Вам назначен заказ №${orderId}${detailsText}\n\nШтрихкод для сканирования:\nКогда упакуете, сообщите администратору.`;
+        let caption = `✅ Вам назначен заказ №: ${orderId}${detailsText}\n\nШтрихкод для сканирования:\nКогда упакуете, сообщите администратору.`;
         try {
           const barcodeBuffer = await bwipjs.toBuffer({
             bcid: 'code128',
@@ -112,7 +112,7 @@ module.exports = function registerCommands(
           await bot.sendPhoto(employee.tg_user_id, barcodeBuffer, { caption });
         } catch (barcodeError) {
           console.error('Ошибка генерации штрихкода:', barcodeError);
-          await bot.sendMessage(employee.tg_user_id, `✅ Вам назначен заказ №${orderId}${detailsText}\n\n(Штрихкод не сгенерирован)`);
+          await bot.sendMessage(employee.tg_user_id, `✅ Вам назначен заказ №: ${orderId}${detailsText}\n\n(Штрихкод не сгенерирован)`);
         }
         await bot.answerCallbackQuery(callbackQuery.id, { text: 'Заказ назначен' });
         await bot.deleteMessage(msg.chat.id, msg.message_id);
@@ -181,19 +181,32 @@ module.exports = function registerCommands(
 
     // 8. Снятие заказа администратором (подтверждение)
     if (data.startsWith('admin_cancel_confirm_')) {
-      const orderId = data.substring(22);
+      const orderId = data.substring(21);
+      // Удаляем назначение
       await db.db.run('DELETE FROM assignments WHERE order_id = ? AND status = "assigned"', orderId);
+      console.log(`[ADMIN] Снят заказ ${orderId} с сотрудника`);
+
+      // Если этот заказ сейчас в обработке у админа – сбрасываем currentOrderProcessing
+      if (currentOrderProcessing && currentOrderProcessing.order &&
+        currentOrderProcessing.order.posting_number === orderId) {
+        currentOrderProcessing = null;
+        console.log(`[ADMIN] Сброшен текущий обрабатываемый заказ ${orderId}`);
+      }
+
+      // Обновляем сообщение у админа
       await bot.editMessageText(`✅ Заказ ${orderId} снят с сотрудника и возвращён в очередь.`, {
         chat_id: msg.chat.id,
         message_id: msg.message_id
       });
       await bot.answerCallbackQuery(callbackQuery.id, { text: 'Заказ снят' });
+
+      // Принудительно обновляем очередь заказов из API
       await checkAndOfferNewOrders();
-      return;
-    }
-    if (data.startsWith('admin_cancel_abort_')) {
-      await bot.deleteMessage(msg.chat.id, msg.message_id);
-      await bot.answerCallbackQuery(callbackQuery.id, { text: 'Отмена' });
+
+      // Если после обновления нет активного заказа, но есть новые – отправляем следующий
+      if (!currentOrderProcessing && pendingNewOrders.length) {
+        await processNextOrder();
+      }
       return;
     }
   });

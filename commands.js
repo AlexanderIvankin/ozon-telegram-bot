@@ -99,7 +99,7 @@ module.exports = function registerCommands(
           const items = orderDetails.products.map(p => `${p.name} — ${p.quantity} шт.`).join('\n');
           detailsText = `\nСостав:\n${items}`;
         }
-        let caption = `✅ Вам назначен заказ №: ${orderId}${detailsText}\n\nШтрихкод для сканирования:\nКогда упакуете, сообщите администратору.`;
+        let caption = `✅ Вам назначен заказ №: ${orderId}${detailsText}\n\nКогда упакуете, выполните команду "/finish_order ${orderId}${detailsText}"`;
         try {
           const barcodeBuffer = await bwipjs.toBuffer({
             bcid: 'code128',
@@ -426,7 +426,7 @@ module.exports = function registerCommands(
   bot.onText(/\/reload_queue/, async (msg) => {
     if (!isAdmin(msg.from.id.toString())) return;
 
-    // 1. Сбрасываем текущий обрабатываемый заказ (админ его ещё не обработал)
+    // 1. Сбрасываем текущий обрабатываемый заказ
     if (currentOrderProcessing) {
       console.log(`[RELOAD_QUEUE] Сброс текущего заказа ${currentOrderProcessing.order.posting_number}`);
       currentOrderProcessing = null;
@@ -435,11 +435,14 @@ module.exports = function registerCommands(
     // 2. Перезагружаем очередь из API
     await checkAndOfferNewOrders();
 
-    // 3. Отправляем сообщение о результате
-    if (pendingNewOrders.length > 0) {
-      bot.sendMessage(msg.chat.id, `✅ Принудительная проверка выполнена. Отправлен первый заказ из очереди. Осталось: ${pendingNewOrders.length}`);
+    // 3. Принудительно отправляем первый заказ из обновлённой очереди
+    if (!currentOrderProcessing && pendingNewOrders.length) {
+      await processNextOrder();
+      bot.sendMessage(msg.chat.id, `✅ Перезагрузка выполнена. Отправлен первый заказ из очереди. Осталось: ${pendingNewOrders.length}`);
+    } else if (pendingNewOrders.length === 0) {
+      bot.sendMessage(msg.chat.id, '✅ Перезагрузка выполнена. Новых заказов нет.');
     } else {
-      bot.sendMessage(msg.chat.id, '✅ Принудительная проверка выполнена. Новых заказов нет.');
+      bot.sendMessage(msg.chat.id, '✅ Перезагрузка выполнена.');
     }
   });
 

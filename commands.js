@@ -1,4 +1,8 @@
-module.exports = function registerCommands(bot, db, ozon, bwipjs, scheduler, debugMode, isAdmin, checkAndOfferNewOrders, processNextOrder) {
+module.exports = function registerCommands(
+  bot, db, ozon, bwipjs, scheduler, debugMode,
+  isAdmin, checkAndOfferNewOrders,
+  processNextOrder, showOrderMenu
+) {
 
   // ---------------------- ОБРАБОТЧИК CALLBACK_QUERY (единый) ----------------------
   bot.on('callback_query', async (callbackQuery) => {
@@ -117,8 +121,14 @@ module.exports = function registerCommands(bot, db, ozon, bwipjs, scheduler, deb
 
     // Обработка кнопки "Назад"
     if (data.startsWith('back_')) {
+      const orderId = data.substring(5);
       await bot.deleteMessage(msg.chat.id, msg.message_id);
       await bot.answerCallbackQuery(callbackQuery.id);
+      // Получить заказ заново (можно из кеша, но лучше через API)
+      const order = await ozon.fetchAwaitingOrdersById(orderId);
+      if (order && typeof showOrderMenu === 'function') {
+        await showOrderMenu(order);
+      }
       return;
     }
   });

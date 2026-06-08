@@ -242,7 +242,7 @@ module.exports = function registerCommands(
       adminMessage += `/orders [warehouse_id] — показать очередь заказов из API\n`;
       adminMessage += `/order_details <posting_number> — показать детали заказа\n`;
       if (debugMode.isDebugMode()) adminMessage += `/debug_clear — сбросить отладочные назначения\n`;
-      adminMessage += `/force_check — Принудительная инициализация проверки очереди заказов (вне таймера)\n`;
+      adminMessage += `/reload_queue — Принудительная инициализация синхронизации (вне таймера) и перезапуска очереди заказов\n`;
       adminMessage += `/pause — приостановить авто-проверку очереди заказов\n`;
       adminMessage += `/resume — возобновить авто-проверку очереди заказов\n`;
       await bot.sendMessage(chatId, adminMessage);
@@ -422,17 +422,24 @@ module.exports = function registerCommands(
     await bot.sendMessage(msg.chat.id, `⚠️ Снять заказ ${postingNumber} с сотрудника ${assignment.employee_name}? Заказ вернётся в очередь.`, confirmKeyboard);
   });
 
-  // --- "/force_check" Команда для администратора: Принудительная инициализация проверки очереди заказов (вне таймера) ---
-  bot.onText(/\/force_check/, async (msg) => {
+  // --- "/reload_queue" Команда для администратора: Принудительная инициализация синхронизации (вне таймера) и перезапуска очереди заказов ---
+  bot.onText(/\/reload_queue/, async (msg) => {
     if (!isAdmin(msg.from.id.toString())) return;
-    const beforeCount = pendingNewOrders.length;
+
+    // 1. Сбрасываем текущий обрабатываемый заказ (админ его ещё не обработал)
+    if (currentOrderProcessing) {
+      console.log(`[RELOAD_QUEUE] Сброс текущего заказа ${currentOrderProcessing.order.posting_number}`);
+      currentOrderProcessing = null;
+    }
+
+    // 2. Перезагружаем очередь из API
     await checkAndOfferNewOrders();
-    if (pendingNewOrders.length > 0 && currentOrderProcessing) {
-      bot.sendMessage(msg.chat.id, `✅ Принудительная проверка выполнена. Отправлен заказ ${currentOrderProcessing.order.posting_number}. Осталось в очереди: ${pendingNewOrders.length}`);
-    } else if (pendingNewOrders.length === 0) {
-      bot.sendMessage(msg.chat.id, '✅ Принудительная проверка выполнена. Новых заказов нет.');
+
+    // 3. Отправляем сообщение о результате
+    if (pendingNewOrders.length > 0) {
+      bot.sendMessage(msg.chat.id, `✅ Принудительная проверка выполнена. Отправлен первый заказ из очереди. Осталось: ${pendingNewOrders.length}`);
     } else {
-      bot.sendMessage(msg.chat.id, '✅ Принудительная проверка выполнена.');
+      bot.sendMessage(msg.chat.id, '✅ Принудительная проверка выполнена. Новых заказов нет.');
     }
   });
 
@@ -725,7 +732,7 @@ module.exports = function registerCommands(
       helpText += `/employee_stats <id> — статистика сотрудника (заказы, сумма)\n`;
       helpText += `/employee_warehouses <id> — склады сотрудника\n`;
       helpText += `/warehouses — список складов Ozon\n`;
-      helpText += `/force_check — принудительная проверка очереди заказов (вне таймера)\n`;
+      helpText += `/reload_queue — Принудительная инициализация синхронизации (вне таймера) и перезапуска очереди заказов\n`;
       helpText += `/pause — приостановить авто-проверку очереди заказов\n`;
       helpText += `/resume — возобновить авто-проверку очереди заказов\n`;
       helpText += `/orders [warehouse_id] — показать очередь заказов из API\n`;

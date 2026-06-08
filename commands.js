@@ -11,29 +11,22 @@ module.exports = function registerCommands(bot, db, ozon, bwipjs, scheduler, deb
       return;
     }
 
-    const parts = data.split('_');
-    const action = parts[0];
-    const orderId = parts[2]; // формат: show_priority_<orderId> или skip_<orderId>
-
-    if (action === 'skip') {
+    // Обработка пропуска заказа
+    if (data.startsWith('skip_')) {
+      const orderId = data.substring(5);
       await bot.answerCallbackQuery(callbackQuery.id, { text: 'Заказ пропущен до следующей проверки' });
       await bot.deleteMessage(msg.chat.id, msg.message_id);
+      if (typeof processNextOrder === 'function') processNextOrder();
       return;
     }
 
-    if (action === 'show_priority' || action === 'show_others') {
-      // Получаем сотрудников для отображения
-      let employees;
-      let header;
-      if (action === 'show_priority') {
-        const order = await ozon.fetchAwaitingOrdersById(orderId);
-        const warehouseId = order?.warehouse_id || order?.delivery_method?.warehouse_id;
-        employees = await db.getAllEmployeesWithStats(warehouseId ? String(warehouseId) : null);
-        header = '👑 Приоритетные сотрудники (по складу):';
-      } else {
-        employees = await db.getAllEmployeesWithStats();
-        header = '👥 Все сотрудники:';
-      }
+    // Обработка показа приоритетных сотрудников
+    if (data.startsWith('priority_')) {
+      const orderId = data.substring(9);
+      const order = await ozon.fetchAwaitingOrdersById(orderId);
+      const warehouseId = order?.warehouse_id || order?.delivery_method?.warehouse_id;
+      const employees = await db.getAllEmployeesWithStats(warehouseId ? String(warehouseId) : null);
+      const header = '👑 Приоритетные сотрудники (по складу):';
 
       if (!employees.length) {
         await bot.answerCallbackQuery(callbackQuery.id, { text: 'Нет сотрудников' });
@@ -41,7 +34,7 @@ module.exports = function registerCommands(bot, db, ozon, bwipjs, scheduler, deb
       }
 
       const kb = employees.map(emp => ([{
-        text: `${emp.name} (активных: ${emp.active_count}, capacity: ${emp.capacity})`,
+        text: `${emp.name} (активных: ${emp.active_count}, принтеры: ${emp.capacity})`,
         callback_data: `assign_${orderId}_${emp.id}`
       }]));
       kb.push([{ text: '🔙 Назад', callback_data: `back_${orderId}` }]);
@@ -55,21 +48,48 @@ module.exports = function registerCommands(bot, db, ozon, bwipjs, scheduler, deb
       return;
     }
 
-    if (action === 'assign') {
+    // Обработка показа всех сотрудников
+    if (data.startsWith('others_')) {
+      const orderId = data.substring(7);
+      const employees = await db.getAllEmployeesWithStats();
+      const header = '👥 Все сотрудники:';
+
+      if (!employees.length) {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Нет сотрудников' });
+        return;
+      }
+
+      const kb = employees.map(emp => ([{
+        text: `${emp.name} (активных: ${emp.active_count}, принтеры: ${emp.capacity})`,
+        callback_data: `assign_${orderId}_${emp.id}`
+      }]));
+      kb.push([{ text: '🔙 Назад', callback_data: `back_${orderId}` }]);
+
+      await bot.editMessageText(header, {
+        chat_id: msg.chat.id,
+        message_id: msg.message_id,
+        reply_markup: { inline_keyboard: kb }
+      });
+      await bot.answerCallbackQuery(callbackQuery.id);
+      return;
+    }
+
+    // Обработка назначения заказа
+    if (data.startsWith('assign_')) {
+      const parts = data.split('_');
       const orderId = parts[1];
       const employeeId = parseInt(parts[2]);
       try {
         await db.assignOrderToEmployee(orderId, employeeId);
         const employee = await db.getEmployeeById(employeeId);
-        // Отправляем уведомление сотруднику (с деталями и штрихкодом)
         const orderDetails = await ozon.getOrderDetails(orderId);
-        // Формируем сообщение для сотрудника
+
         let detailsText = '';
         if (orderDetails && orderDetails.products) {
           const items = orderDetails.products.map(p => `${p.name} — ${p.quantity} шт.`).join('\n');
           detailsText = `\nСостав:\n${items}`;
         }
-        // Генерируем штрихкод
+
         let caption = `✅ Вам назначен заказ №${orderId}${detailsText}\n\nШтрихкод для сканирования:\nКогда упакуете, сообщите администратору.`;
         try {
           const barcodeBuffer = await bwipjs.toBuffer({
@@ -94,12 +114,11 @@ module.exports = function registerCommands(bot, db, ozon, bwipjs, scheduler, deb
       return;
     }
 
-    if (action === 'back') {
-      // Возврат к исходному меню выбора действий для заказа
-      // Просто удаляем текущее сообщение – новое будет создано при следующей проверке.
+    // Обработка кнопки "Назад"
+    if (data.startsWith('back_')) {
       await bot.deleteMessage(msg.chat.id, msg.message_id);
       await bot.answerCallbackQuery(callbackQuery.id);
-      // Можно также заново отправить меню для этого заказа, но для простоты – удаляем.
+      if (typeof processNextOrder === 'function') processNextOrder();
       return;
     }
   });
@@ -272,12 +291,12 @@ module.exports = function registerCommands(bot, db, ozon, bwipjs, scheduler, deb
     await bot.sendMessage(msg.chat.id, reply || 'Нет активных заказов');
   });
 
-    // --- "/force_check" Команда для администратора: Принудительная инициализация проверки очереди заказов (вне таймера) ---
+  // --- "/force_check" Команда для администратора: Принудительная инициализация проверки очереди заказов (вне таймера) ---
   bot.onText(/\/force_check/, async (msg) => {
     if (!isAdmin(msg.from.id.toString())) return;
     await checkAndOfferNewOrders();
     bot.sendMessage(msg.chat.id, '✅ Принудительная проверка выполнена.');
-});
+  });
 
   // --- "/pause" Команда для администратора: Пауза работы бота ---
   bot.onText(/\/pause/, async (msg) => {

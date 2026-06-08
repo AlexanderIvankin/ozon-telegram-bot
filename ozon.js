@@ -209,6 +209,13 @@ async function confirmPostingShip(postingNumber) {
 
 // Получить PDF этикетку для заказа (POST /v2/posting/fbs/package-label)
 async function getPackageLabel(postingNumber) {
+    if (debugMode.isDebugMode()) {
+        console.log(`[DEBUG] Эмуляция получения этикетки для ${postingNumber}`);
+        // Возвращаем заглушку (пустой PDF) – достаточно для тестирования
+        const dummyPdf = Buffer.from('%PDF-1.4\n%EOF', 'binary');
+        return dummyPdf;
+    }
+
     try {
         const response = await apiClient.post('/v2/posting/fbs/package-label', {
             posting_number: [postingNumber]

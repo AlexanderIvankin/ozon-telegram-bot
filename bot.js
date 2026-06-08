@@ -10,6 +10,15 @@ const debugMode = require('./debugMode');
 
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
+// Установка команд меню Telegram (глобальное меню для всех пользователей)
+bot.setMyCommands([
+    { command: 'start', description: 'Запустить бота' },
+    { command: 'help', description: 'Помощь' },
+    { command: 'my_orders', description: 'Мои активные заказы' },
+    { command: 'finish_order', description: 'Завершить заказ (указать номер)' }
+]).then(() => console.log('✅ Меню команд Telegram установлено')).catch(err => console.error('Ошибка установки меню:', err));
+
+
 const ADMIN_USER_ID = 762451011; // <<-- Administrator's Telegram ID
 
 // Глобальное состояние для пошаговой обработки очереди

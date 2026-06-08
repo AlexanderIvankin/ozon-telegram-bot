@@ -586,13 +586,5 @@ module.exports = function registerCommands(
     await bot.sendMessage(msg.chat.id, '🤖 Этот бот для сотрудников склада. Если вы здесь по работе, обратитесь к администратору для получения доступа.');
   });
 
-  // Установка команд меню Telegram
-  bot.setMyCommands([
-    { command: 'start', description: 'Запустить бота' },
-    { command: 'help', description: 'Помощь' },
-    { command: 'my_orders', description: 'Мои активные заказы' },
-    { command: 'finish_order', description: 'Завершить заказ (указать номер)' }
-  ]).catch(err => console.error('Ошибка setMyCommands:', err));
-
   console.log('Команды зарегистрированы');
 };

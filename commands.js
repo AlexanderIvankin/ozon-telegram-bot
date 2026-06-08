@@ -325,23 +325,6 @@ module.exports = function registerCommands(
     await bot.sendMessage(msg.chat.id, '⚠️ Вы уверены, что хотите сбросить ВСЕ активные назначения? Это действие необратимо.', confirmKeyboard);
   });
 
-  // Обработчик callback для подтверждения сброса
-  // Добавьте этот блок внутрь существующего bot.on('callback_query', ...)
-  if (data === 'confirm_clear_all') {
-    await db.db.run('DELETE FROM assignments WHERE status = "assigned"');
-    await bot.editMessageText('✅ Все активные назначения сброшены.', {
-      chat_id: msg.chat.id,
-      message_id: msg.message_id
-    });
-    await bot.answerCallbackQuery(callbackQuery.id, { text: 'Сброс выполнен' });
-    return;
-  }
-  if (data === 'cancel_clear_all') {
-    await bot.deleteMessage(msg.chat.id, msg.message_id);
-    await bot.answerCallbackQuery(callbackQuery.id, { text: 'Сброс отменён' });
-    return;
-  }
-
   // --- "/warehouses" Команда для администратора: показать список всех складов ---
   bot.onText(/\/warehouses/, async (msg) => {
     const userId = msg.from.id.toString();
@@ -425,27 +408,6 @@ module.exports = function registerCommands(
     };
     await bot.sendMessage(msg.chat.id, `⚠️ Снять заказ ${postingNumber} с сотрудника ${assignment.employee_name}? Заказ вернётся в очередь.`, confirmKeyboard);
   });
-
-  // Обработчик callback (внутри bot.on('callback_query', ...))
-  if (data.startsWith('admin_cancel_confirm_')) {
-    const orderId = data.substring(22);
-    // Удаляем назначение
-    await db.db.run('DELETE FROM assignments WHERE order_id = ? AND status = "assigned"', orderId);
-    // Статистику сотрудника не трогаем
-    await bot.editMessageText(`✅ Заказ ${orderId} снят с сотрудника и возвращён в очередь.`, {
-      chat_id: msg.chat.id,
-      message_id: msg.message_id
-    });
-    await bot.answerCallbackQuery(callbackQuery.id, { text: 'Заказ снят' });
-    // Обновляем очередь
-    await checkAndOfferNewOrders();
-    return;
-  }
-  if (data.startsWith('admin_cancel_abort_')) {
-    await bot.deleteMessage(msg.chat.id, msg.message_id);
-    await bot.answerCallbackQuery(callbackQuery.id, { text: 'Отмена' });
-    return;
-  }
 
   // --- "/force_check" Команда для администратора: Принудительная инициализация проверки очереди заказов (вне таймера) ---
   bot.onText(/\/force_check/, async (msg) => {

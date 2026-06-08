@@ -137,6 +137,7 @@ async function getOrderDetails(orderId) {
     try {
         const response = await apiClient.post('/v3/posting/fbs/get', {
             posting_number: orderId,
+            with: { financial_data: true }
         });
         if (debugMode.isDebugMode()) console.log(`[Ozon] Детали заказа ${orderId} получены`);
         return response.data.result;
@@ -230,7 +231,19 @@ async function getPackageLabel(postingNumber) {
     }
 }
 
+// Получить общую сумму заказа из финансовых данных
+async function getOrderTotalAmount(orderId) {
+    const details = await getOrderDetails(orderId);
+    if (!details || !details.financial_data || !details.financial_data.products) return 0;
+    let total = 0;
+    for (const p of details.financial_data.products) {
+        const price = parseFloat(p.price) || 0;
+        total += price * p.quantity;
+    }
+    return total;
+}
+
 module.exports = {
     fetchAwaitingOrders, fetchAwaitingOrdersById, getOrderDetails, fetchWarehousesFromOzon, fetchProductsImages, downloadImage, confirmPostingShip,
-    getPackageLabel
+    getPackageLabel, getOrderTotalAmount
 };

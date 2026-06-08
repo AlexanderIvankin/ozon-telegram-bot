@@ -170,10 +170,11 @@ module.exports = function registerCommands(
       adminMessage += `/active_orders — активные заказы\n`;
       adminMessage += `/clear_assignments — сброс зависших заданий\n`;
       adminMessage += `/employee_orders <id> — показать активные заказы сотрудника\n`;
+      adminMessage += `/employee_stats <id> — статистика сотрудника (заказы, сумма)\n`;
       adminMessage += `/employee_warehouses <id> — показать склады сотрудника\n`;
       adminMessage += `/warehouses — список складов из Ozon\n`;
-      adminMessage += `/debug_orders [warehouse_id] — показать заказы из API (отладка)\n`;
-      adminMessage += `/debug_order_details <posting_number> — детали заказа (отладка)\n`;
+      adminMessage += `/orders [warehouse_id] — показать заказы из API\n`;
+      adminMessage += `/order_details <posting_number> — детали заказа\n`;
       if (debugMode.isDebugMode()) adminMessage += `/debug_clear — сбросить отладочные назначения\n`;
       adminMessage += `/force_check — Принудительная инициализация проверки очереди заказов (вне таймера)\n`;
       adminMessage += `/pause — приостановить авто-проверку заказов\n`;
@@ -187,11 +188,11 @@ module.exports = function registerCommands(
     if (employee) {
       const activeCount = await db.getEmployeeActiveOrdersCount(employee.id);
       let msgText = `С возвращением, ${employee.name}! У вас активно заказов: ${activeCount}. Новые заказы назначает администратор.\n\n`;
-      msgText += `*Доступные команды:*\n`;
+      msgText += `Доступные команды:\n`;
       msgText += `/my_orders — мои активные заказы\n`;
       msgText += `/finish_order <номер> — завершить заказ\n`;
       msgText += `/help — справка\n`;
-      await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
+      await bot.sendMessage(chatId, msgText);
       return;
     }
 
@@ -340,8 +341,8 @@ module.exports = function registerCommands(
     bot.sendMessage(msg.chat.id, '▶️ Автоматическая проверка заказов возобновлена.');
   });
 
-  // --- "/debug_orders" Команда для администратора: просмотр списка заказов из API (отладка) ---
-  bot.onText(/\/debug_orders(?:\s+(\d+))?/, async (msg, match) => {
+  // --- "/orders" Команда для администратора: просмотр списка заказов из API (отладка) ---
+  bot.onText(/\/orders(?:\s+(\d+))?/, async (msg, match) => {
     const userId = msg.from.id.toString();
     if (!isAdmin(userId)) {
       return bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
@@ -368,17 +369,17 @@ module.exports = function registerCommands(
         const whInfo = order.warehouse_id || order.delivery_method?.warehouse_id || 'не указан';
         reply += `• Заказ \`${orderNumber}\` — товаров: ${productsCount}, склад: ${whInfo}\n`;
       }
-      // Добавляем подсказку: если нужны детали, можно использовать /debug_order_details <posting_number>
-      reply += `\n_Для просмотра деталей заказа используйте /debug_order_details <posting_number>_`;
+      // Добавляем подсказку: если нужны детали, можно использовать /order_details <posting_number>
+      reply += `\n_Для просмотра деталей заказа используйте /order_details <posting_number>_`;
       await bot.sendMessage(msg.chat.id, reply); // без parse_mode
     } catch (err) {
-      console.error('Ошибка в /debug_orders:', err);
+      console.error('Ошибка в /orders:', err);
       bot.sendMessage(msg.chat.id, '❌ Ошибка при получении списка заказов. Проверьте логи.');
     }
   });
 
-  // --- "/debug_order_details" Команда для администратора: просмотр деталей конкретного заказа ---
-  bot.onText(/\/debug_order_details (\S+)/, async (msg, match) => {
+  // --- "/order_details" Команда для администратора: просмотр деталей конкретного заказа ---
+  bot.onText(/\/order_details (\S+)/, async (msg, match) => {
     const userId = msg.from.id.toString();
     if (!isAdmin(userId)) {
       return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
@@ -447,9 +448,23 @@ module.exports = function registerCommands(
 
       await bot.sendMessage(msg.chat.id, reply); // без parse_mode
     } catch (err) {
-      console.error('Ошибка в /debug_order_details:', err);
+      console.error('Ошибка в /order_details:', err);
       bot.sendMessage(msg.chat.id, '❌ Ошибка получения деталей заказа.');
     }
+  });
+
+  // --- "/employee_stats" Команда для администратора: статистика сотрудника ---
+  bot.onText(/\/employee_stats (\d+)/, async (msg, match) => {
+    const adminId = msg.from.id.toString();
+    if (!isAdmin(adminId)) return;
+    const employeeId = parseInt(match[1]);
+    const emp = await db.getEmployeeById(employeeId);
+    if (!emp) return bot.sendMessage(msg.chat.id, 'Сотрудник не найден.');
+    const stats = await db.getEmployeeStats(employeeId);
+    const reply = `📊 *Статистика сотрудника ${emp.name}*\n\n` +
+      `✅ Завершённых заказов: ${stats.total_orders}\n` +
+      `💰 Общая сумма: ${stats.total_amount.toFixed(2)} ₽`;
+    await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'Markdown' });
   });
 
   // --- "/debug_clear" Команда для администратора: очистить все отладочные данные ---
@@ -490,6 +505,7 @@ module.exports = function registerCommands(
   async function safeDebugFinish(orderId, employeeId, employeeName, chatId, postingNumber) {
     if (debugMode.isDebugMode()) {
       console.log(`[DEBUG] Эмуляция подтверждения сборки заказа ${postingNumber}`);
+      await db.updateEmployeeStats(employeeId, 1000); // фиктивная сумма
       const labelBuffer = await ozon.getPackageLabel(postingNumber);
       await db.completeOrder(postingNumber);
       if (labelBuffer) {
@@ -529,6 +545,10 @@ module.exports = function registerCommands(
     );
     if (isDebugFinished) return;
     try {
+      // Получаем сумму заказа
+      const orderAmount = await ozon.getOrderTotalAmount(postingNumber);
+      await db.updateEmployeeStats(employee.id, orderAmount);
+
       await ozon.confirmPostingShip(postingNumber);
       const labelBuffer = await ozon.getPackageLabel(postingNumber);
       await db.completeOrder(postingNumber);
@@ -556,30 +576,31 @@ module.exports = function registerCommands(
     const isAdministrator = isAdmin(userId);
     const employee = await db.getEmployee(userId);
     if (isAdministrator) {
-      let helpText = `👋 *Помощь администратора*\n\n`;
+      let helpText = `👋 Помощь администратора\n\n`;
       helpText += `/status_all — статус всех сотрудников\n`;
       helpText += `/active_orders — список активных заказов\n`;
       helpText += `/clear_assignments — сбросить все назначения\n`;
       helpText += `/employee_orders <id> — активные заказы сотрудника\n`;
+      helpText += `/employee_stats <id> — статистика сотрудника (заказы, сумма)\n`;
       helpText += `/employee_warehouses <id> — склады сотрудника\n`;
       helpText += `/warehouses — список складов\n`;
       helpText += `/force_check — принудительная проверка очереди\n`;
       helpText += `/pause /resume — пауза авто-проверки\n`;
-      helpText += `/debug_orders [warehouse_id] — список заказов из API\n`;
-      helpText += `/debug_order_details <номер> — детали заказа\n`;
+      helpText += `/orders [warehouse_id] — список заказов из API\n`;
+      helpText += `/order_details <номер> — детали заказа\n`;
       helpText += `/debug_clear — сброс отладочных данных\n`;
       helpText += `/help_admin — полная админская справка\n`;
-      await bot.sendMessage(msg.chat.id, helpText, { parse_mode: 'Markdown' });
+      await bot.sendMessage(msg.chat.id, helpText);
       return;
     }
     if (employee) {
-      let helpText = `👋 *Помощь сотрудника*\n\n`;
+      let helpText = `👋 Помощь сотрудника\n\n`;
       helpText += `/my_orders — показать мои активные заказы\n`;
       helpText += `/finish_order <номер_заказа> — завершить заказ (получить этикетку)\n`;
       helpText += `/start — перезапустить бота\n`;
-      helpText += `/help — эта справка\n`;
-      helpText += `\n*Внимание:* Новые заказы вам назначает администратор.`;
-      await bot.sendMessage(msg.chat.id, helpText, { parse_mode: 'Markdown' });
+      helpText += `/help — эта справка\n\n`;
+      helpText += `Внимание: Новые заказы вам назначает администратор.`;
+      await bot.sendMessage(msg.chat.id, helpText);
       return;
     }
     // Неавторизованный пользователь

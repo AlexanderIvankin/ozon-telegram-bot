@@ -194,6 +194,28 @@ async function getWarehouseNameById(warehouseId) {
     return result ? result.name : warehouseId;
 }
 
+// Обновить статистику сотрудника при завершении заказа
+async function updateEmployeeStats(employeeId, orderAmount = 0) {
+    await database.run(
+        `INSERT INTO employee_stats (employee_id, total_orders, total_amount)
+         VALUES (?, 1, ?)
+         ON CONFLICT(employee_id) DO UPDATE SET
+         total_orders = total_orders + 1,
+         total_amount = total_amount + ?`,
+        employeeId, orderAmount, orderAmount
+    );
+}
+
+// Получить статистику сотрудника
+async function getEmployeeStats(employeeId) {
+    const stats = await database.get(
+        `SELECT total_orders, total_amount FROM employee_stats WHERE employee_id = ?`,
+        employeeId
+    );
+    return stats || { total_orders: 0, total_amount: 0 };
+}
+
+
 module.exports = {
     initDB,
     getDB,
@@ -209,6 +231,8 @@ module.exports = {
     syncWarehouses,
     getAllWarehouses,
     getWarehouseNameById,
+    updateEmployeeStats,
+    getEmployeeStats
 };
 
 // Геттер для доступа к database через .db (для обратной совместимости с bot.js)

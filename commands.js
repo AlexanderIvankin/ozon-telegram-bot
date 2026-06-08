@@ -92,6 +92,15 @@ module.exports = function registerCommands(
         const employee = await db.getEmployeeById(employeeId);
         const orderDetails = await ozon.getOrderDetails(orderId);
 
+        // Проверяем, может ли бот писать сотруднику
+        try {
+          await bot.sendChatAction(employee.tg_user_id, 'typing');
+        } catch (err) {
+          console.error(`Сотрудник ${employee.name} (${employee.tg_user_id}) не найден:`, err.message);
+          await bot.answerCallbackQuery(callbackQuery.id, { text: 'Сотрудник не начал диалог с ботом. Попросите его написать /start.' });
+          return; // Не удаляем исходное сообщение, админ может выбрать другого сотрудника
+        }
+
         let detailsText = '';
         if (orderDetails && orderDetails.products) {
           const items = orderDetails.products.map(p => `${p.name} — ${p.quantity} шт.`).join('\n');
@@ -106,7 +115,7 @@ module.exports = function registerCommands(
             scale: 3,
             height: 10,
             includetext: true,
-            textxalign: 'center',
+            textxalign: 'center'
           });
           await bot.sendPhoto(employee.tg_user_id, barcodeBuffer, { caption });
         } catch (barcodeError) {
@@ -177,7 +186,12 @@ module.exports = function registerCommands(
     // --- Обычный сотрудник (есть в БД) ---
     if (employee) {
       const activeCount = await db.getEmployeeActiveOrdersCount(employee.id);
-      await bot.sendMessage(chatId, `С возвращением, ${employee.name}! У вас активно заказов: ${activeCount}. Новые заказы назначает администратор.`);
+      let msgText = `С возвращением, ${employee.name}! У вас активно заказов: ${activeCount}. Новые заказы назначает администратор.\n\n`;
+      msgText += `*Доступные команды:*\n`;
+      msgText += `/my_orders — мои активные заказы\n`;
+      msgText += `/finish_order <номер> — завершить заказ\n`;
+      msgText += `/help — справка\n`;
+      await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
       return;
     }
 
@@ -452,30 +466,6 @@ module.exports = function registerCommands(
     bot.sendMessage(msg.chat.id, '✅ Все отладочные назначения сброшены.');
   });
 
-  // --- "/help_admin" Команда для администратора: список всех команд администратора ---
-  bot.onText(/\/help_admin/, async (msg) => {
-    const userId = msg.from.id.toString();
-    if (!isAdmin(userId)) {
-      await bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
-      return;
-    }
-    let help = `Административные команды:
-/status_all — статус всех сотрудников (активные заказы / число принтеров)
-/active_orders — список активных назначенных заказов
-/clear_assignments — сбросить все активные назначения
-/employee_orders <id> — показать активные заказы сотрудника
-/employee_warehouses <id> — показать склады сотрудника
-/warehouses — список складов
-/force_check — Принудительная инициализация проверки очереди заказов (вне таймера)
-/pause — приостановить авто-проверку
-/resume — возобновить
-/debug_orders [warehouse_id] — показать заказы из API
-/debug_order_details <posting_number> — детали заказа
-`;
-    if (debugMode.isDebugMode()) help += `/debug_clear — сбросить отладочные назначения\n`;
-    await bot.sendMessage(msg.chat.id, help);
-  });
-
   // ---------------------- КОМАНДЫ СОТРУДНИКОВ ----------------------
 
   // --- "/my_orders" – список активных заказов сотрудника ---
@@ -559,6 +549,50 @@ module.exports = function registerCommands(
       bot.sendMessage(msg.chat.id, `❌ Не удалось подтвердить сборку заказа ${postingNumber}: ${err.message}`);
     }
   });
+
+  // ---------------------- СПРАВОЧНЫЕ КОМАНДЫ ----------------------
+  bot.onText(/\/help/, async (msg) => {
+    const userId = msg.from.id.toString();
+    const isAdministrator = isAdmin(userId);
+    const employee = await db.getEmployee(userId);
+    if (isAdministrator) {
+      let helpText = `👋 *Помощь администратора*\n\n`;
+      helpText += `/status_all — статус всех сотрудников\n`;
+      helpText += `/active_orders — список активных заказов\n`;
+      helpText += `/clear_assignments — сбросить все назначения\n`;
+      helpText += `/employee_orders <id> — активные заказы сотрудника\n`;
+      helpText += `/employee_warehouses <id> — склады сотрудника\n`;
+      helpText += `/warehouses — список складов\n`;
+      helpText += `/force_check — принудительная проверка очереди\n`;
+      helpText += `/pause /resume — пауза авто-проверки\n`;
+      helpText += `/debug_orders [warehouse_id] — список заказов из API\n`;
+      helpText += `/debug_order_details <номер> — детали заказа\n`;
+      helpText += `/debug_clear — сброс отладочных данных\n`;
+      helpText += `/help_admin — полная админская справка\n`;
+      await bot.sendMessage(msg.chat.id, helpText, { parse_mode: 'Markdown' });
+      return;
+    }
+    if (employee) {
+      let helpText = `👋 *Помощь сотрудника*\n\n`;
+      helpText += `/my_orders — показать мои активные заказы\n`;
+      helpText += `/finish_order <номер_заказа> — завершить заказ (получить этикетку)\n`;
+      helpText += `/start — перезапустить бота\n`;
+      helpText += `/help — эта справка\n`;
+      helpText += `\n*Внимание:* Новые заказы вам назначает администратор.`;
+      await bot.sendMessage(msg.chat.id, helpText, { parse_mode: 'Markdown' });
+      return;
+    }
+    // Неавторизованный пользователь
+    await bot.sendMessage(msg.chat.id, '🤖 Этот бот для сотрудников склада. Если вы здесь по работе, обратитесь к администратору для получения доступа.');
+  });
+
+  // Установка команд меню Telegram
+  bot.setMyCommands([
+    { command: 'start', description: 'Запустить бота' },
+    { command: 'help', description: 'Помощь' },
+    { command: 'my_orders', description: 'Мои активные заказы' },
+    { command: 'finish_order', description: 'Завершить заказ (указать номер)' }
+  ]).catch(err => console.error('Ошибка setMyCommands:', err));
 
   console.log('Команды зарегистрированы');
 };

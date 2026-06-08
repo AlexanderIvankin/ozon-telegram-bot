@@ -1,5 +1,6 @@
 const XLSX = require('xlsx');
 const path = require('path');
+const debugMode = require('./debugMode');
 
 /**
  * Синхронизирует список сотрудников из Excel-файла с БД.

@@ -1,8 +1,9 @@
 const axios = require('axios');
 require('dotenv').config();
+const debugMode = require('./debugMode');
 
 // --- Конфигурация ---
-const API_URL = 'https://api-seller.ozon.ru';  // правильный URL для продавцов
+const API_URL = 'https://api-seller.ozon.ru';
 const CLIENT_ID = process.env.OZON_CLIENT_ID;
 const API_KEY = process.env.OZON_API_KEY;
 
@@ -17,7 +18,7 @@ const apiClient = axios.create({
 });
 
 // Флаг для тестов (MOCK-режим)
-const MOCK_MODE = false;
+const MOCK_MODE = process.env.OZON_MOCK_MODE === 'true';
 
 // Тестовые заказы (включают warehouse_id для проверки фильтрации)
 const mockOrders = [
@@ -39,7 +40,7 @@ const mockOrders = [
  */
 async function fetchWarehousesFromOzon() {
     if (MOCK_MODE) {
-        console.log('[Ozon MOCK] Возвращаем тестовый список складов');
+        console.log('[Ozon] Запрос списка складов...');
         return [
             { warehouse_id: "1234567890", name: "Склад 'Северный' (FBS)", address: "г. Москва, ул. Северная, д.1", is_rfbs: false },
             { warehouse_id: "9876543210", name: "Склад 'Южный' (realFBS)", address: "г. Подольск, ул. Южная, д.10", is_rfbs: true }
@@ -47,7 +48,7 @@ async function fetchWarehousesFromOzon() {
     }
 
     try {
-        console.log('[Ozon] Запрос списка складов...');
+        if (debugMode.isDebugMode()) console.log('[Ozon] Запрос списка складов...');
         // Для получения всех складов можно отправить пустой объект или limit: 100
         const response = await apiClient.post('/v2/warehouse/list', {
             limit: 100   // Запрашиваем до 100 складов за раз
@@ -64,7 +65,7 @@ async function fetchWarehousesFromOzon() {
             is_rfbs: wh.is_rfbs || false
         }));
 
-        console.log(`[Ozon] Успешно получено ${warehouses.length} складов.`);
+        if (debugMode.isDebugMode()) console.log(`[Ozon] Успешно получено ${warehouses.length} складов.`);
         return warehouses;
     } catch (error) {
         console.error('[Ozon] Ошибка при получении списка складов:',
@@ -78,7 +79,7 @@ async function fetchWarehousesFromOzon() {
 // Получить список заказов FBS со статусом "awaiting_packaging" (ожидает упаковки)
 // Документация: метод /v4/posting/fbs/list
 async function fetchAwaitingOrders(warehouseId = null) {
-    console.log('[Ozon] Запрос списка заказов...');
+    if (debugMode.isDebugMode()) console.log('[Ozon] Запрос списка заказов...');
     if (MOCK_MODE) {
         console.log('[Ozon MOCK] Возвращаем тестовые заказы');
         if (warehouseId) {
@@ -105,12 +106,15 @@ async function fetchAwaitingOrders(warehouseId = null) {
 
         const requestBody = {
             filter,
-            limit: 20
+            limit: 20,
+            with: {
+                analytics_data: true
+            }
         };
 
         const response = await apiClient.post('/v4/posting/fbs/list', requestBody);
         const orders = response.data.postings || [];   // Исправлено: данные напрямую в поле postings
-        console.log(`[Ozon] Успешно получено ${orders.length} заказов.`);
+        if (debugMode.isDebugMode()) console.log(`[Ozon] Успешно получено ${orders.length} заказов.`);
         return orders;
     } catch (error) {
         console.error('[Ozon] Ошибка при получении заказов:', error.response?.data || error.message);
@@ -125,6 +129,7 @@ async function fetchAwaitingOrdersById(orderId) {
 
 // Получить детали заказа (состав, адрес и т.д.)
 async function getOrderDetails(orderId) {
+    if (debugMode.isDebugMode()) console.log(`[Ozon] Запрос деталей заказа ${orderId}`);
     if (MOCK_MODE) {
         const mock = mockOrders.find(o => o.posting_number === orderId);
         return mock || { posting_number: orderId, products: [] };
@@ -133,6 +138,7 @@ async function getOrderDetails(orderId) {
         const response = await apiClient.post('/v3/posting/fbs/get', {
             posting_number: orderId,
         });
+        if (debugMode.isDebugMode()) console.log(`[Ozon] Детали заказа ${orderId} получены`);
         return response.data.result;
     } catch (error) {
         console.error(`[Ozon] Ошибка получения деталей заказа ${orderId}:`,
@@ -141,4 +147,41 @@ async function getOrderDetails(orderId) {
     }
 }
 
-module.exports = { fetchAwaitingOrders, fetchAwaitingOrdersById, getOrderDetails, fetchWarehousesFromOzon };
+// Получить фотографии товара по SKU
+async function fetchProductsImages(skuList) {
+    if (!skuList.length) return {};
+    try {
+        const response = await apiClient.post('/v3/product/info/list', {
+            sku: skuList.map(s => String(s))
+        });
+        if (debugMode.isDebugMode()) {
+            console.log('[DEBUG] Полный ответ от /v3/product/info/list:');
+            console.log(JSON.stringify(response.data, null, 2));
+        }
+        const items = response.data.items || [];
+        const imageMap = {};
+        for (const item of items) {
+            const img = item.primary_image?.[0] || item.images?.[0];
+            if (img) imageMap[item.sku] = img;
+        }
+        return imageMap;
+    } catch (err) {
+        console.error('Ошибка получения фото:', err.message);
+        return {};
+    }
+}
+
+async function downloadImage(url) {
+    try {
+        const response = await axios.get(url, {
+            responseType: 'arraybuffer',
+            headers: { 'User-Agent': 'Mozilla/5.0' }
+        });
+        return Buffer.from(response.data, 'binary');
+    } catch (err) {
+        console.error('Ошибка загрузки изображения:', err.message);
+        return null;
+    }
+}
+
+module.exports = { fetchAwaitingOrders, fetchAwaitingOrdersById, getOrderDetails, fetchWarehousesFromOzon, fetchProductsImages, downloadImage };

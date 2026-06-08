@@ -1,3 +1,5 @@
+const debugMode = require('./debugMode');
+
 module.exports = function registerCommands(
   bot, db, ozon, bwipjs, scheduler, debugMode,
   isAdmin, checkAndOfferNewOrders,
@@ -14,6 +16,8 @@ module.exports = function registerCommands(
       await bot.answerCallbackQuery(callbackQuery.id, { text: '⛔ Нет прав' });
       return;
     }
+
+    if (debugMode.isDebugMode()) console.log(`[CALLBACK] admin ${adminId} вызвал ${data}`);
 
     // Обработка пропуска заказа
     if (data.startsWith('skip_')) {

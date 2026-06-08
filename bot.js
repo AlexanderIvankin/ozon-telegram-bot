@@ -53,8 +53,12 @@ async function checkAndOfferNewOrders() {
         if (debug) console.log(`[CHECK] Новых заказов (не назначенных): ${newOrders.length}`);
         if (!newOrders.length) return;
 
-        // 4. Обновляем глобальную очередь (перезаписываем, чтобы удалить обработанные)
-        pendingNewOrders = newOrders;
+        // 4. Обновляем глобальную очередь, исключая текущий обрабатываемый заказ
+        let filteredNewOrders = newOrders;
+        if (currentOrderProcessing && currentOrderProcessing.order) {
+            filteredNewOrders = newOrders.filter(order => order.posting_number !== currentOrderProcessing.order.posting_number);
+        }
+        pendingNewOrders = filteredNewOrders;
 
         // 5. Если нет активного заказа – начинаем обработку первого
         if (!currentOrderProcessing && pendingNewOrders.length) {
@@ -67,16 +71,30 @@ async function checkAndOfferNewOrders() {
 
 // Функция для отображения меню выбора для конкретного заказа
 async function showOrderMenu(order) {
-    let warehouseId = order.warehouse_id || order.delivery_method?.warehouse_id;
-    if (warehouseId) warehouseId = String(warehouseId);
+    const debug = debugMode.isDebugMode();
+    if (debug) console.log(`[MENU] Отображение заказа ${order.posting_number} – начало`);
     const details = await ozon.getOrderDetails(order.posting_number);
+
+    let warehouseDisplay = order.analytics_data?.warehouse || (order.warehouse_id ? `ID: ${order.warehouse_id}` : 'не указан');
+
     let productsInfo = '';
-    if (details && details.products && details.products.length) {
+    let skuList = [];
+    if (details?.products?.length) {
         productsInfo = '\n\n*Состав:*\n';
-        productsInfo += details.products.map(p => `${p.name} — ${p.quantity} шт.`).join('\n');
+        for (const p of details.products) {
+            // Берём артикул: offer_id или первый barcode
+            let article = p.offer_id || (p.barcodes?.[0]);
+            if (article) {
+                productsInfo += `• ${p.name} — ${p.quantity} шт. (Артикул: ${article})\n`;
+            } else {
+                productsInfo += `• ${p.name} — ${p.quantity} шт. (SKU: ${p.sku})\n`;
+            }
+            if (p.sku) skuList.push(p.sku);
+        }
     }
+
     const adminChatId = ADMIN_USER_ID.toString();
-    const messageText = `🆕 *Новый заказ!*\nНомер: ${order.posting_number}\nСклад: ${warehouseId || 'не указан'}${productsInfo}\n\nВыберите действие:`;
+    const messageText = `🆕 *Новый заказ!*\nНомер: ${order.posting_number}\nСклад: ${warehouseDisplay}${productsInfo}\n\nВыберите действие:`;
     const keyboard = [
         [{ text: '👑 Приоритетные', callback_data: `priority_${order.posting_number}` }],
         [{ text: '👥 Другие сотрудники', callback_data: `others_${order.posting_number}` }],
@@ -86,6 +104,32 @@ async function showOrderMenu(order) {
         reply_markup: { inline_keyboard: keyboard },
         parse_mode: 'Markdown'
     });
+
+    if (skuList.length) {
+        try {
+            const imageMap = await ozon.fetchProductsImages(skuList);
+            for (const p of details.products) {
+                try {
+                    const imgUrl = imageMap[p.sku];
+                    if (imgUrl && imgUrl.startsWith('http')) {
+                        const imageBuffer = await ozon.downloadImage(imgUrl);
+                        if (imageBuffer) {
+                            await bot.sendPhoto(adminChatId, imageBuffer, {
+                                caption: `Фото к заказу ${order.posting_number}: ${p.name}`
+                            });
+                            await new Promise(resolve => setTimeout(resolve, 500));
+                        }
+                    }
+                } catch (photoError) {
+                    console.error(`Ошибка отправки фото для ${p.name}:`, photoError.message);
+                }
+            }
+        } catch (error) {
+            console.error(`Ошибка получения фото для заказа ${order.posting_number}:`, error.message);
+        }
+    }
+
+    if (debug) console.log(`[MENU] Заказ ${order.posting_number} – успешно обработан`);
 }
 
 // Функция для обработки следующего заказа из очереди
@@ -95,46 +139,32 @@ async function processNextOrder() {
             currentOrderProcessing = null;
             return;
         }
-        const order = pendingNewOrders.shift();
-        currentOrderProcessing = { order, timestamp: Date.now() };
-        await showOrderMenu(order);
-        if (debugMode.isDebugMode()) {
-            console.log(`[CHECK] Отправлен заказ ${order.posting_number} админу. Осталось в очереди: ${pendingNewOrders.length}`);
+        let attempts = 0;
+        while (pendingNewOrders.length && attempts < 3) {
+            const order = pendingNewOrders.shift();
+            try {
+                await showOrderMenu(order);
+                currentOrderProcessing = { order, timestamp: Date.now() };
+                return;
+            } catch (err) {
+                attempts++;
+                console.error(`Ошибка при отправке заказа ${order.posting_number}, попытка ${attempts}`);
+                if (attempts >= 3) {
+                    console.error(`Заказ ${order.posting_number} пропущен из-за повторяющихся ошибок`);
+                    // можно записать в отдельную таблицу problematic_orders
+                } else {
+                    pendingNewOrders.unshift(order); // вернуть в начало очереди
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                }
+            }
         }
-
-        // Определяем склад
-        let warehouseId = order.warehouse_id || order.delivery_method?.warehouse_id;
-        if (warehouseId) warehouseId = String(warehouseId);
-
-        // Получаем детали заказа для состава
-        const details = await ozon.getOrderDetails(order.posting_number);
-        let productsInfo = '';
-        if (details && details.products && details.products.length) {
-            productsInfo = '\n\n*Состав:*\n';
-            productsInfo += details.products.map(p => `${p.name} — ${p.quantity} шт.`).join('\n');
-        }
-
-        const adminChatId = ADMIN_USER_ID.toString();
-        const messageText = `🆕 *Новый заказ!*\nНомер: ${order.posting_number}\nСклад: ${warehouseId || 'не указан'}${productsInfo}\n\nВыберите действие:`;
-
-        const keyboard = [
-            [{ text: '👑 Приоритетные', callback_data: `priority_${order.posting_number}` }],
-            [{ text: '👥 Другие сотрудники', callback_data: `others_${order.posting_number}` }],
-            [{ text: '⏩ Пропустить (на 30 мин)', callback_data: `skip_${order.posting_number}` }]
-        ];
-
-        await bot.sendMessage(adminChatId, messageText, {
-            reply_markup: { inline_keyboard: keyboard },
-            parse_mode: 'Markdown'
-        });
-
+        currentOrderProcessing = null;
         if (debugMode.isDebugMode()) {
             console.log(`[CHECK] Отправлен заказ ${order.posting_number} админу. Осталось в очереди: ${pendingNewOrders.length}`);
         }
     } catch (err) {
         console.error('[ERROR] processNextOrder:', err);
         currentOrderProcessing = null;
-        // Попробовать следующий заказ через секунду
         setTimeout(() => processNextOrder(), 1000);
     }
 }
@@ -151,7 +181,7 @@ async function processNextOrder() {
     registerCommands(
         bot, db, ozon, bwipjs, scheduler, debugMode,
         isAdmin, checkAndOfferNewOrders,
-        processNextOrder, showOrderMenu  // добавили showOrderMenu
+        processNextOrder, showOrderMenu
     );
     setTimeout(() => checkAndOfferNewOrders(), 5000);
     console.log('Бот запущен...');

@@ -1,3 +1,5 @@
+const debugMode = require('./debugMode');
+
 let checkInterval = null;
 let isPaused = false;
 

@@ -7,8 +7,8 @@ module.exports = function registerCommands(bot, db, ozon, bwipjs, scheduler, deb
     const adminId = callbackQuery.from.id.toString();
 
     if (!isAdmin(adminId)) {
-        await bot.answerCallbackQuery(callbackQuery.id, { text: '⛔ Нет прав' });
-        return;
+      await bot.answerCallbackQuery(callbackQuery.id, { text: '⛔ Нет прав' });
+      return;
     }
 
     const parts = data.split('_');
@@ -128,10 +128,12 @@ module.exports = function registerCommands(bot, db, ozon, bwipjs, scheduler, deb
       adminMessage += `/active_orders — активные заказы\n`;
       adminMessage += `/clear_assignments — сброс зависших заданий\n`;
       adminMessage += `/employee_orders <id> — показать активные заказы сотрудника\n`;
+      adminMessage += `/employee_warehouses <id> — показать склады сотрудника\n`;
       adminMessage += `/warehouses — список складов из Ozon\n`;
       adminMessage += `/debug_orders [warehouse_id] — показать заказы из API (отладка)\n`;
       adminMessage += `/debug_order_details <posting_number> — детали заказа (отладка)\n`;
       if (debugMode.isDebugMode()) adminMessage += `/debug_clear — сбросить отладочные назначения\n`;
+      adminMessage += `/force_check — Принудительная инициализация проверки очереди заказов (вне таймера)\n`;
       adminMessage += `/pause — приостановить авто-проверку заказов\n`;
       adminMessage += `/resume — возобновить авто-проверку\n`;
       adminMessage += `/help_admin — полная справка\n\n`;
@@ -232,6 +234,32 @@ module.exports = function registerCommands(bot, db, ozon, bwipjs, scheduler, deb
     await bot.sendMessage(msg.chat.id, reply);
   });
 
+  // --- "/employee_warehouses" Команда для администратора: показать склады, где числится сотрудник ---
+  bot.onText(/\/employee_warehouses (\d+)/, async (msg, match) => {
+    const adminId = msg.from.id.toString();
+    if (!isAdmin(adminId)) return;
+    const employeeId = parseInt(match[1]);
+    const emp = await db.getEmployeeById(employeeId);
+    if (!emp) return bot.sendMessage(msg.chat.id, 'Сотрудник не найден.');
+
+    const warehouses = await db.db.all(`
+        SELECT w.warehouse_id, w.name, w.address
+        FROM employee_warehouses ew
+        JOIN warehouses w ON ew.warehouse_id = w.warehouse_id
+        WHERE ew.employee_id = ?
+    `, employeeId);
+
+    let reply = `📦 Склады сотрудника ${emp.name}:\n`;
+    if (!warehouses.length) {
+      reply += 'Не числится ни на одном складе.';
+    } else {
+      for (const wh of warehouses) {
+        reply += `\n• ${wh.name} (ID: ${wh.warehouse_id})\n   📍 ${wh.address || 'адрес не указан'}`;
+      }
+    }
+    await bot.sendMessage(msg.chat.id, reply);
+  });
+
   // --- "/employee_orders" Команда для администратора: Просмотр активных заказов сотрудника ---
   bot.onText(/\/employee_orders (\d+)/, async (msg, match) => {
     const adminId = msg.from.id.toString();
@@ -243,6 +271,13 @@ module.exports = function registerCommands(bot, db, ozon, bwipjs, scheduler, deb
     orders.forEach(o => { reply += `- ${o.order_id} (назначен ${new Date(o.assigned_at).toLocaleString()})\n`; });
     await bot.sendMessage(msg.chat.id, reply || 'Нет активных заказов');
   });
+
+    // --- "/force_check" Команда для администратора: Принудительная инициализация проверки очереди заказов (вне таймера) ---
+  bot.onText(/\/force_check/, async (msg) => {
+    if (!isAdmin(msg.from.id.toString())) return;
+    await checkAndOfferNewOrders();
+    bot.sendMessage(msg.chat.id, '✅ Принудительная проверка выполнена.');
+});
 
   // --- "/pause" Команда для администратора: Пауза работы бота ---
   bot.onText(/\/pause/, async (msg) => {
@@ -396,7 +431,9 @@ module.exports = function registerCommands(bot, db, ozon, bwipjs, scheduler, deb
 /active_orders — список активных назначенных заказов
 /clear_assignments — сбросить все активные назначения
 /employee_orders <id> — показать активные заказы сотрудника
+/employee_warehouses <id> — показать склады сотрудника
 /warehouses — список складов
+/force_check — Принудительная инициализация проверки очереди заказов (вне таймера)
 /pause — приостановить авто-проверку
 /resume — возобновить
 /debug_orders [warehouse_id] — показать заказы из API

@@ -32,27 +32,55 @@ function isAdmin(tgUserId) {
 
 // Функция проверки новых заказов (перенесена из bot.js, но можно оставить здесь)
 async function checkAndOfferNewOrders() {
-    const allOrders = await ozon.fetchAwaitingOrders();
-    if (!allOrders.length) return;
-    const assignedOrderIds = (await db.db.all('SELECT order_id FROM assignments WHERE status = "assigned"')).map(r => r.order_id);
-    const newOrders = allOrders.filter(order => !assignedOrderIds.includes(order.posting_number));
-    if (!newOrders.length) return;
-    const adminChatId = ADMIN_USER_ID.toString();
-    for (const order of newOrders) {
-        let warehouseId = order.warehouse_id || order.delivery_method?.warehouse_id;
-        if (warehouseId) warehouseId = String(warehouseId);
-        const priorityEmployees = await db.getAllEmployeesWithStats(warehouseId); // все сотрудники этого склада
-        const otherEmployees = await db.getAllEmployeesWithStats(); // все сотрудники
-        const keyboard = [];
-        if (priorityEmployees.length) {
-            keyboard.push([{ text: '👑 Приоритетные', callback_data: `show_priority_${order.posting_number}` }]);
+    const debug = debugMode.isDebugMode();
+    if (debug) console.log('[CHECK] Начало проверки новых заказов...');
+    try {
+        const allOrders = await ozon.fetchAwaitingOrders();
+        if (debug) console.log(`[CHECK] Получено заказов из API: ${allOrders.length}`);
+        if (!allOrders.length) return;
+
+        const assignedOrderIds = (await db.db.all('SELECT order_id FROM assignments WHERE status = "assigned"')).map(r => r.order_id);
+        if (debug) console.log(`[CHECK] Уже назначенных заказов: ${assignedOrderIds.length}`);
+
+        const newOrders = allOrders.filter(order => !assignedOrderIds.includes(order.posting_number));
+        if (debug) console.log(`[CHECK] Новых заказов (не назначенных): ${newOrders.length}`);
+        if (!newOrders.length) return;
+
+        const adminChatId = ADMIN_USER_ID.toString();
+
+        for (const order of newOrders) {
+            let warehouseId = order.warehouse_id || order.delivery_method?.warehouse_id;
+            if (warehouseId) warehouseId = String(warehouseId);
+            if (debug) console.log(`[CHECK] Обработка заказа ${order.posting_number}, склад: ${warehouseId || 'не указан'}`);
+
+            // Получаем приоритетных сотрудников (имеющих этот склад)
+            const priorityEmployees = await db.getAllEmployeesWithStats(warehouseId);
+            // Получаем всех сотрудников
+            const allEmployees = await db.getAllEmployeesWithStats();
+            const priorityIds = new Set(priorityEmployees.map(e => e.id));
+            const otherEmployees = allEmployees.filter(e => !priorityIds.has(e.id));
+
+            if (debug) {
+                console.log(`[CHECK] Приоритетных сотрудников: ${priorityEmployees.length}`);
+                priorityEmployees.forEach(e => console.log(`   - ${e.name} (ID:${e.id}, активных:${e.active_count})`));
+                console.log(`[CHECK] Остальных сотрудников: ${otherEmployees.length}`);
+            }
+
+            const keyboard = [];
+            if (priorityEmployees.length) {
+                keyboard.push([{ text: '👑 Приоритетные', callback_data: `show_priority_${order.posting_number}` }]);
+            }
+            if (otherEmployees.length) {
+                keyboard.push([{ text: '👥 Другие сотрудники', callback_data: `show_others_${order.posting_number}` }]);
+            }
+            keyboard.push([{ text: '⏩ Пропустить (на 30 мин)', callback_data: `skip_${order.posting_number}` }]);
+
+            const messageText = `🆕 Новый заказ!\nНомер: ${order.posting_number}\nСклад: ${warehouseId || 'не указан'}\nТоваров: ${order.products?.length || '?'}\n\nВыберите действие:`;
+            await bot.sendMessage(adminChatId, messageText, { reply_markup: { inline_keyboard: keyboard } });
+            if (debug) console.log(`[CHECK] Сообщение отправлено админу для заказа ${order.posting_number}`);
         }
-        if (otherEmployees.length) {
-            keyboard.push([{ text: '👥 Другие сотрудники', callback_data: `show_others_${order.posting_number}` }]);
-        }
-        keyboard.push([{ text: '⏩ Пропустить (на 30 мин)', callback_data: `skip_${order.posting_number}` }]);
-        const messageText = `🆕 Новый заказ!\nНомер: ${order.posting_number}\nСклад: ${warehouseId || 'не указан'}\nТоваров: ${order.products?.length || '?'}\n\nВыберите действие:`;
-        await bot.sendMessage(adminChatId, messageText, { reply_markup: { inline_keyboard: keyboard } });
+    } catch (err) {
+        console.error('[CHECK] Ошибка в checkAndOfferNewOrders:', err);
     }
 }
 

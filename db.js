@@ -17,7 +17,6 @@ async function initDB() {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         tg_user_id TEXT UNIQUE NOT NULL,
         name TEXT NOT NULL,
-        warehouse TEXT,
         capacity INTEGER DEFAULT 1
     )
 `);
@@ -73,24 +72,6 @@ async function initDB() {
         console.log('[DB] Добавлена колонка canceled_orders в employee_stats');
     }
 
-    // Новая функция для отмены заказа сотрудником
-    async function cancelOrder(orderId, employeeId) {
-        // Проверяем, что заказ принадлежит этому сотруднику и ещё не завершён
-        const assignment = await database.get(
-            'SELECT * FROM assignments WHERE order_id = ? AND employee_id = ? AND status = "assigned"',
-            orderId, employeeId
-        );
-        if (!assignment) throw new Error('Заказ не найден или уже завершён');
-        await database.run('DELETE FROM assignments WHERE order_id = ?', orderId);
-        // Увеличиваем счётчик отмен
-        await database.run(
-            `INSERT INTO employee_stats (employee_id, canceled_orders) VALUES (?, 1)
-         ON CONFLICT(employee_id) DO UPDATE SET canceled_orders = canceled_orders + 1`,
-            employeeId
-        );
-        return true;
-    }
-
     // Проверяем и добавляем колонку capacity, если отсутствует
     const tableInfo = await database.all("PRAGMA table_info(employees)");
     const hasCapacity = tableInfo.some(col => col.name === 'capacity');
@@ -107,12 +88,12 @@ function getDB() {
 }
 
 // Добавить сотрудника (если нет)
-async function addEmployee(tgUserId, name, warehouse = null) {
+async function addEmployee(tgUserId, name) {
     const exists = await database.get('SELECT id FROM employees WHERE tg_user_id = ?', tgUserId);
     if (!exists) {
         await database.run(
-            'INSERT INTO employees (tg_user_id, name, warehouse, capacity) VALUES (?, ?, ?, 1)',
-            tgUserId, name, warehouse
+            'INSERT INTO employees (tg_user_id, name, capacity) VALUES (?, ?, 1)',
+            tgUserId, name
         );
     }
 }
@@ -127,13 +108,31 @@ async function getEmployeeById(employeeId) {
     return database.get('SELECT * FROM employees WHERE id = ?', employeeId);
 }
 
-// Назначить заказ сотруднику (с проверкой лимита)
+// Назначить заказ сотруднику
 async function assignOrderToEmployee(orderId, employeeId) {
     await database.run(
         `INSERT OR REPLACE INTO assignments (order_id, employee_id, assigned_at, status)
          VALUES (?, ?, ?, ?)`,
         orderId, employeeId, Date.now(), 'assigned'
     );
+}
+
+// Отменить заказ (сотрудник)
+async function cancelOrder(orderId, employeeId) {
+    // Проверяем, что заказ принадлежит этому сотруднику и ещё не завершён
+    const assignment = await database.get(
+        'SELECT * FROM assignments WHERE order_id = ? AND employee_id = ? AND status = "assigned"',
+        orderId, employeeId
+    );
+    if (!assignment) throw new Error('Заказ не найден или уже завершён');
+    await database.run('DELETE FROM assignments WHERE order_id = ?', orderId);
+    // Увеличиваем счётчик отмен
+    await database.run(
+        `INSERT INTO employee_stats (employee_id, canceled_orders) VALUES (?, 1)
+         ON CONFLICT(employee_id) DO UPDATE SET canceled_orders = canceled_orders + 1`,
+        employeeId
+    );
+    return true;
 }
 
 // Завершить заказ
@@ -177,11 +176,6 @@ async function getEmployeeActiveOrdersCount(employeeId) {
         employeeId
     );
     return row ? row.count : 0;
-}
-
-// Установить склад сотрудника по tg_user_id
-async function setEmployeeWarehouse(tgUserId, warehouseId) {
-    await database.run('UPDATE employees SET warehouse = ? WHERE tg_user_id = ?', warehouseId, tgUserId);
 }
 
 /**
@@ -248,11 +242,11 @@ module.exports = {
     getEmployee,
     getEmployeeById,
     assignOrderToEmployee,
+    cancelOrder,
     completeOrder,
     getAllEmployeesWithStats,
     getEmployeeActiveOrders,
     getEmployeeActiveOrdersCount,
-    setEmployeeWarehouse,
     syncWarehouses,
     getAllWarehouses,
     getWarehouseNameById,

@@ -20,7 +20,7 @@ module.exports = function registerCommands(
 
     if (debugMode.isDebugMode()) console.log(`[CALLBACK] admin ${adminId} вызвал ${data}`);
 
-    // Обработка пропуска заказа
+    // 1. Пропуск заказа
     if (data.startsWith('skip_')) {
       const orderId = data.substring(5);
       await bot.answerCallbackQuery(callbackQuery.id, { text: 'Заказ пропущен до следующей проверки' });
@@ -29,25 +29,22 @@ module.exports = function registerCommands(
       return;
     }
 
-    // Обработка показа приоритетных сотрудников
+    // 2. Показать приоритетных сотрудников
     if (data.startsWith('priority_')) {
       const orderId = data.substring(9);
       const order = await ozon.fetchAwaitingOrdersById(orderId);
       const warehouseId = order?.warehouse_id || order?.delivery_method?.warehouse_id;
       const employees = await db.getAllEmployeesWithStats(warehouseId ? String(warehouseId) : null);
       const header = '👑 Приоритетные сотрудники (по складу):';
-
       if (!employees.length) {
         await bot.answerCallbackQuery(callbackQuery.id, { text: 'Нет сотрудников' });
         return;
       }
-
       const kb = employees.map(emp => ([{
         text: `${emp.name} (активных: ${emp.active_count}, принтеры: ${emp.capacity})`,
         callback_data: `assign_${orderId}_${emp.id}`
       }]));
       kb.push([{ text: '🔙 Назад', callback_data: `back_${orderId}` }]);
-
       await bot.editMessageText(header, {
         chat_id: msg.chat.id,
         message_id: msg.message_id,
@@ -57,23 +54,20 @@ module.exports = function registerCommands(
       return;
     }
 
-    // Обработка показа всех сотрудников
+    // 3. Показать всех сотрудников
     if (data.startsWith('others_')) {
       const orderId = data.substring(7);
       const employees = await db.getAllEmployeesWithStats();
       const header = '👥 Все сотрудники:';
-
       if (!employees.length) {
         await bot.answerCallbackQuery(callbackQuery.id, { text: 'Нет сотрудников' });
         return;
       }
-
       const kb = employees.map(emp => ([{
         text: `${emp.name} (активных: ${emp.active_count}, принтеры: ${emp.capacity})`,
         callback_data: `assign_${orderId}_${emp.id}`
       }]));
       kb.push([{ text: '🔙 Назад', callback_data: `back_${orderId}` }]);
-
       await bot.editMessageText(header, {
         chat_id: msg.chat.id,
         message_id: msg.message_id,
@@ -83,7 +77,7 @@ module.exports = function registerCommands(
       return;
     }
 
-    // Обработка назначения заказа
+    // 4. Назначение заказа
     if (data.startsWith('assign_')) {
       const parts = data.split('_');
       const orderId = parts[1];
@@ -92,22 +86,19 @@ module.exports = function registerCommands(
         await db.assignOrderToEmployee(orderId, employeeId);
         const employee = await db.getEmployeeById(employeeId);
         const orderDetails = await ozon.getOrderDetails(orderId);
-
         // Проверяем, может ли бот писать сотруднику
         try {
           await bot.sendChatAction(employee.tg_user_id, 'typing');
         } catch (err) {
           console.error(`Сотрудник ${employee.name} (${employee.tg_user_id}) не найден:`, err.message);
           await bot.answerCallbackQuery(callbackQuery.id, { text: 'Сотрудник не начал диалог с ботом. Попросите его написать /start.' });
-          return; // Не удаляем исходное сообщение, админ может выбрать другого сотрудника
+          return;
         }
-
         let detailsText = '';
         if (orderDetails && orderDetails.products) {
           const items = orderDetails.products.map(p => `${p.name} — ${p.quantity} шт.`).join('\n');
           detailsText = `\nСостав:\n${items}`;
         }
-
         let caption = `✅ Вам назначен заказ №${orderId}${detailsText}\n\nШтрихкод для сканирования:\nКогда упакуете, сообщите администратору.`;
         try {
           const barcodeBuffer = await bwipjs.toBuffer({
@@ -123,7 +114,6 @@ module.exports = function registerCommands(
           console.error('Ошибка генерации штрихкода:', barcodeError);
           await bot.sendMessage(employee.tg_user_id, `✅ Вам назначен заказ №${orderId}${detailsText}\n\n(Штрихкод не сгенерирован)`);
         }
-
         await bot.answerCallbackQuery(callbackQuery.id, { text: 'Заказ назначен' });
         await bot.deleteMessage(msg.chat.id, msg.message_id);
         if (typeof processNextOrder === 'function') processNextOrder();
@@ -133,12 +123,11 @@ module.exports = function registerCommands(
       return;
     }
 
-    // Обработка кнопки "Назад"
+    // 5. Кнопка "Назад"
     if (data.startsWith('back_')) {
       const orderId = data.substring(5);
       await bot.deleteMessage(msg.chat.id, msg.message_id);
       await bot.answerCallbackQuery(callbackQuery.id);
-      // Получить заказ заново (можно из кеша, но лучше через API)
       const order = await ozon.fetchAwaitingOrdersById(orderId);
       if (order && typeof showOrderMenu === 'function') {
         await showOrderMenu(order);
@@ -146,7 +135,7 @@ module.exports = function registerCommands(
       return;
     }
 
-    // Подтверждение отмены заказа
+    // 6. Подтверждение отмены заказа сотрудником
     if (data.startsWith('confirm_cancel_')) {
       const orderId = data.substring(15);
       const employee = await db.getEmployee(callbackQuery.from.id.toString());
@@ -171,6 +160,40 @@ module.exports = function registerCommands(
     if (data.startsWith('cancel_cancel_')) {
       await bot.answerCallbackQuery(callbackQuery.id, { text: 'Отмена отклонена' });
       await bot.deleteMessage(msg.chat.id, msg.message_id);
+      return;
+    }
+
+    // 7. Сброс всех назначений (подтверждение)
+    if (data === 'confirm_clear_all') {
+      await db.db.run('DELETE FROM assignments WHERE status = "assigned"');
+      await bot.editMessageText('✅ Все активные назначения сброшены.', {
+        chat_id: msg.chat.id,
+        message_id: msg.message_id
+      });
+      await bot.answerCallbackQuery(callbackQuery.id, { text: 'Сброс выполнен' });
+      return;
+    }
+    if (data === 'cancel_clear_all') {
+      await bot.deleteMessage(msg.chat.id, msg.message_id);
+      await bot.answerCallbackQuery(callbackQuery.id, { text: 'Сброс отменён' });
+      return;
+    }
+
+    // 8. Снятие заказа администратором (подтверждение)
+    if (data.startsWith('admin_cancel_confirm_')) {
+      const orderId = data.substring(22);
+      await db.db.run('DELETE FROM assignments WHERE order_id = ? AND status = "assigned"', orderId);
+      await bot.editMessageText(`✅ Заказ ${orderId} снят с сотрудника и возвращён в очередь.`, {
+        chat_id: msg.chat.id,
+        message_id: msg.message_id
+      });
+      await bot.answerCallbackQuery(callbackQuery.id, { text: 'Заказ снят' });
+      await checkAndOfferNewOrders();
+      return;
+    }
+    if (data.startsWith('admin_cancel_abort_')) {
+      await bot.deleteMessage(msg.chat.id, msg.message_id);
+      await bot.answerCallbackQuery(callbackQuery.id, { text: 'Отмена' });
       return;
     }
   });

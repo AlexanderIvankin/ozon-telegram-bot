@@ -161,17 +161,13 @@ async function processNextOrder() {
                 console.error(`Ошибка при отправке заказа ${order.posting_number}, попытка ${attempts}`);
                 if (attempts >= 3) {
                     console.error(`Заказ ${order.posting_number} пропущен из-за повторяющихся ошибок`);
-                    // можно записать в отдельную таблицу problematic_orders
                 } else {
-                    pendingNewOrders.unshift(order); // вернуть в начало очереди
+                    pendingNewOrders.unshift(order);
                     await new Promise(resolve => setTimeout(resolve, 2000));
                 }
             }
         }
         currentOrderProcessing = null;
-        if (debugMode.isDebugMode()) {
-            console.log(`[CHECK] Отправлен заказ ${order.posting_number} админу. Осталось в очереди: ${pendingNewOrders.length}`);
-        }
     } catch (err) {
         console.error('[ERROR] processNextOrder:', err);
         currentOrderProcessing = null;

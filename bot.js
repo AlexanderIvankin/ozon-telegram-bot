@@ -67,41 +67,48 @@ async function checkAndOfferNewOrders() {
 
 // Функция для обработки следующего заказа из очереди
 async function processNextOrder() {
-    if (!pendingNewOrders.length) {
+    try {
+        if (!pendingNewOrders.length) {
+            currentOrderProcessing = null;
+            return;
+        }
+        const order = pendingNewOrders.shift();
+        currentOrderProcessing = { order, timestamp: Date.now() };
+
+        // Определяем склад
+        let warehouseId = order.warehouse_id || order.delivery_method?.warehouse_id;
+        if (warehouseId) warehouseId = String(warehouseId);
+
+        // Получаем детали заказа для состава
+        const details = await ozon.getOrderDetails(order.posting_number);
+        let productsInfo = '';
+        if (details && details.products && details.products.length) {
+            productsInfo = '\n\n*Состав:*\n';
+            productsInfo += details.products.map(p => `${p.name} — ${p.quantity} шт.`).join('\n');
+        }
+
+        const adminChatId = ADMIN_USER_ID.toString();
+        const messageText = `🆕 *Новый заказ!*\nНомер: ${order.posting_number}\nСклад: ${warehouseId || 'не указан'}${productsInfo}\n\nВыберите действие:`;
+
+        const keyboard = [
+            [{ text: '👑 Приоритетные', callback_data: `priority_${order.posting_number}` }],
+            [{ text: '👥 Другие сотрудники', callback_data: `others_${order.posting_number}` }],
+            [{ text: '⏩ Пропустить (на 30 мин)', callback_data: `skip_${order.posting_number}` }]
+        ];
+
+        await bot.sendMessage(adminChatId, messageText, {
+            reply_markup: { inline_keyboard: keyboard },
+            parse_mode: 'Markdown'
+        });
+
+        if (debugMode.isDebugMode()) {
+            console.log(`[CHECK] Отправлен заказ ${order.posting_number} админу. Осталось в очереди: ${pendingNewOrders.length}`);
+        }
+    } catch (err) {
+        console.error('[ERROR] processNextOrder:', err);
         currentOrderProcessing = null;
-        return;
-    }
-    const order = pendingNewOrders.shift(); // берём первый
-    currentOrderProcessing = { order, timestamp: Date.now() };
-
-    // Определяем склад
-    let warehouseId = order.warehouse_id || order.delivery_method?.warehouse_id;
-    if (warehouseId) warehouseId = String(warehouseId);
-
-    // Получаем детали заказа для состава
-    const details = await ozon.getOrderDetails(order.posting_number);
-    let productsInfo = '';
-    if (details && details.products && details.products.length) {
-        productsInfo = '\n\n*Состав:*\n';
-        productsInfo += details.products.map(p => `${p.name} — ${p.quantity} шт.`).join('\n');
-    }
-
-    const adminChatId = ADMIN_USER_ID.toString();
-    const messageText = `🆕 *Новый заказ!*\nНомер: ${order.posting_number}\nСклад: ${warehouseId || 'не указан'}${productsInfo}\n\nВыберите действие:`;
-
-    const keyboard = [
-        [{ text: '👑 Приоритетные', callback_data: `priority_${order.posting_number}` }],
-        [{ text: '👥 Другие сотрудники', callback_data: `others_${order.posting_number}` }],
-        [{ text: '⏩ Пропустить (на 30 мин)', callback_data: `skip_${order.posting_number}` }]
-    ];
-
-    await bot.sendMessage(adminChatId, messageText, {
-        reply_markup: { inline_keyboard: keyboard },
-        parse_mode: 'Markdown'
-    });
-
-    if (debugMode.isDebugMode()) {
-        console.log(`[CHECK] Отправлен заказ ${order.posting_number} админу. Осталось в очереди: ${pendingNewOrders.length}`);
+        // Попробовать следующий заказ через секунду
+        setTimeout(() => processNextOrder(), 1000);
     }
 }
 
@@ -114,7 +121,7 @@ async function processNextOrder() {
     scheduler.startOrderChecker(30, checkAndOfferNewOrders);
     console.log(debugMode.getDebugModeStatusMessage());
     // Регистрируем все команды
-    registerCommands(bot, db, ozon, bwipjs, scheduler, debugMode, isAdmin, checkAndOfferNewOrders, () => processNextOrder);
+    registerCommands(bot, db, ozon, bwipjs, scheduler, debugMode, isAdmin, checkAndOfferNewOrders, processNextOrder);
     setTimeout(() => checkAndOfferNewOrders(), 5000);
     console.log('Бот запущен...');
 })();

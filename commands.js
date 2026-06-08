@@ -1,4 +1,4 @@
-module.exports = function registerCommands(bot, db, ozon, bwipjs, scheduler, debugMode, isAdmin, checkAndOfferNewOrders) {
+module.exports = function registerCommands(bot, db, ozon, bwipjs, scheduler, debugMode, isAdmin, checkAndOfferNewOrders, processNextOrder) {
 
   // ---------------------- ОБРАБОТЧИК CALLBACK_QUERY (единый) ----------------------
   bot.on('callback_query', async (callbackQuery) => {
@@ -108,6 +108,7 @@ module.exports = function registerCommands(bot, db, ozon, bwipjs, scheduler, deb
 
         await bot.answerCallbackQuery(callbackQuery.id, { text: 'Заказ назначен' });
         await bot.deleteMessage(msg.chat.id, msg.message_id);
+        if (typeof processNextOrder === 'function') processNextOrder();
       } catch (err) {
         await bot.answerCallbackQuery(callbackQuery.id, { text: err.message });
       }
@@ -118,7 +119,6 @@ module.exports = function registerCommands(bot, db, ozon, bwipjs, scheduler, deb
     if (data.startsWith('back_')) {
       await bot.deleteMessage(msg.chat.id, msg.message_id);
       await bot.answerCallbackQuery(callbackQuery.id);
-      if (typeof processNextOrder === 'function') processNextOrder();
       return;
     }
   });

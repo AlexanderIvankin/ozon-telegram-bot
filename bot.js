@@ -15,7 +15,8 @@ bot.setMyCommands([
     { command: 'start', description: 'Запустить бота' },
     { command: 'help', description: 'Помощь' },
     { command: 'my_orders', description: 'Мои активные заказы' },
-    { command: 'finish_order', description: 'Завершить заказ (указать номер)' }
+    { command: 'finish_order', description: 'Завершить заказ (указать номер)' },
+    { command: 'cancel_order', description: 'Отменить заказ (указать номер)' }
 ]).then(() => console.log('✅ Меню команд Telegram установлено')).catch(err => console.error('Ошибка установки меню:', err));
 
 
@@ -190,7 +191,8 @@ async function processNextOrder() {
     registerCommands(
         bot, db, ozon, bwipjs, scheduler, debugMode,
         isAdmin, checkAndOfferNewOrders,
-        processNextOrder, showOrderMenu
+        processNextOrder, showOrderMenu,
+        pendingNewOrders, currentOrderProcessing
     );
     setTimeout(() => checkAndOfferNewOrders(), 5000);
     console.log('Бот запущен...');

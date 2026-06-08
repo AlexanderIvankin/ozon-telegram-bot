@@ -66,6 +66,31 @@ async function initDB() {
     )
 `);
 
+    const statsInfo = await database.all("PRAGMA table_info(employee_stats)");
+    const hasCanceled = statsInfo.some(col => col.name === 'canceled_orders');
+    if (!hasCanceled) {
+        await database.run('ALTER TABLE employee_stats ADD COLUMN canceled_orders INTEGER DEFAULT 0');
+        console.log('[DB] Добавлена колонка canceled_orders в employee_stats');
+    }
+
+    // Новая функция для отмены заказа сотрудником
+    async function cancelOrder(orderId, employeeId) {
+        // Проверяем, что заказ принадлежит этому сотруднику и ещё не завершён
+        const assignment = await database.get(
+            'SELECT * FROM assignments WHERE order_id = ? AND employee_id = ? AND status = "assigned"',
+            orderId, employeeId
+        );
+        if (!assignment) throw new Error('Заказ не найден или уже завершён');
+        await database.run('DELETE FROM assignments WHERE order_id = ?', orderId);
+        // Увеличиваем счётчик отмен
+        await database.run(
+            `INSERT INTO employee_stats (employee_id, canceled_orders) VALUES (?, 1)
+         ON CONFLICT(employee_id) DO UPDATE SET canceled_orders = canceled_orders + 1`,
+            employeeId
+        );
+        return true;
+    }
+
     // Проверяем и добавляем колонку capacity, если отсутствует
     const tableInfo = await database.all("PRAGMA table_info(employees)");
     const hasCapacity = tableInfo.some(col => col.name === 'capacity');

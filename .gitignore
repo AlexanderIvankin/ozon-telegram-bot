@@ -1,5 +1,6 @@
 node_modules/
 bot.db
+bot.db-journal
 
 team-info.xlsx
 *.xlsx~

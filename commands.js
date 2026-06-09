@@ -5,7 +5,8 @@ module.exports = function registerCommands(
   isAdmin, checkAndOfferNewOrders,
   processNextOrder, showOrderMenu,
   pendingNewOrders, currentOrderProcessing,
-  deleteLastOrderMessages, updateAdminActivity
+  deleteLastOrderMessages, updateAdminActivity,
+  startInactivityTimer, stopInactivityTimer
 ) {
 
   // ---------------------- ОБРАБОТЧИК CALLBACK_QUERY (единый) ----------------------
@@ -107,10 +108,13 @@ module.exports = function registerCommands(
           return;
         }
         let detailsText = '';
+        let skuList = [];
         if (orderDetails && orderDetails.products) {
           const items = orderDetails.products.map(p => `${p.name} — ${p.quantity} шт.`).join('\n');
           detailsText = `\nСостав:\n${items}`;
+          skuList = orderDetails.products.map(p => p.sku).filter(Boolean);
         }
+
         let caption = `✅ Вам назначен заказ №: ${orderId}${detailsText}\n\nКогда упакуете, выполните команду:\n /finish_order ${orderId}`;
         try {
           const barcodeBuffer = await bwipjs.toBuffer({
@@ -125,6 +129,27 @@ module.exports = function registerCommands(
         } catch (barcodeError) {
           console.error('Ошибка генерации штрихкода:', barcodeError);
           await bot.sendMessage(employee.tg_user_id, `✅ Вам назначен заказ №: ${orderId}${detailsText}\n\n(Штрихкод не сгенерирован)`);
+        }
+
+        // Отправляем фото товаров сотруднику
+        if (skuList.length) {
+          try {
+            const imageMap = await ozon.fetchProductsImages(skuList);
+            for (const p of orderDetails.products) {
+              const imgUrl = imageMap[p.sku];
+              if (imgUrl && imgUrl.startsWith('http')) {
+                const imageBuffer = await ozon.downloadImage(imgUrl);
+                if (imageBuffer) {
+                  await bot.sendPhoto(employee.tg_user_id, imageBuffer, {
+                    caption: `Фото к заказу ${orderId}: ${p.name}`
+                  });
+                  await new Promise(resolve => setTimeout(resolve, 500));
+                }
+              }
+            }
+          } catch (photoError) {
+            console.error(`Ошибка отправки фото сотруднику для заказа ${orderId}:`, photoError.message);
+          }
         }
 
         // Удаляем заказ из очереди
@@ -470,22 +495,23 @@ module.exports = function registerCommands(
       await bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
       return;
     }
-    if (typeof updateAdminActivity === 'function') updateAdminActivity();
-    // Принудительный сброс текущего заказа
-    if (currentOrderProcessing) {
-      console.log(`[RELOAD_QUEUE] Сброс текущего заказа ${currentOrderProcessing.order.posting_number}`);
-      currentOrderProcessing = null;
+    // 1. Удаляем старое сообщение и фото
+    if (typeof deleteLastOrderMessages === 'function') {
+      await deleteLastOrderMessages();
     }
-    // Перезагружаем очередь из API
+    // 2. Сбрасываем глобальные переменные
+    if (currentOrderProcessing) currentOrderProcessing = null;
+    if (pendingNewOrders.length) pendingNewOrders = [];
+    // 3. Перезагружаем очередь из API (обновит pendingNewOrders)
     await checkAndOfferNewOrders();
-    // Если после этого нет активного заказа, но есть очередь – отправляем первый
+    // 4. Если после обновления есть заказы – отправляем первый
     if (!currentOrderProcessing && pendingNewOrders.length) {
       await processNextOrder();
       bot.sendMessage(msg.chat.id, `✅ Перезагрузка выполнена. Отправлен первый заказ. Осталось: ${pendingNewOrders.length}`);
     } else if (pendingNewOrders.length === 0) {
       bot.sendMessage(msg.chat.id, '✅ Перезагрузка выполнена. Новых заказов нет.');
     } else {
-      bot.sendMessage(msg.chat.id, '✅ Перезагрузка выполнена, но активный заказ уже есть (возможно, он ещё не обработан).');
+      bot.sendMessage(msg.chat.id, '✅ Перезагрузка выполнена, но активный заказ уже есть.');
     }
   });
 
@@ -629,6 +655,7 @@ module.exports = function registerCommands(
       return;
     }
     scheduler.pauseChecker();
+    stopInactivityTimer();
     bot.sendMessage(msg.chat.id, '⏸ Автоматическая проверка заказов приостановлена.');
   });
 
@@ -640,6 +667,7 @@ module.exports = function registerCommands(
       return;
     }
     scheduler.resumeChecker();
+    startInactivityTimer();
     bot.sendMessage(msg.chat.id, '▶️ Автоматическая проверка заказов возобновлена.');
   });
 

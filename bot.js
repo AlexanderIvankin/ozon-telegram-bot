@@ -20,11 +20,25 @@ bot.setMyCommands([
 ]).then(() => console.log('✅ Меню команд Telegram установлено')).catch(err => console.error('Ошибка установки меню:', err));
 
 
-const ADMIN_USER_ID = 762451011; // <<-- Administrator's Telegram ID
+const ADMIN_USER_ID = process.env.ADMIN_USER_ID;  // <<-- Administrator's Telegram ID from .env
+
+const SYNC_ORDERS_TIME = 5; // время проверки новых заказов в минутах
+const AUTO_SKIP_MINUTES = 1; // через 5 минут без ответа заказ пропускается автоматически
+
+// Глобальные переменные для удаления старых сообщений
+let lastOrderMessageId = null;
+let lastOrderPhotoIds = []; // если фотографии отправляются отдельными сообщениями
+
+// Глобальное состояние для отслеживания активности админа
+let lastAdminActivity = Date.now();
 
 // Глобальное состояние для пошаговой обработки очереди
 let currentOrderProcessing = null;      // { order, processingMessageId? }
 let pendingNewOrders = [];              // массив заказов, ожидающих обработки
+
+function updateAdminActivity() {
+    lastAdminActivity = Date.now();
+}
 
 // --- Функция для логирования действий администратора ---
 async function logAdminAction(adminId, action, details = '') {
@@ -49,28 +63,42 @@ async function checkAndOfferNewOrders() {
     const debug = debugMode.isDebugMode();
     if (debug) console.log('[CHECK] Начало проверки новых заказов...');
     try {
-        // 1. Получаем все заказы из API
         const allOrders = await ozon.fetchAwaitingOrders();
         if (debug) console.log(`[CHECK] Получено заказов из API: ${allOrders.length}`);
         if (!allOrders.length) return;
 
-        // 2. Загружаем уже назначенные заказы
         const assignedOrderIds = (await db.db.all('SELECT order_id FROM assignments WHERE status = "assigned"')).map(r => r.order_id);
         if (debug) console.log(`[CHECK] Уже назначенных заказов: ${assignedOrderIds.length}`);
 
-        // 3. Новые заказы (не назначенные)
         const newOrders = allOrders.filter(order => !assignedOrderIds.includes(order.posting_number));
         if (debug) console.log(`[CHECK] Новых заказов (не назначенных): ${newOrders.length}`);
-        if (!newOrders.length) return;
-
-        // 4. Обновляем глобальную очередь, исключая текущий обрабатываемый заказ
-        let filteredNewOrders = newOrders;
-        if (currentOrderProcessing && currentOrderProcessing.order) {
-            filteredNewOrders = newOrders.filter(order => order.posting_number !== currentOrderProcessing.order.posting_number);
+        if (!newOrders.length) {
+            // Если нет новых заказов, сбрасываем очередь
+            pendingNewOrders = [];
+            currentOrderProcessing = null;
+            return;
         }
-        pendingNewOrders = filteredNewOrders;
 
-        // 5. Если нет активного заказа – начинаем обработку первого
+        // Обновляем очередь (перезаписываем)
+        pendingNewOrders = newOrders;
+
+        // Проверяем текущий обрабатываемый заказ
+        const currentOrderId = currentOrderProcessing?.order?.posting_number;
+        if (currentOrderId) {
+            const stillInQueue = pendingNewOrders.some(o => o.posting_number === currentOrderId);
+            if (!stillInQueue) {
+                console.log(`[CHECK] Текущий заказ ${currentOrderId} больше не в очереди, сбрасываем`);
+                currentOrderProcessing = null;
+            } else {
+                const minutesSinceLastActivity = (Date.now() - lastAdminActivity) / (60 * 1000);
+                if (minutesSinceLastActivity > AUTO_SKIP_MINUTES) {
+                    console.log(`[CHECK] Администратор неактивен ${minutesSinceLastActivity.toFixed(1)} мин, заказ ${currentOrderId} автоматически пропущен`);
+                    currentOrderProcessing = null;
+                }
+            }
+        }
+
+        // Если нет активного заказа и есть заказы в очереди – отправляем первый
         if (!currentOrderProcessing && pendingNewOrders.length) {
             await processNextOrder();
         }
@@ -92,7 +120,6 @@ async function showOrderMenu(order) {
     if (details?.products?.length) {
         productsInfo = '\n\n*Состав:*\n';
         for (const p of details.products) {
-            // Берём артикул: offer_id или первый barcode
             let article = p.offer_id || (p.barcodes?.[0]);
             if (article) {
                 productsInfo += `• ${p.name} — ${p.quantity} шт. (Артикул: ${article})\n`;
@@ -110,11 +137,18 @@ async function showOrderMenu(order) {
         [{ text: '👥 Другие сотрудники', callback_data: `others_${order.posting_number}` }],
         [{ text: '⏩ Пропустить (на 30 мин)', callback_data: `skip_${order.posting_number}` }]
     ];
-    await bot.sendMessage(adminChatId, messageText, {
+
+    // Удаляем старые сообщения
+    await deleteLastOrderMessages();
+
+    // Отправляем текст и сохраняем ID
+    const sentMsg = await bot.sendMessage(adminChatId, messageText, {
         reply_markup: { inline_keyboard: keyboard },
         parse_mode: 'Markdown'
     });
+    lastOrderMessageId = sentMsg.message_id;
 
+    // Отправляем фотографии
     if (skuList.length) {
         try {
             const imageMap = await ozon.fetchProductsImages(skuList);
@@ -124,9 +158,10 @@ async function showOrderMenu(order) {
                     if (imgUrl && imgUrl.startsWith('http')) {
                         const imageBuffer = await ozon.downloadImage(imgUrl);
                         if (imageBuffer) {
-                            await bot.sendPhoto(adminChatId, imageBuffer, {
+                            const sentPhoto = await bot.sendPhoto(adminChatId, imageBuffer, {
                                 caption: `Фото к заказу ${order.posting_number}: ${p.name}`
                             });
+                            lastOrderPhotoIds.push(sentPhoto.message_id);
                             await new Promise(resolve => setTimeout(resolve, 500));
                         }
                     }
@@ -149,6 +184,7 @@ async function processNextOrder() {
             currentOrderProcessing = null;
             return;
         }
+        console.log(`[NEXT] Вызов processNextOrder, pendingNewOrders.length = ${pendingNewOrders.length}, currentOrderProcessing = ${currentOrderProcessing ? currentOrderProcessing.order.posting_number : 'null'}`);
         let attempts = 0;
         while (pendingNewOrders.length && attempts < 3) {
             const order = pendingNewOrders.shift();
@@ -175,20 +211,47 @@ async function processNextOrder() {
     }
 }
 
+// Функция для удаления сообщений с последнего заказа
+async function deleteLastOrderMessages() {
+    const adminChatId = ADMIN_USER_ID.toString();
+    if (lastOrderMessageId) {
+        try {
+            await bot.deleteMessage(adminChatId, lastOrderMessageId);
+        } catch (err) { /* ignore */ }
+        lastOrderMessageId = null;
+    }
+    for (const photoId of lastOrderPhotoIds) {
+        try {
+            await bot.deleteMessage(adminChatId, photoId);
+        } catch (err) { /* ignore */ }
+    }
+    lastOrderPhotoIds = [];
+}
+
+async function gracefulShutdown() {
+    console.log('Получен сигнал завершения, удаляем последнее сообщение...');
+    await deleteLastOrderMessages();
+    process.exit(0);
+}
+
+process.on('SIGINT', gracefulShutdown);
+process.on('SIGTERM', gracefulShutdown);
+
 (async () => {
     await db.initDB();
     console.log('Загрузка складов...');
     const warehouses = await ozon.fetchWarehousesFromOzon();
     if (warehouses.length) await db.syncWarehouses(warehouses);
     await syncEmployeesFromExcel(db);
-    scheduler.startOrderChecker(30, checkAndOfferNewOrders);
+    scheduler.startOrderChecker(SYNC_ORDERS_TIME, checkAndOfferNewOrders);
     console.log(debugMode.getDebugModeStatusMessage());
     // Регистрируем все команды
     registerCommands(
         bot, db, ozon, bwipjs, scheduler, debugMode,
         isAdmin, checkAndOfferNewOrders,
         processNextOrder, showOrderMenu,
-        pendingNewOrders, currentOrderProcessing
+        pendingNewOrders, currentOrderProcessing,
+        deleteLastOrderMessages, updateAdminActivity
     );
     setTimeout(() => checkAndOfferNewOrders(), 5000);
     console.log('Бот запущен...');

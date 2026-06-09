@@ -4,7 +4,8 @@ module.exports = function registerCommands(
   bot, db, ozon, bwipjs, scheduler, debugMode,
   isAdmin, checkAndOfferNewOrders,
   processNextOrder, showOrderMenu,
-  pendingNewOrders, currentOrderProcessing
+  pendingNewOrders, currentOrderProcessing,
+  deleteLastOrderMessages, updateAdminActivity
 ) {
 
   // ---------------------- ОБРАБОТЧИК CALLBACK_QUERY (единый) ----------------------
@@ -18,12 +19,22 @@ module.exports = function registerCommands(
       return;
     }
 
+    if (typeof updateAdminActivity === 'function') updateAdminActivity();
+
     if (debugMode.isDebugMode()) console.log(`[CALLBACK] admin ${adminId} вызвал ${data}`);
 
     // 1. Пропуск заказа
     if (data.startsWith('skip_')) {
+      console.log(`[SKIP] Получен пропуск заказа ${data.substring(5)} от админа ${adminId}`);
       const orderId = data.substring(5);
-      await bot.answerCallbackQuery(callbackQuery.id, { text: 'Заказ пропущен до следующей проверки' });
+      // Удаляем этот заказ из глобальной очереди, если он там есть
+      const index = pendingNewOrders.findIndex(o => o.posting_number === orderId);
+      if (index !== -1) pendingNewOrders.splice(index, 1);
+      // Сбрасываем текущий обрабатываемый заказ
+      if (currentOrderProcessing && currentOrderProcessing.order.posting_number === orderId) {
+        currentOrderProcessing = null;
+      }
+      await bot.answerCallbackQuery(callbackQuery.id, { text: 'Заказ пропущен' });
       await bot.deleteMessage(msg.chat.id, msg.message_id);
       if (typeof processNextOrder === 'function') processNextOrder();
       return;
@@ -79,6 +90,7 @@ module.exports = function registerCommands(
 
     // 4. Назначение заказа
     if (data.startsWith('assign_')) {
+      console.log(`[ASSIGN] Получено назначение заказа для сотрудника ${data.split('_')[2]} от админа ${adminId}`);
       const parts = data.split('_');
       const orderId = parts[1];
       const employeeId = parseInt(parts[2]);
@@ -99,7 +111,7 @@ module.exports = function registerCommands(
           const items = orderDetails.products.map(p => `${p.name} — ${p.quantity} шт.`).join('\n');
           detailsText = `\nСостав:\n${items}`;
         }
-        let caption = `✅ Вам назначен заказ №: ${orderId}${detailsText}\n\nКогда упакуете, выполните команду "/finish_order ${orderId}${detailsText}"`;
+        let caption = `✅ Вам назначен заказ №: ${orderId}${detailsText}\n\nКогда упакуете, выполните команду:\n /finish_order ${orderId}`;
         try {
           const barcodeBuffer = await bwipjs.toBuffer({
             bcid: 'code128',
@@ -114,6 +126,14 @@ module.exports = function registerCommands(
           console.error('Ошибка генерации штрихкода:', barcodeError);
           await bot.sendMessage(employee.tg_user_id, `✅ Вам назначен заказ №: ${orderId}${detailsText}\n\n(Штрихкод не сгенерирован)`);
         }
+
+        // Удаляем заказ из очереди
+        const idx = pendingNewOrders.findIndex(o => o.posting_number === orderId);
+        if (idx !== -1) pendingNewOrders.splice(idx, 1);
+        if (currentOrderProcessing && currentOrderProcessing.order.posting_number === orderId) {
+          currentOrderProcessing = null;
+        }
+
         await bot.answerCallbackQuery(callbackQuery.id, { text: 'Заказ назначен' });
         await bot.deleteMessage(msg.chat.id, msg.message_id);
         if (typeof processNextOrder === 'function') processNextOrder();
@@ -187,8 +207,9 @@ module.exports = function registerCommands(
       console.log(`[ADMIN] Снят заказ ${orderId} с сотрудника`);
 
       // Если этот заказ сейчас в обработке у админа – сбрасываем currentOrderProcessing
-      if (currentOrderProcessing && currentOrderProcessing.order &&
-        currentOrderProcessing.order.posting_number === orderId) {
+      const idx = pendingNewOrders.findIndex(o => o.posting_number === orderId);
+      if (idx !== -1) pendingNewOrders.splice(idx, 1);
+      if (currentOrderProcessing && currentOrderProcessing.order.posting_number === orderId) {
         currentOrderProcessing = null;
         console.log(`[ADMIN] Сброшен текущий обрабатываемый заказ ${orderId}`);
       }
@@ -222,6 +243,7 @@ module.exports = function registerCommands(
 
     // --- Администратор всегда получает полный доступ, даже если не в БД ---
     if (isAdministrator) {
+      if (typeof updateAdminActivity === 'function') updateAdminActivity();
       let adminMessage = `👋 Добро пожаловать, Администратор!\n\n`;
       if (!employee) {
         adminMessage += `⚠️ Вы ещё не добавлены в базу сотрудников.\n`;
@@ -233,18 +255,20 @@ module.exports = function registerCommands(
       adminMessage += `🔧 Доступные административные команды:\n`;
       adminMessage += `/status_all — статус всех сотрудников\n`;
       adminMessage += `/active_orders — активные заказы\n`;
-      adminMessage += `/clear_assignments — сброс ВСЕХ назначений на заказы\n`;
-      adminMessage += `/employee_orders <id> — показать активные заказы сотрудника\n`;
-      adminMessage += `/admin_cancel_order <id> — снять заказ с сотрудника\n`;
-      adminMessage += `/employee_stats <id> — статистика сотрудника (заказы, сумма)\n`;
-      adminMessage += `/employee_warehouses <id> — показать склады сотрудника\n`;
       adminMessage += `/warehouses — список складов Ozon\n`;
+      adminMessage += `/employee_warehouses <id> — показать склады сотрудника\n`;
+      adminMessage += `/employee_stats <id> — статистика сотрудника (заказы, сумма)\n`;
       adminMessage += `/orders [warehouse_id] — показать очередь заказов из API\n`;
+      adminMessage += `/employee_orders <id> — показать активные заказы сотрудника\n`;
       adminMessage += `/order_details <posting_number> — показать детали заказа\n`;
-      if (debugMode.isDebugMode()) adminMessage += `/debug_clear — сбросить отладочные назначения\n`;
+      adminMessage += `/admin_cancel_order <id> — снять заказ с сотрудника\n`;
+      adminMessage += `/clear_assignments — сброс ВСЕХ назначений на заказы\n`;
       adminMessage += `/reload_queue — Принудительная инициализация синхронизации (вне таймера) и перезапуска очереди заказов\n`;
       adminMessage += `/pause — приостановить авто-проверку очереди заказов\n`;
       adminMessage += `/resume — возобновить авто-проверку очереди заказов\n`;
+      adminMessage += `/clear_admin_chat — очистка чата от сообщений заказа\n`;
+      if (debugMode.isDebugMode()) adminMessage += `/debug_clear — сбросить отладочные назначения\n`;
+
       await bot.sendMessage(chatId, adminMessage);
       return;
     }
@@ -274,6 +298,7 @@ module.exports = function registerCommands(
       await bot.sendMessage(chatId, '⛔ Только администратор может использовать эту команду.');
       return;
     }
+    if (typeof updateAdminActivity === 'function') updateAdminActivity();
     const existing = await db.getEmployee(userId);
     if (existing) {
       await bot.sendMessage(chatId, `Вы уже в БД как ${existing.name}`);
@@ -290,6 +315,7 @@ module.exports = function registerCommands(
       await bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
       return;
     }
+    if (typeof updateAdminActivity === 'function') updateAdminActivity();
     const employees = await db.getAllEmployeesWithStats();
     if (!employees.length) return bot.sendMessage(msg.chat.id, 'Нет сотрудников.');
     let reply = 'Статус сотрудников:\n';
@@ -306,6 +332,7 @@ module.exports = function registerCommands(
       await bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
       return;
     }
+    if (typeof updateAdminActivity === 'function') updateAdminActivity();
     const assignments = await db.db.all(`
             SELECT a.order_id, e.name as employee_name 
             FROM assignments a 
@@ -325,6 +352,7 @@ module.exports = function registerCommands(
       await bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
       return;
     }
+    if (typeof updateAdminActivity === 'function') updateAdminActivity();
     const confirmKeyboard = {
       reply_markup: {
         inline_keyboard: [
@@ -345,6 +373,7 @@ module.exports = function registerCommands(
       await bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
       return;
     }
+    if (typeof updateAdminActivity === 'function') updateAdminActivity();
 
     const warehouses = await db.getAllWarehouses();
     if (!warehouses.length) {
@@ -359,8 +388,12 @@ module.exports = function registerCommands(
 
   // --- "/employee_warehouses" Команда для администратора: показать склады, где числится сотрудник ---
   bot.onText(/\/employee_warehouses (\d+)/, async (msg, match) => {
-    const adminId = msg.from.id.toString();
-    if (!isAdmin(adminId)) return;
+    const userId = msg.from.id.toString();
+    if (!isAdmin(userId)) {
+      await bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
+      return;
+    }
+    if (typeof updateAdminActivity === 'function') updateAdminActivity();
     const employeeId = parseInt(match[1]);
     const emp = await db.getEmployeeById(employeeId);
     if (!emp) return bot.sendMessage(msg.chat.id, 'Сотрудник не найден.');
@@ -385,8 +418,12 @@ module.exports = function registerCommands(
 
   // --- "/employee_orders" Команда для администратора: Просмотр активных заказов сотрудника ---
   bot.onText(/\/employee_orders (\d+)/, async (msg, match) => {
-    const adminId = msg.from.id.toString();
-    if (!isAdmin(adminId)) return;
+    const userId = msg.from.id.toString();
+    if (!isAdmin(userId)) {
+      await bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
+      return;
+    }
+    if (typeof updateAdminActivity === 'function') updateAdminActivity();
     const employeeId = parseInt(match[1]);
     const orders = await db.getEmployeeActiveOrders(employeeId);
     const emp = await db.getEmployeeById(employeeId);
@@ -397,8 +434,12 @@ module.exports = function registerCommands(
 
   // --- "/admin_cancel_order" Команда для администратора: снять заказ с сотрудника (с подтверждением) ---
   bot.onText(/\/admin_cancel_order (\S+)/, async (msg, match) => {
-    const adminId = msg.from.id.toString();
-    if (!isAdmin(adminId)) return;
+    const userId = msg.from.id.toString();
+    if (!isAdmin(userId)) {
+      await bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
+      return;
+    }
+    if (typeof updateAdminActivity === 'function') updateAdminActivity();
     const postingNumber = match[1];
     // Находим активное назначение
     const assignment = await db.db.get(
@@ -424,40 +465,28 @@ module.exports = function registerCommands(
 
   // --- "/reload_queue" Команда для администратора: Принудительная инициализация синхронизации (вне таймера) и перезапуска очереди заказов ---
   bot.onText(/\/reload_queue/, async (msg) => {
-    if (!isAdmin(msg.from.id.toString())) return;
-
-    // 1. Сбрасываем текущий обрабатываемый заказ
+    const userId = msg.from.id.toString();
+    if (!isAdmin(userId)) {
+      await bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
+      return;
+    }
+    if (typeof updateAdminActivity === 'function') updateAdminActivity();
+    // Принудительный сброс текущего заказа
     if (currentOrderProcessing) {
       console.log(`[RELOAD_QUEUE] Сброс текущего заказа ${currentOrderProcessing.order.posting_number}`);
       currentOrderProcessing = null;
     }
-
-    // 2. Перезагружаем очередь из API
+    // Перезагружаем очередь из API
     await checkAndOfferNewOrders();
-
-    // 3. Принудительно отправляем первый заказ из обновлённой очереди
+    // Если после этого нет активного заказа, но есть очередь – отправляем первый
     if (!currentOrderProcessing && pendingNewOrders.length) {
       await processNextOrder();
-      bot.sendMessage(msg.chat.id, `✅ Перезагрузка выполнена. Отправлен первый заказ из очереди. Осталось: ${pendingNewOrders.length}`);
+      bot.sendMessage(msg.chat.id, `✅ Перезагрузка выполнена. Отправлен первый заказ. Осталось: ${pendingNewOrders.length}`);
     } else if (pendingNewOrders.length === 0) {
       bot.sendMessage(msg.chat.id, '✅ Перезагрузка выполнена. Новых заказов нет.');
     } else {
-      bot.sendMessage(msg.chat.id, '✅ Перезагрузка выполнена.');
+      bot.sendMessage(msg.chat.id, '✅ Перезагрузка выполнена, но активный заказ уже есть (возможно, он ещё не обработан).');
     }
-  });
-
-  // --- "/pause" Команда для администратора: Пауза работы бота ---
-  bot.onText(/\/pause/, async (msg) => {
-    if (!isAdmin(msg.from.id.toString())) return;
-    scheduler.pauseChecker();
-    bot.sendMessage(msg.chat.id, '⏸ Автоматическая проверка заказов приостановлена.');
-  });
-
-  // --- "/resume" Команда для администратора: Возобновление работы бота ---
-  bot.onText(/\/resume/, async (msg) => {
-    if (!isAdmin(msg.from.id.toString())) return;
-    scheduler.resumeChecker();
-    bot.sendMessage(msg.chat.id, '▶️ Автоматическая проверка заказов возобновлена.');
   });
 
   // --- "/orders" Команда для администратора: просмотр списка заказов из API (отладка) ---
@@ -466,6 +495,7 @@ module.exports = function registerCommands(
     if (!isAdmin(userId)) {
       return bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
     }
+    if (typeof updateAdminActivity === 'function') updateAdminActivity();
 
     const warehouseId = match[1] || null; // если передан ID склада, используем его
     try {
@@ -503,6 +533,7 @@ module.exports = function registerCommands(
     if (!isAdmin(userId)) {
       return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
     }
+    if (typeof updateAdminActivity === 'function') updateAdminActivity();
     const postingNumber = match[1];
     try {
       const details = await ozon.getOrderDetails(postingNumber);
@@ -574,8 +605,11 @@ module.exports = function registerCommands(
 
   // --- "/employee_stats" Команда для администратора: статистика сотрудника ---
   bot.onText(/\/employee_stats (\d+)/, async (msg, match) => {
-    const adminId = msg.from.id.toString();
-    if (!isAdmin(adminId)) return;
+    const userId = msg.from.id.toString();
+    if (!isAdmin(userId)) {
+      return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
+    }
+    if (typeof updateAdminActivity === 'function') updateAdminActivity();
     const employeeId = parseInt(match[1]);
     const emp = await db.getEmployeeById(employeeId);
     if (!emp) return bot.sendMessage(msg.chat.id, 'Сотрудник не найден.');
@@ -587,6 +621,43 @@ module.exports = function registerCommands(
     await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'Markdown' });
   });
 
+  // --- "/pause" Команда для администратора: Пауза работы бота ---
+  bot.onText(/\/pause/, async (msg) => {
+    const userId = msg.from.id.toString();
+    if (!isAdmin(userId)) {
+      await bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
+      return;
+    }
+    scheduler.pauseChecker();
+    bot.sendMessage(msg.chat.id, '⏸ Автоматическая проверка заказов приостановлена.');
+  });
+
+  // --- "/resume" Команда для администратора: Возобновление работы бота ---
+  bot.onText(/\/resume/, async (msg) => {
+    const userId = msg.from.id.toString();
+    if (!isAdmin(userId)) {
+      await bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
+      return;
+    }
+    scheduler.resumeChecker();
+    bot.sendMessage(msg.chat.id, '▶️ Автоматическая проверка заказов возобновлена.');
+  });
+
+  // --- "/clear_admin_chat" – Команда для администратора: очистка чата от сообщений заказа ---
+  bot.onText(/\/clear_admin_chat/, async (msg) => {
+    const userId = msg.from.id.toString();
+    if (!isAdmin(userId)) {
+      await bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
+      return;
+    }
+    if (typeof deleteLastOrderMessages === 'function') {
+      await deleteLastOrderMessages();
+      await bot.sendMessage(msg.chat.id, '✅ Чат очищен от последнего заказа.');
+    } else {
+      await bot.sendMessage(msg.chat.id, '❌ Функция очистки недоступна.');
+    }
+  });
+
   // --- "/debug_clear" Команда для администратора: очистить все отладочные данные ---
   bot.onText(/\/debug_clear/, async (msg) => {
     const userId = msg.from.id.toString();
@@ -594,6 +665,7 @@ module.exports = function registerCommands(
       await bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
       return;
     }
+    if (typeof updateAdminActivity === 'function') updateAdminActivity();
     if (!debugMode.isDebugMode()) {
       return bot.sendMessage(msg.chat.id, 'Эта команда доступна только в отладочном режиме (DEBUG_ORDERS_MODE=true).');
     }
@@ -729,18 +801,19 @@ module.exports = function registerCommands(
       let helpText = `👋 Помощь администратора\n\n`;
       helpText += `/status_all — статус всех сотрудников\n`;
       helpText += `/active_orders — список активных заказов\n`;
-      helpText += `/clear_assignments — сброс ВСЕХ назначений на заказы\n`;
-      helpText += `/employee_orders <id> — активные заказы сотрудника\n`;
-      helpText += `/admin_cancel_order <id> — снять заказ с сотрудника\n`;
-      helpText += `/employee_stats <id> — статистика сотрудника (заказы, сумма)\n`;
-      helpText += `/employee_warehouses <id> — склады сотрудника\n`;
       helpText += `/warehouses — список складов Ozon\n`;
+      helpText += `/employee_warehouses <id> — склады сотрудника\n`;
+      helpText += `/employee_stats <id> — статистика сотрудника (заказы, сумма)\n`;
+      helpText += `/orders [warehouse_id] — показать очередь заказов из API\n`;
+      helpText += `/employee_orders <id> — активные заказы сотрудника\n`;
+      helpText += `/order_details <номер> — показать детали заказа\n`;
+      helpText += `/admin_cancel_order <id> — снять заказ с сотрудника\n`;
+      helpText += `/clear_assignments — сброс ВСЕХ назначений на заказы\n`;
       helpText += `/reload_queue — Принудительная инициализация синхронизации (вне таймера) и перезапуска очереди заказов\n`;
       helpText += `/pause — приостановить авто-проверку очереди заказов\n`;
       helpText += `/resume — возобновить авто-проверку очереди заказов\n`;
-      helpText += `/orders [warehouse_id] — показать очередь заказов из API\n`;
-      helpText += `/order_details <номер> — показать детали заказа\n`;
-      helpText += `/debug_clear — сброс отладочных данных\n`;
+      helpText += `/clear_admin_chat — очистка чата от сообщений заказа\n`;
+      if (debugMode.isDebugMode()) helpText += `/debug_clear — сброс отладочных данных\n`;
       await bot.sendMessage(msg.chat.id, helpText);
       return;
     }

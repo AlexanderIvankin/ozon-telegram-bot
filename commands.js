@@ -2,10 +2,10 @@ const debugMode = require('./debugMode');
 
 module.exports = function registerCommands(
   bot, db, ozon, bwipjs, scheduler, debugMode,
-  isAdmin, checkAndOfferNewOrders,
-  processNextOrder, showOrderMenu,
+  isAuthorizedUser, isModerator, isAdmin,
+  showOrderMenu, checkAndOfferNewOrders, processNextOrder,
   pendingNewOrders, currentOrderProcessing,
-  deleteLastOrderMessages, updateAdminActivity,
+  deleteLastOrderMessages, updateModeratorActivity,
   startInactivityTimer, stopInactivityTimer
 ) {
 
@@ -13,20 +13,58 @@ module.exports = function registerCommands(
   bot.on('callback_query', async (callbackQuery) => {
     const msg = callbackQuery.message;
     const data = callbackQuery.data;
-    const adminId = callbackQuery.from.id.toString();
+    const userId = callbackQuery.from.id.toString();
+
+    // ---------------------- КОМАНДЫ СОТРУДНИКОВ ----------------------
+    // Подтверждение отмены заказа сотрудником
+    if (data.startsWith('confirm_cancel_')) {
+      const orderId = data.substring(15);
+      const employee = await db.getEmployee(userId);
+      if (!employee) {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Сотрудник не найден' });
+        return;
+      }
+      try {
+        await db.cancelOrder(orderId, employee.id);
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '✅ Заказ отменён' });
+        await bot.editMessageText(`✅ Заказ ${orderId} отменён.`, {
+          chat_id: msg.chat.id,
+          message_id: msg.message_id
+        });
+        // Обновляем очередь, чтобы заказ снова стал доступным
+        await checkAndOfferNewOrders();
+      } catch (err) {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: err.message });
+      }
+      return;
+    }
+    if (data.startsWith('cancel_cancel_')) {
+      await bot.answerCallbackQuery(callbackQuery.id, { text: 'Отмена отклонена' });
+      await bot.deleteMessage(msg.chat.id, msg.message_id);
+      return;
+    }
+
+    // ---------------------- ОСТАЛЬНЫЕ КОМАНДЫ (для админов/модераторов) ----------------------
+    const adminId = userId;
 
     if (!isAdmin(adminId)) {
       await bot.answerCallbackQuery(callbackQuery.id, { text: '⛔ Нет прав' });
       return;
     }
 
-    if (typeof updateAdminActivity === 'function') updateAdminActivity();
+    if (isModerator(adminId) && typeof updateModeratorActivity === 'function') {
+      updateModeratorActivity();
+    }
 
     if (debugMode.isDebugMode()) console.log(`[CALLBACK] admin ${adminId} вызвал ${data}`);
 
     // 1. Пропуск заказа
     if (data.startsWith('skip_')) {
-      console.log(`[SKIP] Получен пропуск заказа ${data.substring(5)} от админа ${adminId}`);
+      if (!isModerator(adminId)) {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '⛔ Только модератор' });
+        return;
+      }
+      console.log(`[SKIP] Получен пропуск заказа ${data.substring(5)} от модератора ${adminId}`);
       const orderId = data.substring(5);
       // Удаляем этот заказ из глобальной очереди, если он там есть
       const index = pendingNewOrders.findIndex(o => o.posting_number === orderId);
@@ -43,6 +81,10 @@ module.exports = function registerCommands(
 
     // 2. Показать приоритетных сотрудников
     if (data.startsWith('priority_')) {
+      if (!isModerator(adminId)) {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '⛔ Только модератор' });
+        return;
+      }
       const orderId = data.substring(9);
       const order = await ozon.fetchAwaitingOrdersById(orderId);
       const warehouseId = order?.warehouse_id || order?.delivery_method?.warehouse_id;
@@ -68,6 +110,10 @@ module.exports = function registerCommands(
 
     // 3. Показать всех сотрудников
     if (data.startsWith('others_')) {
+      if (!isModerator(adminId)) {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '⛔ Только модератор' });
+        return;
+      }
       const orderId = data.substring(7);
       const employees = await db.getAllEmployeesWithStats();
       const header = '👥 Все сотрудники:';
@@ -91,7 +137,11 @@ module.exports = function registerCommands(
 
     // 4. Назначение заказа
     if (data.startsWith('assign_')) {
-      console.log(`[ASSIGN] Получено назначение заказа для сотрудника ${data.split('_')[2]} от админа ${adminId}`);
+      if (!isModerator(adminId)) {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '⛔ Только модератор' });
+        return;
+      }
+      console.log(`[ASSIGN] Получено назначение заказа для сотрудника ${data.split('_')[2]} от модератора ${adminId}`);
       const parts = data.split('_');
       const orderId = parts[1];
       const employeeId = parseInt(parts[2]);
@@ -180,35 +230,7 @@ module.exports = function registerCommands(
       return;
     }
 
-    // 6. Подтверждение отмены заказа сотрудником
-    if (data.startsWith('confirm_cancel_')) {
-      const orderId = data.substring(15);
-      const employee = await db.getEmployee(callbackQuery.from.id.toString());
-      if (!employee) {
-        await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Сотрудник не найден' });
-        return;
-      }
-      try {
-        await db.cancelOrder(orderId, employee.id);
-        await bot.answerCallbackQuery(callbackQuery.id, { text: '✅ Заказ отменён' });
-        await bot.editMessageText(`✅ Заказ ${orderId} отменён.`, {
-          chat_id: msg.chat.id,
-          message_id: msg.message_id
-        });
-        // Обновляем очередь, чтобы заказ снова стал доступным
-        await checkAndOfferNewOrders();
-      } catch (err) {
-        await bot.answerCallbackQuery(callbackQuery.id, { text: err.message });
-      }
-      return;
-    }
-    if (data.startsWith('cancel_cancel_')) {
-      await bot.answerCallbackQuery(callbackQuery.id, { text: 'Отмена отклонена' });
-      await bot.deleteMessage(msg.chat.id, msg.message_id);
-      return;
-    }
-
-    // 7. Сброс всех назначений (подтверждение)
+    // 6. Сброс всех назначений (подтверждение)
     if (data === 'confirm_clear_all') {
       await db.db.run('DELETE FROM assignments WHERE status = "assigned"');
       await bot.editMessageText('✅ Все активные назначения сброшены.', {
@@ -224,7 +246,7 @@ module.exports = function registerCommands(
       return;
     }
 
-    // 8. Снятие заказа администратором (подтверждение)
+    // 7. Снятие заказа администратором (подтверждение)
     if (data.startsWith('admin_cancel_confirm_')) {
       const orderId = data.substring(21);
       // Удаляем назначение
@@ -266,9 +288,12 @@ module.exports = function registerCommands(
     const isAdministrator = isAdmin(userId);
     const employee = await db.getEmployee(userId);
 
+    if (isModerator(userId) && typeof updateModeratorActivity === 'function') {
+      updateModeratorActivity();
+    }
+
     // --- Администратор всегда получает полный доступ, даже если не в БД ---
     if (isAdministrator) {
-      if (typeof updateAdminActivity === 'function') updateAdminActivity();
       let adminMessage = `👋 Добро пожаловать, Администратор!\n\n`;
       if (!employee) {
         adminMessage += `⚠️ Вы ещё не добавлены в базу сотрудников.\n`;
@@ -322,7 +347,9 @@ module.exports = function registerCommands(
       await bot.sendMessage(chatId, '⛔ Только администратор может использовать эту команду.');
       return;
     }
-    if (typeof updateAdminActivity === 'function') updateAdminActivity();
+    if (isModerator(userId) && typeof updateModeratorActivity === 'function') {
+      updateModeratorActivity();
+    }
     const existing = await db.getEmployee(userId);
     if (existing) {
       await bot.sendMessage(chatId, `Вы уже в БД как ${existing.name}`);
@@ -339,7 +366,9 @@ module.exports = function registerCommands(
       await bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
       return;
     }
-    if (typeof updateAdminActivity === 'function') updateAdminActivity();
+    if (isModerator(userId) && typeof updateModeratorActivity === 'function') {
+      updateModeratorActivity();
+    }
     const employees = await db.getAllEmployeesWithStats();
     if (!employees.length) return bot.sendMessage(msg.chat.id, 'Нет сотрудников.');
     let reply = 'Статус сотрудников:\n';
@@ -356,7 +385,9 @@ module.exports = function registerCommands(
       await bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
       return;
     }
-    if (typeof updateAdminActivity === 'function') updateAdminActivity();
+    if (isModerator(userId) && typeof updateModeratorActivity === 'function') {
+      updateModeratorActivity();
+    }
     const assignments = await db.db.all(`
             SELECT a.order_id, e.name as employee_name 
             FROM assignments a 
@@ -376,7 +407,9 @@ module.exports = function registerCommands(
       await bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
       return;
     }
-    if (typeof updateAdminActivity === 'function') updateAdminActivity();
+    if (isModerator(userId) && typeof updateModeratorActivity === 'function') {
+      updateModeratorActivity();
+    }
     const confirmKeyboard = {
       reply_markup: {
         inline_keyboard: [
@@ -397,7 +430,9 @@ module.exports = function registerCommands(
       await bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
       return;
     }
-    if (typeof updateAdminActivity === 'function') updateAdminActivity();
+    if (isModerator(userId) && typeof updateModeratorActivity === 'function') {
+      updateModeratorActivity();
+    }
 
     const warehouses = await db.getAllWarehouses();
     if (!warehouses.length) {
@@ -417,7 +452,9 @@ module.exports = function registerCommands(
       await bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
       return;
     }
-    if (typeof updateAdminActivity === 'function') updateAdminActivity();
+    if (isModerator(userId) && typeof updateModeratorActivity === 'function') {
+      updateModeratorActivity();
+    }
     const employeeId = parseInt(match[1]);
     const emp = await db.getEmployeeById(employeeId);
     if (!emp) return bot.sendMessage(msg.chat.id, 'Сотрудник не найден.');
@@ -447,7 +484,9 @@ module.exports = function registerCommands(
       await bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
       return;
     }
-    if (typeof updateAdminActivity === 'function') updateAdminActivity();
+    if (isModerator(userId) && typeof updateModeratorActivity === 'function') {
+      updateModeratorActivity();
+    }
     const employeeId = parseInt(match[1]);
     const orders = await db.getEmployeeActiveOrders(employeeId);
     const emp = await db.getEmployeeById(employeeId);
@@ -463,7 +502,9 @@ module.exports = function registerCommands(
       await bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
       return;
     }
-    if (typeof updateAdminActivity === 'function') updateAdminActivity();
+    if (isModerator(userId) && typeof updateModeratorActivity === 'function') {
+      updateModeratorActivity();
+    }
     const postingNumber = match[1];
     // Находим активное назначение
     const assignment = await db.db.get(
@@ -520,7 +561,9 @@ module.exports = function registerCommands(
     if (!isAdmin(userId)) {
       return bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
     }
-    if (typeof updateAdminActivity === 'function') updateAdminActivity();
+    if (isModerator(userId) && typeof updateModeratorActivity === 'function') {
+      updateModeratorActivity();
+    }
 
     const warehouseId = match[1] || null; // если передан ID склада, используем его
     try {
@@ -558,7 +601,9 @@ module.exports = function registerCommands(
     if (!isAdmin(userId)) {
       return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
     }
-    if (typeof updateAdminActivity === 'function') updateAdminActivity();
+    if (isModerator(userId) && typeof updateModeratorActivity === 'function') {
+      updateModeratorActivity();
+    }
     const postingNumber = match[1];
     try {
       const details = await ozon.getOrderDetails(postingNumber);
@@ -634,7 +679,9 @@ module.exports = function registerCommands(
     if (!isAdmin(userId)) {
       return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
     }
-    if (typeof updateAdminActivity === 'function') updateAdminActivity();
+    if (isModerator(userId) && typeof updateModeratorActivity === 'function') {
+      updateModeratorActivity();
+    }
     const employeeId = parseInt(match[1]);
     const emp = await db.getEmployeeById(employeeId);
     if (!emp) return bot.sendMessage(msg.chat.id, 'Сотрудник не найден.');
@@ -677,7 +724,9 @@ module.exports = function registerCommands(
       await bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
       return;
     }
-    if (typeof updateAdminActivity === 'function') updateAdminActivity();
+    if (isModerator(userId) && typeof updateModeratorActivity === 'function') {
+      updateModeratorActivity();
+    }
     if (!debugMode.isDebugMode()) {
       return bot.sendMessage(msg.chat.id, 'Эта команда доступна только в отладочном режиме (DEBUG_ORDERS_MODE=true).');
     }

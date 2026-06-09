@@ -16,8 +16,14 @@ module.exports = function registerCommands(
     const userId = callbackQuery.from.id.toString();
 
     // ---------------------- КОМАНДЫ СОТРУДНИКОВ ----------------------
+
     // Подтверждение отмены заказа сотрудником
     if (data.startsWith('confirm_cancel_')) {
+      // Проверяем, что пользователь – авторизованный сотрудник
+      if (!(await isAuthorizedUser(userId))) {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '⛔ Вы не авторизованы как сотрудник.' });
+        return;
+      }
       const orderId = data.substring(15);
       const employee = await db.getEmployee(userId);
       if (!employee) {
@@ -45,6 +51,7 @@ module.exports = function registerCommands(
     }
 
     // ---------------------- ОСТАЛЬНЫЕ КОМАНДЫ (для админов/модераторов) ----------------------
+    
     const adminId = userId;
 
     if (!isAdmin(adminId)) {

@@ -47,7 +47,7 @@ let pendingNewOrders = [];              // массив заказов, ожид
 
 // Функция обновления активности модератора
 function updateModeratorActivity() {
-    lastAdminActivity = Date.now();
+    lastModeratorActivity = Date.now();
     autoSkipped = false;
 }
 
@@ -80,7 +80,7 @@ function startInactivityTimer() {
     inactivityInterval = setInterval(() => {
         if (scheduler.isCheckerPaused()) return;
         if (!currentOrderProcessing) return;
-        const minutesSinceLastActivity = (Date.now() - lastAdminActivity) / (60 * 1000);
+        const minutesSinceLastActivity = (Date.now() - lastModeratorActivity) / (60 * 1000);
         if (!autoSkipped && minutesSinceLastActivity >= AUTO_SKIP_MINUTES) {
             console.log(`[INACTIVITY] Модератор неактивен ${minutesSinceLastActivity.toFixed(1)} мин, принудительная перезагрузка очереди`);
             autoSkipped = true;

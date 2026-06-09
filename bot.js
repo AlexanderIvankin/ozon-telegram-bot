@@ -51,13 +51,6 @@ function updateModeratorActivity() {
     autoSkipped = false;
 }
 
-// --- Функция для логирования действий администратора ---
-async function logAdminAction(adminId, action, details = '') {
-    const admin = await db.getEmployee(adminId);
-    const adminName = admin ? admin.name : 'Unknown Admin';
-    console.log(`[ADMIN ACTION] ${adminName} (${adminId}): ${action} ${details}`);
-}
-
 // Функция для проверки прав администратора
 function isAdmin(tgUserId) {
     return ADMIN_IDS.includes(tgUserId) || tgUserId == MODERATOR_ID;
@@ -72,6 +65,24 @@ function isModerator(tgUserId) {
 async function isAuthorizedUser(tgUserId) {
     const employee = await db.getEmployee(tgUserId);
     return employee !== undefined;
+}
+
+
+// Функция логирования действий
+async function logActions(userId, action, details = '') {
+    // Определяем роль пользователя
+    let role = 'Пользователь';
+    if (isModerator(userId)) {
+        role = 'Модератор';
+    } else if (isAdmin(userId)) {
+        role = 'Администратор';
+    }
+    
+    // Пытаемся получить имя из БД
+    const user = await db.getEmployee(userId);
+    const userName = user ? user.name : (role === 'Пользователь' ? 'Неавторизованный' : 'Unknown');
+    
+    console.log(`[${role} ACTION] ${userName} (${userId}): ${action} ${details}`);
 }
 
 // Функция отслеживания таймера неактивности админа

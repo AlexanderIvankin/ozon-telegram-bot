@@ -291,7 +291,6 @@ module.exports = function registerCommands(
       adminMessage += `/reload_queue — Принудительная инициализация синхронизации (вне таймера) и перезапуска очереди заказов\n`;
       adminMessage += `/pause — приостановить авто-проверку очереди заказов\n`;
       adminMessage += `/resume — возобновить авто-проверку очереди заказов\n`;
-      adminMessage += `/clear_admin_chat — очистка чата от сообщений заказа\n`;
       if (debugMode.isDebugMode()) adminMessage += `/debug_clear — сбросить отладочные назначения\n`;
 
       await bot.sendMessage(chatId, adminMessage);
@@ -492,26 +491,26 @@ module.exports = function registerCommands(
   bot.onText(/\/reload_queue/, async (msg) => {
     const userId = msg.from.id.toString();
     if (!isAdmin(userId)) {
-      await bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
+      await bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
       return;
     }
     // 1. Удаляем старое сообщение и фото
     if (typeof deleteLastOrderMessages === 'function') {
       await deleteLastOrderMessages();
     }
-    // 2. Сбрасываем глобальные переменные
-    if (currentOrderProcessing) currentOrderProcessing = null;
-    if (pendingNewOrders.length) pendingNewOrders = [];
-    // 3. Перезагружаем очередь из API (обновит pendingNewOrders)
+    // 2. Сбрасываем состояние (очищаем массив, не пересоздавая)
+    pendingNewOrders.length = 0;
+    currentOrderProcessing = null;
+    // 3. Перезагружаем очередь из API
     await checkAndOfferNewOrders();
     // 4. Если после обновления есть заказы – отправляем первый
-    if (!currentOrderProcessing && pendingNewOrders.length) {
+    if (pendingNewOrders.length) {
+      // Убедимся, что нет активного заказа
+      currentOrderProcessing = null;
       await processNextOrder();
       bot.sendMessage(msg.chat.id, `✅ Перезагрузка выполнена. Отправлен первый заказ. Осталось: ${pendingNewOrders.length}`);
-    } else if (pendingNewOrders.length === 0) {
-      bot.sendMessage(msg.chat.id, '✅ Перезагрузка выполнена. Новых заказов нет.');
     } else {
-      bot.sendMessage(msg.chat.id, '✅ Перезагрузка выполнена, но активный заказ уже есть.');
+      bot.sendMessage(msg.chat.id, '✅ Перезагрузка выполнена. Новых заказов нет.');
     }
   });
 
@@ -671,21 +670,6 @@ module.exports = function registerCommands(
     bot.sendMessage(msg.chat.id, '▶️ Автоматическая проверка заказов возобновлена.');
   });
 
-  // --- "/clear_admin_chat" – Команда для администратора: очистка чата от сообщений заказа ---
-  bot.onText(/\/clear_admin_chat/, async (msg) => {
-    const userId = msg.from.id.toString();
-    if (!isAdmin(userId)) {
-      await bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
-      return;
-    }
-    if (typeof deleteLastOrderMessages === 'function') {
-      await deleteLastOrderMessages();
-      await bot.sendMessage(msg.chat.id, '✅ Чат очищен от последнего заказа.');
-    } else {
-      await bot.sendMessage(msg.chat.id, '❌ Функция очистки недоступна.');
-    }
-  });
-
   // --- "/debug_clear" Команда для администратора: очистить все отладочные данные ---
   bot.onText(/\/debug_clear/, async (msg) => {
     const userId = msg.from.id.toString();
@@ -840,7 +824,6 @@ module.exports = function registerCommands(
       helpText += `/reload_queue — Принудительная инициализация синхронизации (вне таймера) и перезапуска очереди заказов\n`;
       helpText += `/pause — приостановить авто-проверку очереди заказов\n`;
       helpText += `/resume — возобновить авто-проверку очереди заказов\n`;
-      helpText += `/clear_admin_chat — очистка чата от сообщений заказа\n`;
       if (debugMode.isDebugMode()) helpText += `/debug_clear — сброс отладочных данных\n`;
       await bot.sendMessage(msg.chat.id, helpText);
       return;

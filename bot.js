@@ -22,8 +22,8 @@ bot.setMyCommands([
 
 const ADMIN_USER_ID = process.env.ADMIN_USER_ID;  // <<-- Administrator's Telegram ID from .env
 
-const SYNC_ORDERS_TIME = 5; // время проверки новых заказов в минутах
-const AUTO_SKIP_MINUTES = 1; // минут без ответа заказ пропускается автоматически
+const SYNC_ORDERS_TIME = 60; // время проверки новых заказов в минутах
+const AUTO_SKIP_MINUTES = 15; // минут без ответа заказ пропускается автоматически
 
 // Глобальные переменные для удаления старых сообщений
 let lastOrderMessageId = null;
@@ -53,7 +53,7 @@ function startInactivityTimer() {
         if (scheduler.isCheckerPaused()) return;
         if (!currentOrderProcessing) return;
         const minutesSinceLastActivity = (Date.now() - lastAdminActivity) / (60 * 1000);
-        if (minutesSinceLastActivity >= AUTO_SKIP_MINUTES && !autoSkipped) {
+        if (!autoSkipped && minutesSinceLastActivity >= AUTO_SKIP_MINUTES) {
             console.log(`[INACTIVITY] Администратор неактивен ${minutesSinceLastActivity.toFixed(1)} мин, принудительная перезагрузка очереди`);
             autoSkipped = true;
             forceReloadQueue();
@@ -107,8 +107,9 @@ async function checkAndOfferNewOrders() {
             return;
         }
 
-        // Обновляем очередь (перезаписываем)
-        pendingNewOrders = newOrders;
+        // Обновляем очередь
+        pendingNewOrders.length = 0;
+        pendingNewOrders.push(...newOrders);
 
         // Проверяем текущий обрабатываемый заказ
         const currentOrderId = currentOrderProcessing?.order?.posting_number;
@@ -196,6 +197,8 @@ async function showOrderMenu(order) {
         }
     }
 
+    autoSkipped = true;
+
     if (debug) console.log(`[MENU] Заказ ${order.posting_number} – успешно обработан`);
 }
 
@@ -255,7 +258,7 @@ async function forceReloadQueue() {
     await deleteLastOrderMessages();
     // Сбрасываем состояние
     currentOrderProcessing = null;
-    pendingNewOrders = [];
+    pendingNewOrders.length = 0;
     // Обновляем очередь из API
     await checkAndOfferNewOrders();
     // Если появились заказы – отправляем первый

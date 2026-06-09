@@ -1,9 +1,24 @@
 {
-  "watch": ["bot.js", "db.js", "ozon.js", ".env"],
-  "ignore": ["bot.db", "node_modules"],
+  "watch": [
+    "bot.js",
+    "commands.js",
+    "db.js",
+    "ozon.js",
+    "debugMode.js",
+    "scheduler.js",
+    "syncEmployees.js",
+    ".env"
+  ],
+  "ignore": [
+    "bot.db",
+    "node_modules",
+    "*.log",
+    "team-info.xlsx"
+  ],
   "ext": "js,json",
   "delay": 1000,
   "env": {
     "NODE_ENV": "development"
-  }
+  },
+  "exec": "node bot.js"
 }

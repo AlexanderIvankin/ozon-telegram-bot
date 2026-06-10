@@ -24,6 +24,7 @@ module.exports = function registerCommands(
     // Подтверждение отмены заказа сотрудником
     if (data.startsWith('confirm_cancel_')) {
       const orderId = data.substring(15);
+      console.log(`[CONFIRM_CANCEL] Попытка отмены заказа ${orderId} от пользователя ${userId}`);
       const employee = await db.getEmployee(userId);
       if (!employee) {
         await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Сотрудник не найден' });
@@ -31,18 +32,35 @@ module.exports = function registerCommands(
       }
       try {
         await db.cancelOrder(orderId, employee.id);
+        if (currentOrderProcessing && currentOrderProcessing.order.posting_number === orderId) {
+          currentOrderProcessing = null;
+          console.log(`[CONFIRM_CANCEL] Сброшен currentOrderProcessing для заказа ${orderId}`);
+        }
         await bot.answerCallbackQuery(callbackQuery.id, { text: '✅ Заказ отменён' });
         await bot.editMessageText(`✅ Заказ ${orderId} отменён.`, {
           chat_id: msg.chat.id,
           message_id: msg.message_id
         });
-        // Обновляем очередь, чтобы заказ снова стал доступным
+
+        // Уведомляем модератора
+        const moderatorId = process.env.MODERATOR_ID;
+        if (moderatorId) {
+          await bot.sendMessage(moderatorId, `📦 Сотрудник ${employee.name} отменил заказ ${orderId}. Заказ возвращён в очередь.`);
+        }
+
         await checkAndOfferNewOrders();
+        if (!currentOrderProcessing && pendingNewOrders.length) {
+          console.log(`[CONFIRM_CANCEL] Отправляем следующий заказ, осталось: ${pendingNewOrders.length}`);
+          await processNextOrder();
+        }
       } catch (err) {
+        console.error(`[CONFIRM_CANCEL] Ошибка:`, err.message);
         await bot.answerCallbackQuery(callbackQuery.id, { text: err.message });
       }
       return;
     }
+
+    // Кнопка "Нет" (отклонение подтверждения)
     if (data.startsWith('cancel_cancel_')) {
       await bot.answerCallbackQuery(callbackQuery.id, { text: 'Отмена отклонена' });
       await bot.deleteMessage(msg.chat.id, msg.message_id);
@@ -281,6 +299,13 @@ module.exports = function registerCommands(
       if (!currentOrderProcessing && pendingNewOrders.length) {
         await processNextOrder();
       }
+      return;
+    }
+
+    // 8. Кнопка "Нет" для снятия заказа администратором
+    if (data.startsWith('admin_cancel_abort_')) {
+      await bot.answerCallbackQuery(callbackQuery.id, { text: 'Снятие заказа отменено' });
+      await bot.deleteMessage(msg.chat.id, msg.message_id);
       return;
     }
   });
@@ -833,19 +858,20 @@ module.exports = function registerCommands(
   bot.onText(/\/cancel_order (\S+)/, async (msg, match) => {
     const userId = msg.from.id.toString();
     const postingNumber = match[1];
+    console.log(`[CANCEL_ORDER] Пользователь ${userId} пытается отменить заказ ${postingNumber}`);
     const employee = await db.getEmployee(userId);
     if (!employee) {
       return bot.sendMessage(msg.chat.id, '❌ Вы не зарегистрированы как сотрудник.');
     }
-    // Проверяем, что заказ назначен этому сотруднику и активен
     const assignment = await db.db.get(
       'SELECT * FROM assignments WHERE order_id = ? AND employee_id = ? AND status = "assigned"',
       postingNumber, employee.id
     );
     if (!assignment) {
+      console.log(`[CANCEL_ORDER] Заказ ${postingNumber} не найден среди активных заказов сотрудника ${employee.id}`);
       return bot.sendMessage(msg.chat.id, `❌ Заказ ${postingNumber} не найден среди ваших активных заказов.`);
     }
-    // Клавиатура подтверждения
+    console.log(`[CANCEL_ORDER] Заказ найден, показываем подтверждение`);
     const confirmKeyboard = {
       reply_markup: {
         inline_keyboard: [

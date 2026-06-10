@@ -800,9 +800,11 @@ module.exports = function registerCommands(
       } else {
         await bot.sendMessage(chatId, `✅ [ТЕСТ] Заказ ${postingNumber} подтверждён. Этикетка не получена.`);
       }
-      const adminChatId = process.env.ADMIN_USER_ID;
-      if (adminChatId) {
-        await bot.sendMessage(adminChatId, `📦 [ТЕСТ] Сотрудник ${employeeName} завершил заказ ${postingNumber}.`);
+
+      // Уведомляем модератора
+      const moderatorId = process.env.MODERATOR_ID;
+      if (moderatorId) {
+        await bot.sendMessage(moderatorId, `📦 [ТЕСТ] Сотрудник ${employeeName} завершил заказ ${postingNumber}.`);
       }
       return true;
     }
@@ -844,10 +846,13 @@ module.exports = function registerCommands(
       } else {
         await bot.sendMessage(msg.chat.id, `✅ Заказ ${postingNumber} подтверждён. Этикетку можно скачать в личном кабинете Ozon.`);
       }
-      const adminId = process.env.ADMIN_USER_ID;
-      if (adminId) {
-        await bot.sendMessage(adminId, `📦 Сотрудник ${employee.name} завершил заказ ${postingNumber}.`);
+
+      // Уведомляем модератора
+      const moderatorId = process.env.MODERATOR_ID;
+      if (moderatorId) {
+        await bot.sendMessage(moderatorId, `📦 Сотрудник ${employee.name} завершил заказ ${postingNumber}.`);
       }
+
     } catch (err) {
       console.error('Ошибка завершения заказа:', err);
       bot.sendMessage(msg.chat.id, `❌ Не удалось подтвердить сборку заказа ${postingNumber}: ${err.message}`);

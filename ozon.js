@@ -211,58 +211,18 @@ async function getProductIdsByOfferIds(offerIds) {
     return mapping;
 }
 
-// Подтвердить сборку заказа (POST /v4/posting/fbs/ship) с автоматическим получением product_id
+// Подтвердить сборку заказа (перевести в awaiting_deliver) (POST /v2/posting/fbs/awaiting-delivery)
 async function confirmPostingShip(postingNumber) {
     if (debugMode.isDebugMode()) {
         console.log(`[DEBUG] Эмуляция подтверждения сборки заказа ${postingNumber}`);
-        return { result: [postingNumber] };
+        return { result: true };
     }
 
-    const details = await getOrderDetails(postingNumber);
-    if (!details) throw new Error('Нет деталей заказа');
-    if (details.status !== 'awaiting_packaging') {
-        throw new Error(`Заказ не в статусе awaiting_packaging (текущий: ${details.status}). Подтверждение сборки невозможно.`);
-    }
-    if (!details.products || !details.products.length) throw new Error('Нет состава заказа');
-
-    // Собираем offer_id для товаров без product_id
-    const offerIdsToFetch = [];
-    for (const p of details.products) {
-        if (!p.product_id && p.offer_id) {
-            offerIdsToFetch.push(p.offer_id);
-        }
-    }
-    let productIdMapping = {};
-    if (offerIdsToFetch.length) {
-        productIdMapping = await getProductIdsByOfferIds(offerIdsToFetch);
-        console.log(`[SHIP] Получены product_id для offer_id:`, productIdMapping);
-    }
-
-    const products = details.products.map(p => {
-        // Пытаемся взять product_id из ответа заказа
-        let productId = p.product_id ? Number(p.product_id) : null;
-        // Если нет, ищем в маппинге по offer_id
-        if (!productId && p.offer_id && productIdMapping[p.offer_id]) {
-            productId = productIdMapping[p.offer_id];
-        }
-        if (!productId) {
-            throw new Error(`Не удалось определить product_id для товара ${p.name || p.sku}`);
-        }
-        return {
-            product_id: productId,
-            quantity: p.quantity
-        };
+    console.log(`[SHIP] Перевод заказа ${postingNumber} в awaiting_deliver через /v2/posting/fbs/awaiting-delivery`);
+    const response = await apiClient.post('/v2/posting/fbs/awaiting-delivery', {
+        posting_number: [postingNumber]
     });
-
-    const packages = [{ products }];
-    console.log(`[SHIP] packages:`, JSON.stringify(packages, null, 2));
-
-    const response = await apiClient.post('/v4/posting/fbs/ship', {
-        packages,
-        posting_number: postingNumber,
-        with: { additional_data: true }
-    });
-    console.log(`[SHIP] Ответ:`, JSON.stringify(response.data, null, 2));
+    console.log(`[SHIP] Ответ awaiting-delivery:`, JSON.stringify(response.data, null, 2));
     return response.data;
 }
 

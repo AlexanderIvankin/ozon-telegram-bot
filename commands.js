@@ -835,7 +835,8 @@ module.exports = function registerCommands(
       const orderAmount = await ozon.getOrderTotalAmount(postingNumber);
       await db.updateEmployeeStats(employee.id, orderAmount);
 
-      await ozon.confirmPostingShip(postingNumber);
+      // Ждём 60 секунд (согласно рекомендации Ozon)
+      await new Promise(resolve => setTimeout(resolve, 60000));
       const labelBuffer = await ozon.getPackageLabel(postingNumber);
       await db.completeOrder(postingNumber);
       if (labelBuffer) {
@@ -854,8 +855,11 @@ module.exports = function registerCommands(
       }
 
     } catch (err) {
-      console.error('Ошибка завершения заказа:', err);
-      bot.sendMessage(msg.chat.id, `❌ Не удалось подтвердить сборку заказа ${postingNumber}: ${err.message}`);
+      console.error('Ошибка этикетки:', err.response?.data || err.message);
+      if (err.response && err.response.data) {
+        console.error('Детали:', JSON.stringify(err.response.data, null, 2));
+      }
+      return null;
     }
   });
 

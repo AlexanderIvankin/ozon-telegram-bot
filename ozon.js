@@ -192,6 +192,7 @@ async function confirmPostingShip(postingNumber) {
         return { result: [postingNumber] };
     }
 
+    console.log(`[SHIP] Начинаем подтверждение сборки заказа ${postingNumber}`);
     const details = await getOrderDetails(postingNumber);
     if (!details || !details.products) throw new Error('Нет состава заказа');
     const packages = [{
@@ -200,11 +201,13 @@ async function confirmPostingShip(postingNumber) {
             quantity: p.quantity
         }))
     }];
+    console.log(`[SHIP] packages:`, JSON.stringify(packages, null, 2));
     const response = await apiClient.post('/v4/posting/fbs/ship', {
         packages,
         posting_number: postingNumber,
         with: { additional_data: true }
     });
+    console.log(`[SHIP] Успешно подтверждён заказ ${postingNumber}`, response.data);
     return response.data;
 }
 
@@ -219,14 +222,15 @@ async function getPackageLabel(postingNumber) {
 
     try {
         const response = await apiClient.post('/v2/posting/fbs/package-label', {
-            posting_number: [postingNumber]
+            posting_number: [postingNumber]   // массив строк
         });
+        console.log(`[LABEL] Ответ:`, response.data);
         if (response.data.file_content && response.data.content_type === 'application/pdf') {
             return Buffer.from(response.data.file_content, 'base64');
         }
         return null;
     } catch (err) {
-        console.error('Ошибка этикетки:', err.message);
+        console.error('Ошибка этикетки:', err.response?.data || err.message);
         return null;
     }
 }

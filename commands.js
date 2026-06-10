@@ -1,5 +1,3 @@
-const debugMode = require('./debugMode');
-
 module.exports = function registerCommands(
   bot, db, ozon, bwipjs, scheduler, debugMode,
   isAuthorizedUser, isModerator, isAdmin,
@@ -333,7 +331,7 @@ module.exports = function registerCommands(
     // --- Обычный сотрудник (есть в БД) ---
     if (employee) {
       const activeCount = await db.getEmployeeActiveOrdersCount(employee.id);
-      let msgText = `С возвращением, ${employee.name}! У вас активно заказов: ${activeCount}. Новые заказы назначает администратор.\n\n`;
+      let msgText = `С возвращением, ${employee.name}!\n Новые заказы назначает модератор.\n У вас активно заказов: ${activeCount}. \n\n`;
       msgText += `Доступные команды:\n`;
       msgText += `/my_orders — показать мои активные заказы\n`;
       msgText += `/finish_order <номер_заказа> — завершить заказ (получить этикетку)\n`;

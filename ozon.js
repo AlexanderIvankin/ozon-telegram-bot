@@ -225,22 +225,33 @@ async function confirmPostingShip(postingNumber) {
     }
     if (!details.products || !details.products.length) throw new Error('Нет состава заказа');
 
+    // Собираем offer_id для товаров без product_id
+    const offerIdsToFetch = [];
+    for (const p of details.products) {
+        if (!p.product_id && p.offer_id) {
+            offerIdsToFetch.push(p.offer_id);
+        }
+    }
+    let productIdMapping = {};
+    if (offerIdsToFetch.length) {
+        productIdMapping = await getProductIdsByOfferIds(offerIdsToFetch);
+        console.log(`[SHIP] Получены product_id для offer_id:`, productIdMapping);
+    }
+
     const products = details.products.map(p => {
-        // Приоритет offer_id (строка) – он точно есть в заказе
-        if (p.offer_id && p.offer_id.trim()) {
-            return {
-                offer_id: p.offer_id,
-                quantity: p.quantity
-            };
+        // Пытаемся взять product_id из ответа заказа
+        let productId = p.product_id ? Number(p.product_id) : null;
+        // Если нет, ищем в маппинге по offer_id
+        if (!productId && p.offer_id && productIdMapping[p.offer_id]) {
+            productId = productIdMapping[p.offer_id];
         }
-        // fallback на product_id
-        if (p.product_id) {
-            return {
-                product_id: Number(p.product_id),
-                quantity: p.quantity
-            };
+        if (!productId) {
+            throw new Error(`Не удалось определить product_id для товара ${p.name || p.sku}`);
         }
-        throw new Error(`Нет offer_id или product_id для товара ${p.name || p.sku}`);
+        return {
+            product_id: productId,
+            quantity: p.quantity
+        };
     });
 
     const packages = [{ products }];

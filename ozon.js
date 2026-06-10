@@ -197,7 +197,7 @@ async function confirmPostingShip(postingNumber) {
     if (!details || !details.products) throw new Error('Нет состава заказа');
     const packages = [{
         products: details.products.map(p => ({
-            product_id: p.product_id || p.sku,
+            product_id: p.product_id,
             quantity: p.quantity
         }))
     }];
@@ -207,6 +207,7 @@ async function confirmPostingShip(postingNumber) {
         posting_number: postingNumber,
         with: { additional_data: true }
     });
+    console.log(`[SHIP] Ответ:`, JSON.stringify(response.data, null, 2));
     console.log(`[SHIP] Успешно подтверждён заказ ${postingNumber}`, response.data);
     return response.data;
 }

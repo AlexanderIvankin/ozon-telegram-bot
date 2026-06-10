@@ -836,11 +836,16 @@ module.exports = function registerCommands(
       const orderAmount = await ozon.getOrderTotalAmount(postingNumber);
       await db.updateEmployeeStats(employee.id, orderAmount);
 
-      // Ждём 60 секунд (согласно рекомендации Ozon)
+      // 1. Подтверждаем сборку (меняем статус в Ozon)
+      await ozon.confirmPostingShip(postingNumber);
+
+      // 2. Ждём 60 секунд (согласно рекомендации Ozon)
       await new Promise(resolve => setTimeout(resolve, 60000));
-      console.log(`[getPackageLabel] Вызов с postingNumber = "${postingNumber}" (тип: ${typeof postingNumber})`);
+
+      // 3. Получаем этикетку
       const labelBuffer = await ozon.getPackageLabel(postingNumber);
       await db.completeOrder(postingNumber);
+      
       if (labelBuffer) {
         await bot.sendDocument(msg.chat.id, labelBuffer, {
           caption: `✅ Заказ ${postingNumber} успешно собран.\nЭтикетка для наклеивания:`,

@@ -125,13 +125,17 @@ async function cancelOrder(orderId, employeeId) {
         orderId, employeeId
     );
     if (!assignment) throw new Error('Заказ не найден или уже завершён');
+
+    // Удаляем назначение
     await database.run('DELETE FROM assignments WHERE order_id = ?', orderId);
-    // Увеличиваем счётчик отмен
-    await database.run(
-        `INSERT INTO employee_stats (employee_id, canceled_orders) VALUES (?, 1)
-         ON CONFLICT(employee_id) DO UPDATE SET canceled_orders = canceled_orders + 1`,
-        employeeId
-    );
+
+    // Обновляем счётчик отменённых заказов
+    const existing = await database.get('SELECT canceled_orders FROM employee_stats WHERE employee_id = ?', employeeId);
+    if (existing) {
+        await database.run('UPDATE employee_stats SET canceled_orders = canceled_orders + 1 WHERE employee_id = ?', employeeId);
+    } else {
+        await database.run('INSERT INTO employee_stats (employee_id, canceled_orders, total_orders, total_amount) VALUES (?, 1, 0, 0)', employeeId);
+    }
     return true;
 }
 

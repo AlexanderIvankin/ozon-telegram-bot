@@ -220,11 +220,12 @@ async function getWarehouseNameById(warehouseId) {
 // Обновить статистику сотрудника при завершении заказа
 async function updateEmployeeStats(employeeId, orderAmount = 0) {
     await database.run(
-        `INSERT INTO employee_stats (employee_id, total_orders, total_amount)
-         VALUES (?, 1, ?)
+        `INSERT INTO employee_stats (employee_id, total_orders, total_amount, canceled_orders)
+         VALUES (?, 1, ?, 0)
          ON CONFLICT(employee_id) DO UPDATE SET
          total_orders = total_orders + 1,
-         total_amount = total_amount + ?`,
+         total_amount = total_amount + ?,
+         canceled_orders = COALESCE(canceled_orders, 0)`,
         employeeId, orderAmount, orderAmount
     );
 }
@@ -232,10 +233,10 @@ async function updateEmployeeStats(employeeId, orderAmount = 0) {
 // Получить статистику сотрудника
 async function getEmployeeStats(employeeId) {
     const stats = await database.get(
-        `SELECT total_orders, total_amount FROM employee_stats WHERE employee_id = ?`,
+        `SELECT total_orders, total_amount, canceled_orders FROM employee_stats WHERE employee_id = ?`,
         employeeId
     );
-    return stats || { total_orders: 0, total_amount: 0 };
+    return stats || { total_orders: 0, total_amount: 0, canceled_orders: 0 };
 }
 
 

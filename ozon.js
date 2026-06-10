@@ -135,11 +135,20 @@ async function getOrderDetails(orderId) {
         return mock || { posting_number: orderId, products: [] };
     }
     try {
+        // Запрашиваем financial_data, но product_id приходит всегда
         const response = await apiClient.post('/v3/posting/fbs/get', {
             posting_number: orderId,
             with: { financial_data: true }
         });
         if (debugMode.isDebugMode()) console.log(`[Ozon] Детали заказа ${orderId} получены`);
+        // Дополнительная проверка: есть ли product_id в товарах
+        if (response.data.result && response.data.result.products) {
+            for (const p of response.data.result.products) {
+                if (!p.product_id && p.product_id !== 0) {
+                    console.warn(`[WARN] В товаре отсутствует product_id:`, p);
+                }
+            }
+        }
         return response.data.result;
     } catch (error) {
         console.error(`[Ozon] Ошибка получения деталей заказа ${orderId}:`,
@@ -195,13 +204,22 @@ async function confirmPostingShip(postingNumber) {
     console.log(`[SHIP] Начинаем подтверждение сборки заказа ${postingNumber}`);
     const details = await getOrderDetails(postingNumber);
     if (!details || !details.products) throw new Error('Нет состава заказа');
+
     const packages = [{
-        products: details.products.map(p => ({
-            product_id: p.product_id,
-            quantity: p.quantity
-        }))
+        products: details.products.map(p => {
+            // Убеждаемся, что product_id есть и это число
+            const productId = Number(p.product_id);
+            if (isNaN(productId) || productId <= 0) {
+                throw new Error(`Невалидный product_id для товара ${p.name || p.sku}: ${p.product_id}`);
+            }
+            return {
+                product_id: productId,
+                quantity: p.quantity
+            };
+        })
     }];
     console.log(`[SHIP] packages:`, JSON.stringify(packages, null, 2));
+
     const response = await apiClient.post('/v4/posting/fbs/ship', {
         packages,
         posting_number: postingNumber,
@@ -216,20 +234,19 @@ async function confirmPostingShip(postingNumber) {
 async function getPackageLabel(postingNumber) {
     if (debugMode.isDebugMode()) {
         console.log(`[DEBUG] Эмуляция получения этикетки для ${postingNumber}`);
-        // Возвращаем заглушку (пустой PDF) – достаточно для тестирования
-        const dummyPdf = Buffer.from('%PDF-1.4\n%EOF', 'binary');
-        return dummyPdf;
+        return Buffer.from('%PDF-1.4\n%EOF', 'binary');
     }
 
     try {
-        console.log(`[getPackageLabel] Вызов с postingNumber = "${postingNumber}" (тип: ${typeof postingNumber})`);
+        console.log(`[LABEL] Запрос этикетки для ${postingNumber}`);
         const response = await apiClient.post('/v2/posting/fbs/package-label', {
-            posting_number: [postingNumber]   // массив строк
+            posting_number: [postingNumber]
         });
-        console.log(`[LABEL] Ответ:`, response.data);
         if (response.data.file_content && response.data.content_type === 'application/pdf') {
+            console.log(`[LABEL] Этикетка получена, размер: ${response.data.file_content.length} символов`);
             return Buffer.from(response.data.file_content, 'base64');
         }
+        console.warn(`[LABEL] Неожиданный ответ:`, response.data);
         return null;
     } catch (err) {
         console.error('Ошибка этикетки:', err.response?.data || err.message);

@@ -831,12 +831,13 @@ module.exports = function registerCommands(
       assignment.order_id, employee.id, employee.name, msg.chat.id, postingNumber
     );
     if (isDebugFinished) return;
+    
     try {
       // Получаем сумму заказа
       const orderAmount = await ozon.getOrderTotalAmount(postingNumber);
       await db.updateEmployeeStats(employee.id, orderAmount);
 
-      // 1. Подтверждаем сборку (меняем статус в Ozon)
+      // 1. Подтверждаем сборку в Ozon (переводим заказ в awaiting_deliver)
       await ozon.confirmPostingShip(postingNumber);
 
       // 2. Ждём 60 секунд (согласно рекомендации Ozon)
@@ -845,7 +846,7 @@ module.exports = function registerCommands(
       // 3. Получаем этикетку
       const labelBuffer = await ozon.getPackageLabel(postingNumber);
       await db.completeOrder(postingNumber);
-      
+
       if (labelBuffer) {
         await bot.sendDocument(msg.chat.id, labelBuffer, {
           caption: `✅ Заказ ${postingNumber} успешно собран.\nЭтикетка для наклеивания:`,
@@ -860,13 +861,9 @@ module.exports = function registerCommands(
       if (moderatorId) {
         await bot.sendMessage(moderatorId, `📦 Сотрудник ${employee.name} завершил заказ ${postingNumber}.`);
       }
-
     } catch (err) {
-      console.error('Ошибка этикетки:', err.response?.data || err.message);
-      if (err.response && err.response.data) {
-        console.error('Детали:', JSON.stringify(err.response.data, null, 2));
-      }
-      return null;
+      console.error('Ошибка завершения заказа:', err);
+      bot.sendMessage(msg.chat.id, `❌ Не удалось подтвердить сборку заказа ${postingNumber}: ${err.message}`);
     }
   });
 

@@ -790,6 +790,7 @@ module.exports = function registerCommands(
     if (debugMode.isDebugMode()) {
       console.log(`[DEBUG] Эмуляция подтверждения сборки заказа ${postingNumber}`);
       await db.updateEmployeeStats(employeeId, 1000); // фиктивная сумма
+      console.log(`[getPackageLabel] Вызов с postingNumber = "${postingNumber}" (тип: ${typeof postingNumber})`);
       const labelBuffer = await ozon.getPackageLabel(postingNumber);
       await db.completeOrder(postingNumber);
       if (labelBuffer) {
@@ -837,6 +838,7 @@ module.exports = function registerCommands(
 
       // Ждём 60 секунд (согласно рекомендации Ozon)
       await new Promise(resolve => setTimeout(resolve, 60000));
+      console.log(`[getPackageLabel] Вызов с postingNumber = "${postingNumber}" (тип: ${typeof postingNumber})`);
       const labelBuffer = await ozon.getPackageLabel(postingNumber);
       await db.completeOrder(postingNumber);
       if (labelBuffer) {

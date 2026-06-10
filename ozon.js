@@ -221,6 +221,7 @@ async function getPackageLabel(postingNumber) {
     }
 
     try {
+        console.log(`[getPackageLabel] Вызов с postingNumber = "${postingNumber}" (тип: ${typeof postingNumber})`);
         const response = await apiClient.post('/v2/posting/fbs/package-label', {
             posting_number: [postingNumber]   // массив строк
         });

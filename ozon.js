@@ -194,45 +194,90 @@ async function downloadImage(url) {
     }
 }
 
-// Подтвердить сборку заказа через создание акта (POST /v2/posting/fbs/act/create)
+// Получить mapping offer_id -> product_id
+async function getProductIdsByOfferIds(offerIds) {
+    if (!offerIds.length) return {};
+    const uniqueOffers = [...new Set(offerIds)];
+    const response = await apiClient.post('/v3/product/info/list', {
+        offer_id: uniqueOffers
+    });
+    const items = response.data.items || [];
+    const mapping = {};
+    for (const item of items) {
+        if (item.offer_id && item.id) {
+            mapping[item.offer_id] = Number(item.id);
+        }
+    }
+    return mapping;
+}
+
+// Подтвердить сборку заказа (POST /v4/posting/fbs/ship) с автоматическим получением product_id
 async function confirmPostingShip(postingNumber) {
     if (debugMode.isDebugMode()) {
         console.log(`[DEBUG] Эмуляция подтверждения сборки заказа ${postingNumber}`);
-        return { id: 0 }; // фиктивный ID
+        return { result: [postingNumber] };
     }
 
-    console.log(`[SHIP] Создание акта для заказа ${postingNumber}`);
-    const response = await apiClient.post('/v2/posting/fbs/act/create', {
-        posting_number: [postingNumber]
+    console.log(`[SHIP] Начинаем подготовку к подтверждению сборки заказа ${postingNumber}`);
+    const details = await getOrderDetails(postingNumber);
+    if (!details || !details.products) throw new Error('Нет состава заказа');
+
+    // Собираем offer_id для товаров без product_id
+    const offerIdsToFetch = [];
+    for (const p of details.products) {
+        if (!p.product_id && p.offer_id) {
+            offerIdsToFetch.push(p.offer_id);
+        }
+    }
+    let productIdMapping = {};
+    if (offerIdsToFetch.length) {
+        productIdMapping = await getProductIdsByOfferIds(offerIdsToFetch);
+        console.log(`[SHIP] Получены product_id для offer_id:`, productIdMapping);
+    }
+
+    const products = details.products.map(p => {
+        let productId = p.product_id ? Number(p.product_id) : null;
+        if (!productId && p.offer_id && productIdMapping[p.offer_id]) {
+            productId = productIdMapping[p.offer_id];
+        }
+        if (!productId) {
+            throw new Error(`Не удалось определить product_id для товара ${p.name || p.sku}`);
+        }
+        return {
+            product_id: productId,
+            quantity: p.quantity
+        };
     });
-    console.log(`[SHIP] Ответ act/create:`, JSON.stringify(response.data, null, 2));
-    return response.data; // ожидается { id: number }
+
+    const packages = [{ products }];
+    console.log(`[SHIP] packages:`, JSON.stringify(packages, null, 2));
+
+    const response = await apiClient.post('/v4/posting/fbs/ship', {
+        packages,
+        posting_number: postingNumber,
+        with: { additional_data: true }
+    });
+    console.log(`[SHIP] Ответ:`, JSON.stringify(response.data, null, 2));
+    return response.data;
 }
 
-// Получить PDF этикетку для заказа (GET /v2/posting/fbs/act/get-pdf)
-async function getPackageLabel(postingNumber, actId = null) {
+// Получить PDF этикетку (POST /v2/posting/fbs/package-label)
+async function getPackageLabel(postingNumber) {
     if (debugMode.isDebugMode()) {
         console.log(`[DEBUG] Эмуляция получения этикетки для ${postingNumber}`);
         return Buffer.from('%PDF-1.4\n%EOF', 'binary');
     }
 
     try {
-        let url = '/v2/posting/fbs/act/get-pdf';
-        let params = {};
-        if (actId) {
-            params.id = actId;
-        } else {
-            // fallback – пробуем по номеру заказа (не рекомендуется, но может работать)
-            params.posting_number = postingNumber;
-        }
-        const response = await apiClient.get(url, {
-            params,
-            responseType: 'arraybuffer'
+        const response = await apiClient.post('/v2/posting/fbs/package-label', {
+            posting_number: [postingNumber]
         });
-        console.log(`[LABEL] Этикетка получена, размер: ${response.data.length} байт`);
-        return Buffer.from(response.data);
+        if (response.data.file_content && response.data.content_type === 'application/pdf') {
+            return Buffer.from(response.data.file_content, 'base64');
+        }
+        return null;
     } catch (err) {
-        console.error('Ошибка получения этикетки:', err.response?.data || err.message);
+        console.error('Ошибка этикетки:', err.response?.data || err.message);
         return null;
     }
 }

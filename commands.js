@@ -833,6 +833,13 @@ module.exports = function registerCommands(
     if (isDebugFinished) return;
 
     try {
+      const orderDetailsBefore = await ozon.getOrderDetails(postingNumber);
+      if (orderDetailsBefore.status !== 'awaiting_packaging') {
+        await bot.sendMessage(msg.chat.id, `⚠️ Заказ ${postingNumber} находится в статусе ${orderDetailsBefore.status}. Подтверждение сборки через API невозможно. Этикетку можно скачать вручную.`);
+        await db.completeOrder(postingNumber);
+        return;
+      }
+      
       const orderAmount = await ozon.getOrderTotalAmount(postingNumber);
       await db.updateEmployeeStats(employee.id, orderAmount);
 

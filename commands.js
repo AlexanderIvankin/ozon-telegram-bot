@@ -831,22 +831,26 @@ module.exports = function registerCommands(
       assignment.order_id, employee.id, employee.name, msg.chat.id, postingNumber
     );
     if (isDebugFinished) return;
-    
+
     try {
-      // Получаем сумму заказа
+      // 1. Получаем сумму заказа и обновляем статистику
       const orderAmount = await ozon.getOrderTotalAmount(postingNumber);
       await db.updateEmployeeStats(employee.id, orderAmount);
 
-      // 1. Подтверждаем сборку в Ozon (переводим заказ в awaiting_deliver)
-      await ozon.confirmPostingShip(postingNumber);
+      // 2. Создаём акт (подтверждаем сборку)
+      const actResponse = await ozon.confirmPostingShip(postingNumber);
+      const actId = actResponse?.id; // сохраняем ID акта
 
-      // 2. Ждём 60 секунд (согласно рекомендации Ozon)
+      // 3. Ждём 60 секунд (согласно рекомендации Ozon)
       await new Promise(resolve => setTimeout(resolve, 60000));
 
-      // 3. Получаем этикетку
-      const labelBuffer = await ozon.getPackageLabel(postingNumber);
+      // 4. Получаем этикетку
+      const labelBuffer = await ozon.getPackageLabel(postingNumber, actId);
+
+      // 5. Завершаем заказ в локальной БД
       await db.completeOrder(postingNumber);
 
+      // 6. Отправляем результат сотруднику
       if (labelBuffer) {
         await bot.sendDocument(msg.chat.id, labelBuffer, {
           caption: `✅ Заказ ${postingNumber} успешно собран.\nЭтикетка для наклеивания:`,
@@ -856,7 +860,7 @@ module.exports = function registerCommands(
         await bot.sendMessage(msg.chat.id, `✅ Заказ ${postingNumber} подтверждён. Этикетку можно скачать в личном кабинете Ozon.`);
       }
 
-      // Уведомляем модератора
+      // 7. Уведомляем модератора
       const moderatorId = process.env.MODERATOR_ID;
       if (moderatorId) {
         await bot.sendMessage(moderatorId, `📦 Сотрудник ${employee.name} завершил заказ ${postingNumber}.`);

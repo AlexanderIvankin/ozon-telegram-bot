@@ -194,70 +194,45 @@ async function downloadImage(url) {
     }
 }
 
-// Подтвердить сборку заказа (POST /v4/posting/fbs/ship)
+// Подтвердить сборку заказа через создание акта (POST /v2/posting/fbs/act/create)
 async function confirmPostingShip(postingNumber) {
     if (debugMode.isDebugMode()) {
         console.log(`[DEBUG] Эмуляция подтверждения сборки заказа ${postingNumber}`);
-        return { result: [postingNumber] };
+        return { id: 0 }; // фиктивный ID
     }
 
-    console.log(`[SHIP] Начинаем подтверждение сборки заказа ${postingNumber}`);
-    const details = await getOrderDetails(postingNumber);
-    if (!details || !details.products) throw new Error('Нет состава заказа');
-
-    const products = details.products.map(p => {
-        // Пытаемся использовать product_id, если он есть
-        if (p.product_id && Number(p.product_id) > 0) {
-            return {
-                product_id: Number(p.product_id),
-                quantity: p.quantity
-            };
-        }
-        // Иначе используем offer_id (обязательно строка)
-        else if (p.offer_id && p.offer_id.trim()) {
-            return {
-                offer_id: p.offer_id,
-                quantity: p.quantity
-            };
-        }
-        else {
-            throw new Error(`Нет ни product_id, ни offer_id для товара ${p.name || p.sku}`);
-        }
+    console.log(`[SHIP] Создание акта для заказа ${postingNumber}`);
+    const response = await apiClient.post('/v2/posting/fbs/act/create', {
+        posting_number: [postingNumber]
     });
-
-    const packages = [{ products }];
-    console.log(`[SHIP] packages:`, JSON.stringify(packages, null, 2));
-
-    const response = await apiClient.post('/v4/posting/fbs/ship', {
-        packages,
-        posting_number: postingNumber,
-        with: { additional_data: true }
-    });
-    console.log(`[SHIP] Ответ:`, JSON.stringify(response.data, null, 2));
-    console.log(`[SHIP] Успешно подтверждён заказ ${postingNumber}`, response.data);
-    return response.data;
+    console.log(`[SHIP] Ответ act/create:`, JSON.stringify(response.data, null, 2));
+    return response.data; // ожидается { id: number }
 }
 
-// Получить PDF этикетку для заказа (POST /v2/posting/fbs/package-label)
-async function getPackageLabel(postingNumber) {
+// Получить PDF этикетку для заказа (GET /v2/posting/fbs/act/get-pdf)
+async function getPackageLabel(postingNumber, actId = null) {
     if (debugMode.isDebugMode()) {
         console.log(`[DEBUG] Эмуляция получения этикетки для ${postingNumber}`);
         return Buffer.from('%PDF-1.4\n%EOF', 'binary');
     }
 
     try {
-        console.log(`[LABEL] Запрос этикетки для ${postingNumber}`);
-        const response = await apiClient.post('/v2/posting/fbs/package-label', {
-            posting_number: [postingNumber]
-        });
-        if (response.data.file_content && response.data.content_type === 'application/pdf') {
-            console.log(`[LABEL] Этикетка получена, размер: ${response.data.file_content.length} символов`);
-            return Buffer.from(response.data.file_content, 'base64');
+        let url = '/v2/posting/fbs/act/get-pdf';
+        let params = {};
+        if (actId) {
+            params.id = actId;
+        } else {
+            // fallback – пробуем по номеру заказа (не рекомендуется, но может работать)
+            params.posting_number = postingNumber;
         }
-        console.warn(`[LABEL] Неожиданный ответ:`, response.data);
-        return null;
+        const response = await apiClient.get(url, {
+            params,
+            responseType: 'arraybuffer'
+        });
+        console.log(`[LABEL] Этикетка получена, размер: ${response.data.length} байт`);
+        return Buffer.from(response.data);
     } catch (err) {
-        console.error('Ошибка этикетки:', err.response?.data || err.message);
+        console.error('Ошибка получения этикетки:', err.response?.data || err.message);
         return null;
     }
 }

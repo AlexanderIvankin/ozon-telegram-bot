@@ -205,19 +205,27 @@ async function confirmPostingShip(postingNumber) {
     const details = await getOrderDetails(postingNumber);
     if (!details || !details.products) throw new Error('Нет состава заказа');
 
-    const packages = [{
-        products: details.products.map(p => {
-            // Убеждаемся, что product_id есть и это число
-            const productId = Number(p.product_id);
-            if (isNaN(productId) || productId <= 0) {
-                throw new Error(`Невалидный product_id для товара ${p.name || p.sku}: ${p.product_id}`);
-            }
+    const products = details.products.map(p => {
+        // Пытаемся использовать product_id, если он есть
+        if (p.product_id && Number(p.product_id) > 0) {
             return {
-                product_id: productId,
+                product_id: Number(p.product_id),
                 quantity: p.quantity
             };
-        })
-    }];
+        }
+        // Иначе используем offer_id (обязательно строка)
+        else if (p.offer_id && p.offer_id.trim()) {
+            return {
+                offer_id: p.offer_id,
+                quantity: p.quantity
+            };
+        }
+        else {
+            throw new Error(`Нет ни product_id, ни offer_id для товара ${p.name || p.sku}`);
+        }
+    });
+
+    const packages = [{ products }];
     console.log(`[SHIP] packages:`, JSON.stringify(packages, null, 2));
 
     const response = await apiClient.post('/v4/posting/fbs/ship', {

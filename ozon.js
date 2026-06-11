@@ -20,6 +20,9 @@ const apiClient = axios.create({
 // Флаг для тестов (MOCK-режим)
 const MOCK_MODE = process.env.OZON_MOCK_MODE === 'true';
 
+// Идентификатор для /v4/posting/fbs/ship метода
+const SHIP_IDENTIFIER = process.env.SHIP_IDENTIFIER || 'offer_id';
+
 // Тестовые заказы (включают warehouse_id для проверки фильтрации)
 const mockOrders = [
     {
@@ -211,6 +214,58 @@ async function getProductIdsByOfferIds(offerIds) {
     return mapping;
 }
 
+// Получить полную информацию о товарах по их offer_id
+async function getProductsFullInfo(offerIds) {
+    if (!offerIds.length) return {};
+    const uniqueOffers = [...new Set(offerIds)];
+    const response = await apiClient.post('/v3/product/info/list', {
+        offer_id: uniqueOffers
+    });
+    const items = response.data.items || [];
+    const productInfo = {};
+    for (const item of items) {
+        productInfo[item.offer_id] = {
+            product_id: Number(item.id),
+            offer_id: item.offer_id,
+            sku: item.sku,
+            name: item.name,
+            weight_gram: item.weight ? parseFloat(item.weight) : 0,      // если есть в ответе
+            dimensions: {                                               // если есть в ответе
+                length: item.dimensions?.length || 0,
+                width: item.dimensions?.width || 0,
+                height: item.dimensions?.height || 0
+            }
+        };
+    }
+    return productInfo;
+}
+
+// (Альтернативно, можно передавать массив sku)
+async function getProductsFullInfoBySku(skuList) {
+    if (!skuList.length) return {};
+    const uniqueSkus = [...new Set(skuList)];
+    const response = await apiClient.post('/v3/product/info/list', {
+        sku: uniqueSkus.map(s => String(s))
+    });
+    const items = response.data.items || [];
+    const productInfo = {};
+    for (const item of items) {
+        productInfo[item.sku] = {
+            product_id: Number(item.id),
+            offer_id: item.offer_id,
+            sku: item.sku,
+            name: item.name,
+            weight_gram: item.weight ? parseFloat(item.weight) : 0,
+            dimensions: {
+                length: item.dimensions?.length || 0,
+                width: item.dimensions?.width || 0,
+                height: item.dimensions?.height || 0
+            }
+        };
+    }
+    return productInfo;
+}
+
 // Подтвердить сборку заказа (перевести в awaiting_deliver) (POST /v2/posting/fbs/awaiting-delivery)
 async function awaitingDelivery(postingNumber) {
     if (debugMode.isDebugMode()) {
@@ -243,54 +298,68 @@ async function confirmPostingShip(postingNumber) {
     }
     if (!details.products || !details.products.length) throw new Error('Нет состава заказа');
 
-    // Подготавливаем упаковку (одна упаковка на весь заказ)
-    let totalWeight = 0; // в граммах
+    // Собираем все offer_id из заказа, чтобы получить полную информацию о товарах
+    const offerIds = details.products.map(p => p.offer_id).filter(Boolean);
+    const productsInfo = await getProductsFullInfo(offerIds);
+    console.log(`[SHIP] Полная информация о товарах:`, productsInfo);
+
+    // Настройка: какой идентификатор использовать
+    const identifierType = process.env.SHIP_IDENTIFIER || 'product_id'; // product_id, offer_id, sku
+    console.log(`[SHIP] Используем идентификатор: ${identifierType}`);
+
+    let totalWeight = 0;
     let maxLength = 0, maxWidth = 0, maxHeight = 0;
 
-    // Маппинг offer_id -> product_id (если нужно)
-    const offerIds = details.products.map(p => p.offer_id).filter(Boolean);
-    const productIdMapping = offerIds.length ? await getProductIdsByOfferIds(offerIds) : {};
-    console.log(`[SHIP] Mapping offer_id -> product_id:`, productIdMapping);
-
     const products = details.products.map(p => {
-        // Берём product_id из ответа или из маппинга, или используем sku (как fallback)
-        let productId = p.product_id ? Number(p.product_id) : null;
-        if (!productId && p.offer_id && productIdMapping[p.offer_id]) {
-            productId = productIdMapping[p.offer_id];
+        // Ищем информацию по offer_id (или по sku, если offer_id нет)
+        let info = productsInfo[p.offer_id];
+        if (!info && p.sku) {
+            // fallback: может быть, нужно запросить по sku, но для простоты оставляем
+            info = { product_id: null, offer_id: null, sku: p.sku };
         }
-        if (!productId) {
-            productId = Number(p.sku);
+        let identifier;
+        switch (identifierType) {
+            case 'product_id':
+                identifier = info.product_id;
+                break;
+            case 'offer_id':
+                identifier = info.offer_id;
+                break;
+            case 'sku':
+                identifier = info.sku;
+                break;
+            default:
+                identifier = info.product_id;
         }
-        if (!productId) {
-            throw new Error(`Не удалось определить product_id для товара ${p.name || p.offer_id}`);
+        if (!identifier) {
+            throw new Error(`Не удалось получить ${identifierType} для товара ${p.name || p.offer_id}`);
         }
 
-        // Суммируем вес (предполагаем, что weight_max в килограммах, переводим в граммы)
-        const weightKg = parseFloat(p.weight_max) || parseFloat(p.dimensions?.weight) || 0;
-        totalWeight += weightKg * 1000 * p.quantity; // в граммах
+        // Используем вес и габариты из полученной информации, если есть
+        const weightGram = info.weight_gram || (parseFloat(p.weight_max) * 1000) || parseFloat(p.dimensions?.weight) || 0;
+        totalWeight += weightGram * p.quantity;
 
-        // Максимальные габариты
-        const length = parseFloat(p.dimensions?.length) || 0;
-        const width = parseFloat(p.dimensions?.width) || 0;
-        const height = parseFloat(p.dimensions?.height) || 0;
+        const length = info.dimensions?.length || parseFloat(p.dimensions?.length) || 0;
+        const width = info.dimensions?.width || parseFloat(p.dimensions?.width) || 0;
+        const height = info.dimensions?.height || parseFloat(p.dimensions?.height) || 0;
         maxLength = Math.max(maxLength, length);
         maxWidth = Math.max(maxWidth, width);
         maxHeight = Math.max(maxHeight, height);
 
         return {
-            product_id: productId,
+            [identifierType]: identifier,
             quantity: p.quantity
         };
     });
 
-    if (totalWeight === 0) totalWeight = 100; // минимальный вес 100 г, если не определён
+    if (totalWeight === 0) totalWeight = 100;
     if (maxLength === 0) maxLength = 10;
     if (maxWidth === 0) maxWidth = 10;
     if (maxHeight === 0) maxHeight = 10;
 
     const packages = [{
         products,
-        weight: totalWeight, // в граммах
+        weight: totalWeight,
         dimensions: {
             length: maxLength,
             width: maxWidth,

@@ -833,23 +833,33 @@ module.exports = function registerCommands(
     if (isDebugFinished) return;
 
     try {
-      const orderDetailsBefore = await ozon.getOrderDetails(postingNumber);
-      if (orderDetailsBefore.status !== 'awaiting_packaging') {
-        await bot.sendMessage(msg.chat.id, `⚠️ Заказ ${postingNumber} находится в статусе ${orderDetailsBefore.status}. Подтверждение сборки через API невозможно. Этикетку можно скачать вручную.`);
-        await db.completeOrder(postingNumber);
-        return;
-      }
-      
       const orderAmount = await ozon.getOrderTotalAmount(postingNumber);
       await db.updateEmployeeStats(employee.id, orderAmount);
 
-      // Отправляем запрос на подтверждение сборки (теперь с правильным product_id)
-      await ozon.confirmPostingShip(postingNumber);
+      // 1. Создаём акт (формируем документы)
+      const actResponse = await ozon.confirmPostingShip(postingNumber);
+      const actId = actResponse?.result?.id || actResponse?.id;
+      console.log(`[FINISH] Получен actId: ${actId}`);
 
-      // Ждём 60 секунд (рекомендация Ozon)
-      await new Promise(resolve => setTimeout(resolve, 60000));
+      // Задержка 10 секунд для обработки на стороне Ozon
+      await new Promise(resolve => setTimeout(resolve, 10000));
 
-      const labelBuffer = await ozon.getPackageLabel(postingNumber);
+      // 2. Переводим заказ в awaiting_deliver
+      const deliveryResponse = await ozon.awaitingDelivery(postingNumber);
+      console.log(`[FINISH] awaiting-delivery ответ:`, deliveryResponse);
+
+      // 3. Ждём 5 секунд для синхронизации
+      await new Promise(resolve => setTimeout(resolve, 5000));
+
+      // 4. Получаем этикетку (пробуем через actId, затем через posting_number)
+      let labelBuffer = null;
+      if (actId) {
+        labelBuffer = await ozon.getPackageLabel(null, actId);
+      }
+      if (!labelBuffer) {
+        labelBuffer = await ozon.getPackageLabel(postingNumber);
+      }
+
       await db.completeOrder(postingNumber);
 
       if (labelBuffer) {

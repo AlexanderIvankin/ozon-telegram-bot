@@ -212,37 +212,152 @@ async function getProductIdsByOfferIds(offerIds) {
 }
 
 // Подтвердить сборку заказа (перевести в awaiting_deliver) (POST /v2/posting/fbs/awaiting-delivery)
+async function awaitingDelivery(postingNumber) {
+    if (debugMode.isDebugMode()) {
+        console.log(`[DEBUG] Эмуляция awaiting-delivery для ${postingNumber}`);
+        return { result: true };
+    }
+    try {
+        const response = await apiClient.post('/v2/posting/fbs/awaiting-delivery', {
+            posting_number: [postingNumber]
+        });
+        console.log(`[SHIP] awaiting-delivery ответ:`, response.data);
+        return response.data; // { result: true/false }
+    } catch (err) {
+        console.error('Ошибка awaiting-delivery:', err.message);
+        return { result: false };
+    }
+}
+
+// Подтвердить сборку заказа через (POST /v4/posting/fbs/ship)
 async function confirmPostingShip(postingNumber) {
     if (debugMode.isDebugMode()) {
         console.log(`[DEBUG] Эмуляция подтверждения сборки заказа ${postingNumber}`);
-        return { result: true };
+        return { result: [postingNumber] };
     }
 
-    console.log(`[SHIP] Перевод заказа ${postingNumber} в awaiting_deliver через /v2/posting/fbs/awaiting-delivery`);
-    const response = await apiClient.post('/v2/posting/fbs/awaiting-delivery', {
-        posting_number: [postingNumber]
+    const details = await getOrderDetails(postingNumber);
+    if (!details) throw new Error('Нет деталей заказа');
+    if (details.status !== 'awaiting_packaging') {
+        throw new Error(`Заказ не в статусе awaiting_packaging (текущий: ${details.status})`);
+    }
+    if (!details.products || !details.products.length) throw new Error('Нет состава заказа');
+
+    // Подготавливаем упаковку (одна упаковка на весь заказ)
+    let totalWeight = 0; // в граммах
+    let maxLength = 0, maxWidth = 0, maxHeight = 0;
+
+    // Маппинг offer_id -> product_id (если нужно)
+    const offerIds = details.products.map(p => p.offer_id).filter(Boolean);
+    const productIdMapping = offerIds.length ? await getProductIdsByOfferIds(offerIds) : {};
+    console.log(`[SHIP] Mapping offer_id -> product_id:`, productIdMapping);
+
+    const products = details.products.map(p => {
+        // Берём product_id из ответа или из маппинга, или используем sku (как fallback)
+        let productId = p.product_id ? Number(p.product_id) : null;
+        if (!productId && p.offer_id && productIdMapping[p.offer_id]) {
+            productId = productIdMapping[p.offer_id];
+        }
+        if (!productId) {
+            productId = Number(p.sku);
+        }
+        if (!productId) {
+            throw new Error(`Не удалось определить product_id для товара ${p.name || p.offer_id}`);
+        }
+
+        // Суммируем вес (предполагаем, что weight_max в килограммах, переводим в граммы)
+        const weightKg = parseFloat(p.weight_max) || parseFloat(p.dimensions?.weight) || 0;
+        totalWeight += weightKg * 1000 * p.quantity; // в граммах
+
+        // Максимальные габариты
+        const length = parseFloat(p.dimensions?.length) || 0;
+        const width = parseFloat(p.dimensions?.width) || 0;
+        const height = parseFloat(p.dimensions?.height) || 0;
+        maxLength = Math.max(maxLength, length);
+        maxWidth = Math.max(maxWidth, width);
+        maxHeight = Math.max(maxHeight, height);
+
+        return {
+            product_id: productId,
+            quantity: p.quantity
+        };
     });
-    console.log(`[SHIP] Ответ awaiting-delivery:`, JSON.stringify(response.data, null, 2));
+
+    if (totalWeight === 0) totalWeight = 100; // минимальный вес 100 г, если не определён
+    if (maxLength === 0) maxLength = 10;
+    if (maxWidth === 0) maxWidth = 10;
+    if (maxHeight === 0) maxHeight = 10;
+
+    const packages = [{
+        products,
+        weight: totalWeight, // в граммах
+        dimensions: {
+            length: maxLength,
+            width: maxWidth,
+            height: maxHeight
+        }
+    }];
+
+    console.log(`[SHIP] packages с упаковкой:`, JSON.stringify(packages, null, 2));
+
+    const response = await apiClient.post('/v4/posting/fbs/ship', {
+        packages,
+        posting_number: postingNumber,
+        with: { additional_data: true }
+    });
+    console.log(`[SHIP] Ответ:`, JSON.stringify(response.data, null, 2));
     return response.data;
 }
 
 // Получить PDF этикетку (POST /v2/posting/fbs/package-label)
-async function getPackageLabel(postingNumber) {
+// async function getPackageLabel(postingNumber) {
+//     if (debugMode.isDebugMode()) {
+//         console.log(`[DEBUG] Эмуляция получения этикетки для ${postingNumber}`);
+//         return Buffer.from('%PDF-1.4\n%EOF', 'binary');
+//     }
+
+//     try {
+//         const response = await apiClient.post('/v2/posting/fbs/package-label', {
+//             posting_number: [postingNumber]
+//         });
+//         if (response.data.file_content && response.data.content_type === 'application/pdf') {
+//             return Buffer.from(response.data.file_content, 'base64');
+//         }
+//         return null;
+//     } catch (err) {
+//         console.error('Ошибка этикетки:', err.response?.data || err.message);
+//         return null;
+//     }
+// }
+
+// Получить PDF этикетку (POST /v2/posting/fbs/act/get-pdf)
+async function getPackageLabel(postingNumber, actId = null) {
     if (debugMode.isDebugMode()) {
-        console.log(`[DEBUG] Эмуляция получения этикетки для ${postingNumber}`);
+        console.log(`[DEBUG] Эмуляция получения этикетки для ${postingNumber || actId}`);
         return Buffer.from('%PDF-1.4\n%EOF', 'binary');
     }
 
     try {
-        const response = await apiClient.post('/v2/posting/fbs/package-label', {
-            posting_number: [postingNumber]
-        });
-        if (response.data.file_content && response.data.content_type === 'application/pdf') {
-            return Buffer.from(response.data.file_content, 'base64');
+        if (actId) {
+            // Получаем этикетку по ID акта
+            const response = await apiClient.get('/v2/posting/fbs/act/get-pdf', {
+                params: { id: actId },
+                responseType: 'arraybuffer'
+            });
+            console.log(`[LABEL] Этикетка получена по actId ${actId}, размер: ${response.data.length} байт`);
+            return Buffer.from(response.data);
+        } else if (postingNumber) {
+            // Старый способ через package-label
+            const response = await apiClient.post('/v2/posting/fbs/package-label', {
+                posting_number: [postingNumber]
+            });
+            if (response.data.file_content && response.data.content_type === 'application/pdf') {
+                return Buffer.from(response.data.file_content, 'base64');
+            }
         }
         return null;
     } catch (err) {
-        console.error('Ошибка этикетки:', err.response?.data || err.message);
+        console.error('Ошибка получения этикетки:', err.response?.data || err.message);
         return null;
     }
 }
@@ -261,5 +376,5 @@ async function getOrderTotalAmount(orderId) {
 
 module.exports = {
     fetchAwaitingOrders, fetchAwaitingOrdersById, getOrderDetails, fetchWarehousesFromOzon, fetchProductsImages, downloadImage, confirmPostingShip,
-    getPackageLabel, getOrderTotalAmount
+    awaitingDelivery, getPackageLabel, getOrderTotalAmount
 };

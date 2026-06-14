@@ -1,4 +1,3 @@
-// upload_models.js
 const path = require('path');
 const fs = require('fs');
 const TelegramBot = require('node-telegram-bot-api');
@@ -6,7 +5,7 @@ const sqlite3 = require('sqlite3').verbose();
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const MODELS_CHAT_ID = process.env.MODELS_CHAT_ID;
-const MODELS_ROOT = './models';
+const MODELS_ROOT = './Ozon';
 
 const bot = new TelegramBot(BOT_TOKEN);
 const db = new sqlite3.Database('./bot.db');

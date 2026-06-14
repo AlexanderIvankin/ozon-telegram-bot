@@ -6,10 +6,14 @@ const sqlite3 = require('sqlite3').verbose();
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const MODELS_CHAT_ID = process.env.MODELS_CHAT_ID;
-const MODELS_ROOT = './Ozon';
+const MODELS_ROOT = './models';
 
 const bot = new TelegramBot(BOT_TOKEN);
 const db = new sqlite3.Database('./bot.db');
+
+// Лог-файлы
+const uploadedLog = fs.createWriteStream('uploaded_models.log', { flags: 'a' });
+const skippedLog = fs.createWriteStream('skipped_models.log', { flags: 'a' });
 
 function getOfferIdFromFolder(folderName) {
   // Папка вида "000000001 какой-то текст" → "000000001"
@@ -26,23 +30,39 @@ async function uploadAll() {
     for (const file of files) {
       const filePath = path.join(folderPath, file);
       const stats = fs.statSync(filePath);
-      if (stats.size > 50 * 1024 * 1024) {
-        console.log(`Пропуск ${filePath} — превышает 50 МБ`);
+      const sizeMB = stats.size / (1024 * 1024);
+
+      if (sizeMB > 50) {
+        const msg = `[SKIP] ${offerId}/${file} — ${sizeMB.toFixed(2)} MB\n`;
+        skippedLog.write(msg);
+        console.log(msg);
         continue;
       }
-      const msg = await bot.sendDocument(MODELS_CHAT_ID, filePath, {
-        caption: `offer_id: ${offerId}\nФайл: ${file}`
-      });
-      const fileId = msg.document.file_id;
-      db.run(
-        `INSERT INTO product_models (offer_id, file_id, file_name, file_size, uploaded_at)
-                 VALUES (?, ?, ?, ?, ?)`,
-        [offerId, fileId, file, stats.size, Date.now()]
-      );
-      console.log(`✓ ${offerId}/${file}`);
+
+      try {
+        const msg = await bot.sendDocument(MODELS_CHAT_ID, filePath, {
+          caption: `offer_id: ${offerId}\nФайл: ${file}`
+        });
+        const fileId = msg.document.file_id;
+        await db.run(
+          `INSERT INTO product_models (offer_id, file_id, file_name, file_size, uploaded_at)
+                     VALUES (?, ?, ?, ?, ?)`,
+          [offerId, fileId, file, stats.size, Date.now()]
+        );
+        const logMsg = `[UPLOADED] ${offerId}/${file} — ${sizeMB.toFixed(2)} MB, file_id: ${fileId}\n`;
+        uploadedLog.write(logMsg);
+        console.log(`✓ ${offerId}/${file}`);
+      } catch (err) {
+        const errMsg = `[ERROR] ${offerId}/${file} — ${err.message}\n`;
+        skippedLog.write(errMsg);
+        console.error(`✗ Ошибка загрузки ${offerId}/${file}:`, err.message);
+      }
     }
   }
+  console.log('Заливка завершена');
   db.close();
+  uploadedLog.end();
+  skippedLog.end();
 }
 
 uploadAll();

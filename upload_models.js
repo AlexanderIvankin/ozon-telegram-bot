@@ -1,6 +1,8 @@
+require('dotenv').config();
 const path = require('path');
 const fs = require('fs');
 const TelegramBot = require('node-telegram-bot-api');
+const db = require('./db');
 const sqlite3 = require('sqlite3').verbose();
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -20,6 +22,8 @@ function getOfferIdFromFolder(folderName) {
 }
 
 async function uploadAll() {
+  await db.initDB();
+
   const folders = fs.readdirSync(MODELS_ROOT);
   for (const folder of folders) {
     const folderPath = path.join(MODELS_ROOT, folder);
@@ -43,11 +47,7 @@ async function uploadAll() {
           caption: `offer_id: ${offerId}\nФайл: ${file}`
         });
         const fileId = msg.document.file_id;
-        await db.run(
-          `INSERT INTO product_models (offer_id, file_id, file_name, file_size, uploaded_at)
-                     VALUES (?, ?, ?, ?, ?)`,
-          [offerId, fileId, file, stats.size, Date.now()]
-        );
+        await db.addProductModel(offerId, fileId, file, stats.size);
         const logMsg = `[UPLOADED] ${offerId}/${file} — ${sizeMB.toFixed(2)} MB, file_id: ${fileId}\n`;
         uploadedLog.write(logMsg);
         console.log(`✓ ${offerId}/${file}`);
@@ -59,7 +59,6 @@ async function uploadAll() {
     }
   }
   console.log('Заливка завершена');
-  db.close();
   uploadedLog.end();
   skippedLog.end();
 }

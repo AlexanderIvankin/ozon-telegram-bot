@@ -80,6 +80,19 @@ async function initDB() {
         console.log('[DB] Добавлена колонка capacity в employees');
     }
 
+    // Таблица 3D-моделей товаров
+    await database.exec(`
+    CREATE TABLE IF NOT EXISTS product_models (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        offer_id TEXT NOT NULL,
+        file_id TEXT NOT NULL,
+        file_name TEXT,
+        file_size INTEGER,
+        uploaded_at INTEGER
+    )
+`);
+    await database.exec(`CREATE INDEX IF NOT EXISTS idx_product_models_offer_id ON product_models(offer_id);`);
+
     return database;
 }
 
@@ -239,6 +252,26 @@ async function getEmployeeStats(employeeId) {
     return stats || { total_orders: 0, total_amount: 0, canceled_orders: 0 };
 }
 
+// Добавить модель (при заливке)
+async function addProductModel(offerId, fileId, fileName, fileSize) {
+    await database.run(
+        `INSERT INTO product_models (offer_id, file_id, file_name, file_size, uploaded_at)
+         VALUES (?, ?, ?, ?, ?)`,
+        offerId, fileId, fileName, fileSize, Date.now()
+    );
+}
+
+// Получить все модели для offer_id (учитывая обрезание суффикса)
+async function getProductModels(offerId) {
+    // Отрезаем суффикс типа -N, -X, -NR, -NL и т.д.
+    const prefix = offerId.split('-')[0];
+    // Ищем модели, у которых offer_id начинается с этого префикса
+    return database.all(
+        `SELECT file_id, file_name, file_size FROM product_models WHERE offer_id LIKE ? ORDER BY file_name`,
+        `${prefix}%`
+    );
+}
+
 
 module.exports = {
     initDB,
@@ -256,7 +289,9 @@ module.exports = {
     getAllWarehouses,
     getWarehouseNameById,
     updateEmployeeStats,
-    getEmployeeStats
+    getEmployeeStats,
+    addProductModel,
+    getProductModels
 };
 
 // Геттер для доступа к database через .db (для обратной совместимости с bot.js)

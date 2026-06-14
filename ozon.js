@@ -359,12 +359,12 @@ async function confirmPostingShip(postingNumber) {
 
     const packages = [{
         products,
-        weight: totalWeight,
-        dimensions: {
-            length: maxLength,
-            width: maxWidth,
-            height: maxHeight
-        }
+        // weight: totalWeight,
+        // dimensions: {
+        //     length: maxLength,
+        //     width: maxWidth,
+        //     height: maxHeight
+        // }
     }];
 
     console.log(`[SHIP] packages с упаковкой:`, JSON.stringify(packages, null, 2));

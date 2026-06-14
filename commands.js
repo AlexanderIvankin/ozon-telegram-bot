@@ -205,6 +205,26 @@ module.exports = function registerCommands(
           await bot.sendMessage(employee.tg_user_id, `✅ Вам назначен заказ №: ${orderId}${detailsText}\n\n(Штрихкод не сгенерирован)`);
         }
 
+        // --- Отправка 3D-моделей (если есть) ---
+        if (orderDetails.products && orderDetails.products.length) {
+          for (const p of orderDetails.products) {
+            const offerId = p.offer_id;
+            if (!offerId) continue;
+
+            const models = await db.getProductModels(offerId);
+            if (!models.length) {
+              await bot.sendMessage(employee.tg_user_id, `ℹ️ 3D-модели для товара ${p.name} (${offerId}) отсутствуют.`);
+              continue;
+            }
+            for (const model of models) {
+              await bot.sendDocument(employee.tg_user_id, model.file_id, {
+                caption: `📁 3D-модель для ${p.name}\noffer_id: ${offerId}\nФайл: ${model.file_name}`
+              });
+              await new Promise(resolve => setTimeout(resolve, 500));
+            }
+          }
+        }
+
         // Отправляем фото товаров сотруднику
         if (skuList.length) {
           try {

@@ -235,8 +235,8 @@ module.exports = function registerCommands(
 
             if (!models.length) {
               // Нет ни одной модели – сообщаем модератору (один раз на заказ, но для простоты – на каждый товар)
-              await bot.sendMessage(ADMIN_USER_ID, `⚠️ Для товара ${product.name} (${offerId}) отсутствуют 3D-модели. Обратитесь к модератору.`);
-              await bot.sendMessage(employee.tg_user_id, `ℹ️ 3D-модели для товара ${product.name} (${offerId}) отсутствуют. Обратитесь к модератору.`);
+              await bot.sendMessage(MODERATOR_ID, `⚠️ Для товара ${product.name} (${offerId}) отсутствуют 3D-модели.\nОтправьте их сотруднику ${employee.tg_user_id} в ручную`);
+              await bot.sendMessage(employee.tg_user_id, `ℹ️ 3D-модели для товара ${product.name} (${offerId}) отсутствуют. Обратитесь к модератору за выдачей.`);
               continue;
             }
 
@@ -251,7 +251,7 @@ module.exports = function registerCommands(
             // Если есть пропущенные (не загруженные) модели – сообщаем модератору
             if (skipped.length) {
               const fileList = skipped.map(s => s.file_name).join(', ');
-              await bot.sendMessage(ADMIN_USER_ID, `⚠️ Для товара ${product.name} (${offerId}) не загружены модели: ${fileList}. Обратитесь к модератору.`);
+              await bot.sendMessage(MODERATOR_ID, `⚠️ Для товара ${product.name} (${offerId}) не загружены модели: ${fileList}.\nОтправьте их ${employee.tg_user_id}\n сотруднику в ручную`);
             }
           }
         }

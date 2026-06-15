@@ -226,21 +226,32 @@ module.exports = function registerCommands(
           }
 
           // --- Отправка 3D-моделей и уведомление о пропущенных ---
+          const validExtensions = ['.stl', '.3mf', '.step', '.obj'];
           for (const product of orderDetails.products) {
             const offerId = product.offer_id;
             if (!offerId) continue;
 
-            const models = await db.getProductModels(offerId);
-            const skipped = await db.getSkippedModels(offerId);
+            const models = await db.getProductModelsByExtensions(offerId, validExtensions);
+            const textFiles = await db.getTextFilesForOfferId(offerId);
+            const skipped = await db.getSkippedModels(offerId); // если есть такая таблица
 
             if (!models.length) {
-              // Нет ни одной модели – сообщаем модератору (один раз на заказ, но для простоты – на каждый товар)
-              await bot.sendMessage(MODERATOR_ID, `⚠️ Для товара ${product.name} (${offerId}) отсутствуют 3D-модели.\nОтправьте их сотруднику ${employee.tg_user_id} в ручную`);
-              await bot.sendMessage(employee.tg_user_id, `ℹ️ 3D-модели для товара ${product.name} (${offerId}) отсутствуют. Обратитесь к модератору за выдачей.`);
+              if (textFiles.length) {
+                // Отправляем .txt файлы модератору (один или несколько)
+                for (const txt of textFiles) {
+                  await bot.sendDocument(MODERATOR_ID, txt.file_id, {
+                    caption: `📄 Текстовый файл для товара ${product.name} (${offerId}): ${txt.file_name}\nОтправьте его сотруднику ${employee.tg_user_id} вручную.`
+                  });
+                }
+                await bot.sendMessage(employee.tg_user_id, `ℹ️ Для товара ${product.name} (${offerId}) нет 3D-моделей, но есть инструкция (файл .txt). Обратитесь к модератору.`);
+              } else {
+                await bot.sendMessage(MODERATOR_ID, `⚠️ Для товара ${product.name} (${offerId}) отсутствуют 3D-модели.\nОтправьте их сотруднику ${employee.tg_user_id} вручную`);
+                await bot.sendMessage(employee.tg_user_id, `ℹ️ 3D-модели для товара ${product.name} (${offerId}) отсутствуют. Обратитесь к модератору за выдачей.`);
+              }
               continue;
             }
 
-            // Отправляем сотруднику все загруженные модели
+            // Отправляем сотруднику все найденные 3D-модели
             for (const model of models) {
               await bot.sendDocument(employee.tg_user_id, model.file_id, {
                 caption: `📁 3D-модель для ${product.name}\noffer_id: ${offerId}\nФайл: ${model.file_name}`
@@ -372,11 +383,17 @@ module.exports = function registerCommands(
       adminMessage += `/orders [warehouse_id] — показать очередь заказов из API\n`;
       adminMessage += `/employee_orders <id> — показать активные заказы сотрудника\n`;
       adminMessage += `/order_details <posting_number> — показать детали заказа\n`;
-      adminMessage += `/admin_cancel_order <id> — снять заказ с сотрудника\n`;
-      adminMessage += `/clear_assignments — сброс ВСЕХ назначений на заказы\n`;
-      adminMessage += `/reload_queue — Принудительная инициализация синхронизации (вне таймера) и перезапуска очереди заказов\n`;
+      adminMessage += `/admin_cancel_order <id> — снять заказ с сотрудника\n\n`;
+
+      adminMessage += `/add_model <offer_id> — загрузить новую модель (отправить файл после команды)\n`;
+      adminMessage += `/remove_model <offer_id> <имя_файла> — удалить модель\n`;
+      adminMessage += `/list_models <offer_id> — список моделей для offer_id\n`;
+      adminMessage += `/cancel_model — отменить ожидание загрузки модели\n\n`;
+
+      adminMessage += `/clear_assignments — сброс ВСЕХ назначений на заказы\n\n`;
+      adminMessage += `/reload_queue — Принудительная инициализация синхронизации (вне таймера) и перезапуска очереди заказов\n\n`;
       adminMessage += `/pause — приостановить авто-проверку очереди заказов\n`;
-      adminMessage += `/resume — возобновить авто-проверку очереди заказов\n`;
+      adminMessage += `/resume — возобновить авто-проверку очереди заказов\n\n`;
       if (debugMode.isDebugMode()) adminMessage += `/debug_clear — сбросить отладочные назначения\n`;
 
       await bot.sendMessage(chatId, adminMessage);
@@ -587,6 +604,109 @@ module.exports = function registerCommands(
       }
     };
     await bot.sendMessage(msg.chat.id, `⚠️ Снять заказ ${postingNumber} с сотрудника ${assignment.employee_name}? Заказ вернётся в очередь.`, confirmKeyboard);
+  });
+
+  // --- "/add_model" Команда для администратора: добавление/обновление 3D-модели ---
+  bot.onText(/\/add_model (\S+)/, async (msg, match) => {
+    const userId = msg.from.id.toString();
+    if (!isAdmin(userId)) {
+      return bot.sendMessage(msg.chat.id, '⛔ Только администратор может добавлять модели.');
+    }
+    const offerId = match[1];
+    // Ожидаем, что следующим сообщением администратор отправит файл
+    bot.sendMessage(msg.chat.id, `Отправьте файл модели для offer_id ${offerId} (до 50 МБ).`);
+    // Сохраняем состояние: ожидаем файл для этого offer_id
+    // Можно использовать временное хранилище, например, Map
+    if (!global.pendingModelAdd) global.pendingModelAdd = new Map();
+    global.pendingModelAdd.set(userId, { offerId, step: 'waiting_file' });
+  });
+
+  // Обработчик документов (файлов) для ручной загрузки
+  bot.on('document', async (msg) => {
+    const userId = msg.from.id.toString();
+    if (!isAdmin(userId)) return;
+    if (!global.pendingModelAdd || !global.pendingModelAdd.has(userId)) return;
+
+    const pending = global.pendingModelAdd.get(userId);
+    if (pending.step !== 'waiting_file') return;
+
+    const file = msg.document;
+    const fileSizeMB = file.file_size / (1024 * 1024);
+    if (fileSizeMB > 50) {
+      return bot.sendMessage(msg.chat.id, `❌ Файл слишком большой (${fileSizeMB.toFixed(2)} МБ). Максимум 50 МБ.`);
+    }
+    const fileName = file.file_name;
+    const offerId = pending.offerId;
+
+    try {
+      // Получаем file_id отправленного файла (бот должен иметь доступ к файлу)
+      const fileLink = await bot.getFileLink(file.file_id);
+      // Но для пересылки в канал нам нужен file_id, который мы получим, отправив документ в канал
+      // Отправляем файл в канал моделей
+      const sent = await bot.sendDocument(process.env.MODELS_CHAT_ID, file.file_id, {
+        caption: `offer_id: ${offerId}\nФайл: ${fileName}`
+      });
+      const newFileId = sent.document.file_id;
+
+      // Удаляем старую модель с таким же именем, если она есть
+      await db.deleteProductModel(offerId, fileName);
+      // Добавляем новую
+      await db.addProductModel(offerId, newFileId, fileName, file.file_size);
+
+      bot.sendMessage(msg.chat.id, `✅ Модель ${fileName} для offer_id ${offerId} успешно добавлена/обновлена.`);
+      global.pendingModelAdd.delete(userId);
+    } catch (err) {
+      console.error('Ошибка добавления модели:', err);
+      bot.sendMessage(msg.chat.id, `❌ Ошибка добавления модели: ${err.message}`);
+    }
+  });
+
+  // --- "/remove_model" Команда для администратора: удаление модели ---
+  bot.onText(/\/remove_model (\S+) (.+)/, async (msg, match) => {
+    const userId = msg.from.id.toString();
+    if (!isAdmin(userId)) {
+      return bot.sendMessage(msg.chat.id, '⛔ Только администратор может удалять модели.');
+    }
+    const offerId = match[1];
+    const fileName = match[2];
+    try {
+      await db.deleteProductModel(offerId, fileName);
+      bot.sendMessage(msg.chat.id, `✅ Модель ${fileName} для offer_id ${offerId} удалена из базы.`);
+    } catch (err) {
+      bot.sendMessage(msg.chat.id, `❌ Ошибка удаления: ${err.message}`);
+    }
+  });
+
+  // --- "/list_models" Команда для администратора: список моделей для offer_id ---
+  bot.onText(/\/list_models (\S+)/, async (msg, match) => {
+    const userId = msg.from.id.toString();
+    if (!isAdmin(userId)) {
+      return bot.sendMessage(msg.chat.id, '⛔ Только администратор может смотреть список моделей.');
+    }
+    const offerId = match[1];
+    const models = await db.getAllProductModels(offerId);
+    if (!models.length) {
+      return bot.sendMessage(msg.chat.id, `📭 Нет моделей для offer_id ${offerId}.`);
+    }
+    let reply = `📋 Модели для ${offerId}:\n`;
+    for (const m of models) {
+      reply += `• ${m.file_name} (${(m.file_size / 1024 / 1024).toFixed(2)} МБ)\n`;
+    }
+    await bot.sendMessage(msg.chat.id, reply);
+  });
+
+  // --- "/cancel_model" Команда для администратора: отмена ожидания заливки модели ---
+  bot.onText(/\/cancel_model/, async (msg) => {
+    const userId = msg.from.id.toString();
+    if (!isAdmin(userId)) {
+      return bot.sendMessage(msg.chat.id, '⛔ Только администратор может отменить заливку модели.');
+    }
+    if (global.pendingModelAdd && global.pendingModelAdd.has(userId)) {
+      global.pendingModelAdd.delete(userId);
+      bot.sendMessage(msg.chat.id, 'Операция добавления модели отменена.');
+    } else {
+      bot.sendMessage(msg.chat.id, 'Нет активной операции.');
+    }
   });
 
   // --- "/reload_queue" Команда для администратора: Принудительная инициализация синхронизации (вне таймера) и перезапуска очереди заказов ---
@@ -958,11 +1078,17 @@ module.exports = function registerCommands(
       helpText += `/orders [warehouse_id] — показать очередь заказов из API\n`;
       helpText += `/employee_orders <id> — активные заказы сотрудника\n`;
       helpText += `/order_details <номер> — показать детали заказа\n`;
-      helpText += `/admin_cancel_order <id> — снять заказ с сотрудника\n`;
-      helpText += `/clear_assignments — сброс ВСЕХ назначений на заказы\n`;
-      helpText += `/reload_queue — Принудительная инициализация синхронизации (вне таймера) и перезапуска очереди заказов\n`;
+      helpText += `/admin_cancel_order <id> — снять заказ с сотрудника\n\n`;
+
+      helpText += `/add_model <offer_id> — загрузить новую модель (отправить файл после команды)\n`;
+      helpText += `/remove_model <offer_id> <имя_файла> — удалить модель\n`;
+      helpText += `/list_models <offer_id> — список моделей для offer_id\n`;
+      helpText += `/cancel_model — отменить ожидание загрузки модели\n\n`;
+
+      helpText += `/clear_assignments — сброс ВСЕХ назначений на заказы\n\n`;
+      helpText += `/reload_queue — Принудительная инициализация синхронизации (вне таймера) и перезапуска очереди заказов\n\n`;
       helpText += `/pause — приостановить авто-проверку очереди заказов\n`;
-      helpText += `/resume — возобновить авто-проверку очереди заказов\n`;
+      helpText += `/resume — возобновить авто-проверку очереди заказов\n\n`;
       if (debugMode.isDebugMode()) helpText += `/debug_clear — сброс отладочных данных\n`;
       await bot.sendMessage(msg.chat.id, helpText);
       return;

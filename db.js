@@ -285,6 +285,41 @@ async function getProductModels(offerId) {
     );
 }
 
+// Удалить все модели для offer_id с указанным именем файла
+async function deleteProductModel(offerId, fileName) {
+    await database.run(
+        `DELETE FROM product_models WHERE offer_id = ? AND file_name = ?`,
+        offerId, fileName
+    );
+}
+
+// Получить все модели для offer_id (без ограничений)
+async function getAllProductModels(offerId) {
+    return database.all(
+        `SELECT file_id, file_name, file_size FROM product_models WHERE offer_id = ? ORDER BY file_name`,
+        offerId
+    );
+}
+
+// Получить модели с расширениями из списка
+async function getProductModelsByExtensions(offerId, extensions) {
+    const placeholders = extensions.map(() => '?').join(',');
+    return database.all(
+        `SELECT file_id, file_name, file_size FROM product_models 
+         WHERE offer_id = ? AND (${placeholders.map(e => `file_name LIKE '%${e}'`).join(' OR ')})`,
+        [offerId, ...extensions]
+    );
+}
+
+// Получить текстовые файлы (например .txt)
+async function getTextFilesForOfferId(offerId) {
+    return database.all(
+        `SELECT file_id, file_name, file_size FROM product_models 
+         WHERE offer_id = ? AND file_name LIKE '%.txt'`,
+        offerId
+    );
+}
+
 // Получить пропущенные модели для offer_id
 async function getSkippedModels(offerId) {
     return database.all(
@@ -322,8 +357,12 @@ module.exports = {
     updateEmployeeStats,
     getEmployeeStats,
     addProductModel,
-    addSkippedModel,
     getProductModels,
+    deleteProductModel,
+    getAllProductModels,
+    getProductModelsByExtensions,
+    getTextFilesForOfferId,
+    addSkippedModel,
     getSkippedModels,
 };
 

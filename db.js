@@ -93,6 +93,19 @@ async function initDB() {
 `);
     await database.exec(`CREATE INDEX IF NOT EXISTS idx_product_models_offer_id ON product_models(offer_id);`);
 
+    // Таблица пропущенных при заливке 3D-моделей
+    await database.exec(`
+    CREATE TABLE IF NOT EXISTS skipped_models (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        offer_id TEXT NOT NULL,
+        file_name TEXT NOT NULL,
+        reason TEXT,
+        file_size_mb REAL,
+        created_at INTEGER
+    )
+`);
+    await database.exec(`CREATE INDEX IF NOT EXISTS idx_skipped_models_offer_id ON skipped_models(offer_id);`);
+
     return database;
 }
 
@@ -272,6 +285,24 @@ async function getProductModels(offerId) {
     );
 }
 
+// Получить пропущенные модели для offer_id
+async function getSkippedModels(offerId) {
+    return database.all(
+        `SELECT file_name, reason FROM skipped_models WHERE offer_id = ? ORDER BY file_name`,
+        offerId
+    );
+}
+
+// Добавить пропущенную модель (для загрузчика)
+async function addSkippedModel(offerId, fileName, reason, fileSizeMb) {
+    await database.run(
+        `INSERT INTO skipped_models (offer_id, file_name, reason, file_size_mb, created_at)
+         VALUES (?, ?, ?, ?, ?)`,
+        offerId, fileName, reason, fileSizeMb, Date.now()
+    );
+}
+
+
 
 module.exports = {
     initDB,
@@ -291,7 +322,9 @@ module.exports = {
     updateEmployeeStats,
     getEmployeeStats,
     addProductModel,
-    getProductModels
+    addSkippedModel,
+    getProductModels,
+    getSkippedModels,
 };
 
 // Геттер для доступа к database через .db (для обратной совместимости с bot.js)

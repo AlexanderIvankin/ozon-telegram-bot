@@ -224,46 +224,63 @@ module.exports = function registerCommands(
           } catch (photoError) {
             console.error(`Ошибка отправки фото сотруднику для заказа ${orderId}:`, photoError.message);
           }
+        }
 
-          // --- Отправка 3D-моделей и уведомление о пропущенных ---
-          const validExtensions = ['.stl', '.3mf', '.step', '.obj'];
-          for (const product of orderDetails.products) {
-            const offerId = product.offer_id;
-            if (!offerId) continue;
+        // --- Отправка 3D-моделей и уведомление о пропущенных ---
+        const validExtensions = ['.stl', '.3mf', '.step', '.obj'];
 
-            const models = await db.getProductModelsByExtensions(offerId, validExtensions);
-            const textFiles = await db.getTextFilesForOfferId(offerId);
-            const skipped = await db.getSkippedModels(offerId); // если есть такая таблица
+        for (const product of orderDetails.products) {
+          const originalOfferId = product.offer_id;
+          if (!originalOfferId) continue;
 
-            if (!models.length) {
-              if (textFiles.length) {
-                // Отправляем .txt файлы модератору (один или несколько)
-                for (const txt of textFiles) {
-                  await bot.sendDocument(MODERATOR_ID, txt.file_id, {
-                    caption: `📄 Текстовый файл для товара ${product.name} (${offerId}): ${txt.file_name}\nОтправьте его сотруднику ${employee.tg_user_id} вручную.`
-                  });
-                }
-                await bot.sendMessage(employee.tg_user_id, `ℹ️ Для товара ${product.name} (${offerId}) нет 3D-моделей, но есть инструкция (файл .txt). Обратитесь к модератору.`);
-              } else {
-                await bot.sendMessage(MODERATOR_ID, `⚠️ Для товара ${product.name} (${offerId}) отсутствуют 3D-модели.\nОтправьте их сотруднику ${employee.tg_user_id} вручную`);
-                await bot.sendMessage(employee.tg_user_id, `ℹ️ 3D-модели для товара ${product.name} (${offerId}) отсутствуют. Обратитесь к модератору за выдачей.`);
+          // Формируем список offer_id для поиска (сначала точный, потом родительский)
+          const offersToCheck = [originalOfferId];
+          const parentOfferId = getParentOfferId(originalOfferId);
+          if (parentOfferId) offersToCheck.push(parentOfferId);
+
+          let models = [];
+          let usedOfferId = null;
+          let textFiles = [];
+          let skipped = [];
+
+          for (const oid of offersToCheck) {
+            models = await db.getProductModelsByExtensions(oid, validExtensions);
+            textFiles = await db.getTextFilesForOfferId(oid);
+            skipped = await db.getSkippedModels(oid);
+            if (models.length) {
+              usedOfferId = oid;
+              break;
+            }
+          }
+
+          if (!models.length) {
+            if (textFiles.length) {
+              for (const txt of textFiles) {
+                await bot.sendDocument(MODERATOR_ID, txt.file_id, {
+                  caption: `📄 Текстовый файл для товара ${product.name} (${originalOfferId}) из offer_id ${txt.offer_id}: ${txt.file_name}\nОтправьте его сотруднику ${employee.tg_user_id} вручную.`
+                });
               }
-              continue;
+              await bot.sendMessage(employee.tg_user_id, `ℹ️ Для товара ${product.name} (${originalOfferId}) нет 3D-моделей, но есть инструкция (файл .txt). Обратитесь к модератору.`);
+            } else {
+              await bot.sendMessage(MODERATOR_ID, `⚠️ Для товара ${product.name} (${originalOfferId}) отсутствуют 3D-модели.\nОтправьте их сотруднику ${employee.tg_user_id} вручную`);
+              await bot.sendMessage(employee.tg_user_id, `ℹ️ 3D-модели для товара ${product.name} (${originalOfferId}) отсутствуют. Обратитесь к модератору за выдачей.`);
             }
+            continue;
+          }
 
-            // Отправляем сотруднику все найденные 3D-модели
-            for (const model of models) {
-              await bot.sendDocument(employee.tg_user_id, model.file_id, {
-                caption: `📁 3D-модель для ${product.name}\noffer_id: ${offerId}\nФайл: ${model.file_name}`
-              });
-              await new Promise(resolve => setTimeout(resolve, 500));
+          for (const model of models) {
+            let caption = `📁 3D-модель для ${product.name}\noffer_id: ${originalOfferId}`;
+            if (usedOfferId !== originalOfferId) {
+              caption += `\n(модель взята из offer_id: ${usedOfferId})`;
             }
+            caption += `\nФайл: ${model.file_name}`;
+            await bot.sendDocument(employee.tg_user_id, model.file_id, { caption });
+            await new Promise(resolve => setTimeout(resolve, 500));
+          }
 
-            // Если есть пропущенные (не загруженные) модели – сообщаем модератору
-            if (skipped.length) {
-              const fileList = skipped.map(s => s.file_name).join(', ');
-              await bot.sendMessage(MODERATOR_ID, `⚠️ Для товара ${product.name} (${offerId}) не загружены модели: ${fileList}.\nОтправьте их ${employee.tg_user_id}\n сотруднику в ручную`);
-            }
+          if (skipped.length) {
+            const fileList = skipped.map(s => s.file_name).join(', ');
+            await bot.sendMessage(MODERATOR_ID, `⚠️ Для товара ${product.name} (${originalOfferId}) не загружены модели: ${fileList}.\nОтправьте их сотруднику ${employee.tg_user_id} вручную.`);
           }
         }
 

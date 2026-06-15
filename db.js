@@ -311,6 +311,15 @@ async function getProductModelsByExtensions(offerId, extensions) {
     );
 }
 
+// Возвращает родительский offer_id (без суффикса -NR / -NL) или null, если суффикса нет
+function getParentOfferId(offerId) {
+    if (offerId.endsWith('-NR') || offerId.endsWith('-NL')) {
+        // Убираем последний символ (R или L), оставляя "-N"
+        return offerId.slice(0, -1);
+    }
+    return null;
+}
+
 // Получить текстовые файлы (например .txt)
 async function getTextFilesForOfferId(offerId) {
     return database.all(
@@ -361,6 +370,7 @@ module.exports = {
     deleteProductModel,
     getAllProductModels,
     getProductModelsByExtensions,
+    getParentOfferId,
     getTextFilesForOfferId,
     addSkippedModel,
     getSkippedModels,

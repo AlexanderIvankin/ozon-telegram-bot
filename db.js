@@ -301,6 +301,25 @@ async function getAllProductModels(offerId) {
     );
 }
 
+// Добавить или обновить модель (если уже существует запись с таким offer_id и file_name)
+async function upsertProductModel(offerId, fileId, fileName, fileSize) {
+    const existing = await database.get(
+        'SELECT id FROM product_models WHERE offer_id = ? AND file_name = ?',
+        offerId, fileName
+    );
+    if (existing) {
+        await database.run(
+            'UPDATE product_models SET file_id = ?, file_size = ?, uploaded_at = ? WHERE offer_id = ? AND file_name = ?',
+            fileId, fileSize, Date.now(), offerId, fileName
+        );
+    } else {
+        await database.run(
+            'INSERT INTO product_models (offer_id, file_id, file_name, file_size, uploaded_at) VALUES (?, ?, ?, ?, ?)',
+            offerId, fileId, fileName, fileSize, Date.now()
+        );
+    }
+}
+
 // Получить модели с расширениями из списка
 async function getProductModelsByExtensions(offerId, extensions) {
     const placeholders = extensions.map(() => '?').join(',');
@@ -369,6 +388,7 @@ module.exports = {
     getProductModels,
     deleteProductModel,
     getAllProductModels,
+    upsertProductModel,
     getProductModelsByExtensions,
     getParentOfferId,
     getTextFilesForOfferId,

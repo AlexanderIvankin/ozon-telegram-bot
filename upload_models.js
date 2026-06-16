@@ -75,7 +75,7 @@ async function uploadAll() {
             try {
                 const msg = await sendWithRetry(MODELS_CHAT_ID, filePath, `offer_id: ${offerId}\nФайл: ${file}`);
                 const fileId = msg.document.file_id;
-                await db.addProductModel(offerId, fileId, file, stats.size);
+                await db.upsertProductModel(offerId, fileId, file, stats.size);
                 const logMsg = `[UPLOADED] ${offerId}/${file} — ${sizeMB.toFixed(2)} MB, file_id: ${fileId}\n`;
                 uploadedLog.write(logMsg);
                 console.log(`✓ ${offerId}/${file}`);

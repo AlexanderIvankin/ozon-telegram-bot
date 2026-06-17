@@ -18,8 +18,10 @@
     "dotenv": "^17.4.2",
     "node-telegram-bot-api": "^0.67.0",
     "ozon-seller-api-extended": "^1.1.6",
+    "qrcode-terminal": "^0.12.0",
     "sqlite": "^5.1.1",
     "sqlite3": "^6.0.1",
+    "telegram": "^2.26.22",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {

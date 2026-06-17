@@ -409,9 +409,18 @@ module.exports = function registerCommands(
 
       adminMessage += `/add_model <offer_id> — загрузить новую модель (отправить файл после команды)\n\n`;
 
+      adminMessage += `
+      📌 Для больших файлов (>50 МБ):
+1. Залейте файл в канал моделей вручную (Telegram Desktop позволяет до 2 ГБ).
+2. Перешлите сообщение боту с caption:
+   offer_id: НАШ_OFFER_ID
+   Файл: ИМЯ_ФАЙЛА.расширение
+3. Бот автоматически привяжет модель.
+\n\n`;
+
       adminMessage += `/bind_forward — инструкция по привязке модели через пересылку из канала\n\n`;
 
-      adminMessage += `/bind_model <offer_id> <file_id> — привязать существующий файл из канала к offer_id\n`;
+      adminMessage += `/bind_model <offer_id> <file_id> [имя_файла] — привязать существующий файл (любого размера) к offer_id\n`;
       adminMessage += `/get_file_id — получить file_id пересланного файла (для последующей привязки)\n`;
       adminMessage += `/cancel_bind — отменить ожидание file_id\n\n`;
 
@@ -644,58 +653,6 @@ module.exports = function registerCommands(
     bot.sendMessage(msg.chat.id, '📤 Отправьте файл модели. Имя файла должно содержать offer_id (например, 2001867564-N_avs_k1.3mf).');
   });
 
-  // Обработчик документов (для /upload_model)
-  bot.on('document', async (msg) => {
-    const userId = msg.from.id.toString();
-    if (!isAdmin(userId)) return;
-    if (!pendingUploadModel.has(userId)) return;
-    const pending = pendingUploadModel.get(userId);
-    if (pending.step !== 'waiting_file') return;
-
-    const file = msg.document;
-    const fileName = file.file_name;
-    const fileSizeMB = file.file_size / (1024 * 1024);
-
-    // Извлекаем offer_id из имени файла
-    // Ожидаемый формат: "2001867564-N_avs_k1.3mf" -> offer_id = "2001867564-N"
-    // Берём часть до первого '_', если есть, иначе до '.'
-    let offerId = fileName;
-    const underscoreIndex = fileName.indexOf('_');
-    if (underscoreIndex !== -1) {
-      offerId = fileName.substring(0, underscoreIndex);
-    } else {
-      const dotIndex = fileName.lastIndexOf('.');
-      if (dotIndex !== -1) {
-        offerId = fileName.substring(0, dotIndex);
-      }
-    }
-    // Дополнительно можно обрезать пробелы и проверить, что offerId не пустой.
-    offerId = offerId.trim();
-    if (!offerId) {
-      bot.sendMessage(msg.chat.id, '❌ Не удалось извлечь offer_id из имени файла. Убедитесь, что имя начинается с offer_id (например, 2001867564-N_...).');
-      pendingUploadModel.delete(userId);
-      return;
-    }
-
-    try {
-      // Отправляем файл в канал моделей
-      const sent = await bot.sendDocument(process.env.MODELS_CHAT_ID, file.file_id, {
-        caption: `offer_id: ${offerId}\nФайл: ${fileName}`
-      });
-      const newFileId = sent.document.file_id;
-
-      // Удаляем старую модель с таким же именем и offer_id (если существует)
-      await db.deleteProductModel(offerId, fileName);
-      await db.upsertProductModel(offerId, newFileId, fileName, file.file_size);
-
-      bot.sendMessage(msg.chat.id, `✅ Модель ${fileName} для offer_id ${offerId} успешно загружена/обновлена.`);
-    } catch (err) {
-      console.error('Ошибка загрузки модели:', err);
-      bot.sendMessage(msg.chat.id, `❌ Ошибка загрузки: ${err.message}`);
-    }
-    pendingUploadModel.delete(userId);
-  });
-
   // --- "/remove_model" Команда для администратора: удаление модели ---
   bot.onText(/\/remove_model (\S+) (.+)/, async (msg, match) => {
     const userId = msg.from.id.toString();
@@ -759,69 +716,24 @@ module.exports = function registerCommands(
     global.pendingModelAdd.set(userId, { offerId, step: 'waiting_file' });
   });
 
-  // Обработчик документов (файлов) для ручной загрузки
-  bot.on('document', async (msg) => {
-    const userId = msg.from.id.toString();
-    if (!isAdmin(userId)) return;
-    if (!global.pendingModelAdd || !global.pendingModelAdd.has(userId)) return;
-
-    const pending = global.pendingModelAdd.get(userId);
-    if (pending.step !== 'waiting_file') return;
-
-    const file = msg.document;
-    const fileSizeMB = file.file_size / (1024 * 1024);
-    if (fileSizeMB > 50) {
-      return bot.sendMessage(msg.chat.id, `❌ Файл слишком большой (${fileSizeMB.toFixed(2)} МБ). Максимум 50 МБ.`);
-    }
-    const fileName = file.file_name;
-    const offerId = pending.offerId;
-
-    try {
-      // Получаем file_id отправленного файла (бот должен иметь доступ к файлу)
-      const fileLink = await bot.getFileLink(file.file_id);
-      // Но для пересылки в канал нам нужен file_id, который мы получим, отправив документ в канал
-      // Отправляем файл в канал моделей
-      const sent = await bot.sendDocument(process.env.MODELS_CHAT_ID, file.file_id, {
-        caption: `offer_id: ${offerId}\nФайл: ${fileName}`
-      });
-      const newFileId = sent.document.file_id;
-
-      // Удаляем старую модель с таким же именем, если она есть
-      await db.deleteProductModel(offerId, fileName);
-      // Добавляем новую
-      await db.upsertProductModel(offerId, newFileId, fileName, file.file_size);
-
-      bot.sendMessage(msg.chat.id, `✅ Модель ${fileName} для offer_id ${offerId} успешно добавлена/обновлена.`);
-      global.pendingModelAdd.delete(userId);
-    } catch (err) {
-      console.error('Ошибка добавления модели:', err);
-      bot.sendMessage(msg.chat.id, `❌ Ошибка добавления модели: ${err.message}`);
-    }
-  });
-
   // --- "/bind_model" Команда для администратора: привязка существующего файла из канала к offer_id ---
-  bot.onText(/\/bind_model (\S+) (\S+)/, async (msg, match) => {
+  // Формат: /bind_model <offer_id> <file_id> [имя_файла]
+  bot.onText(/\/bind_model (\S+) (\S+)(?: (.+))?/, async (msg, match) => {
     const userId = msg.from.id.toString();
     if (!isAdmin(userId)) {
       return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
     }
     const offerId = match[1];
     const fileId = match[2];
+    const fileName = match[3] || `привязанный_файл_${Date.now()}`;
 
     try {
-      // Проверяем, что файл существует и доступен (опционально)
-      const fileInfo = await bot.getFile(fileId);
-      if (!fileInfo) throw new Error('Файл не найден или недоступен');
-
-      // Получаем имя файла (можно из базы, но пока оставим заглушку)
-      // Для красоты можно запросить информацию о файле в канале, но это сложно.
-      const fileName = `привязанный_файл_${Date.now()}`;
-
-      // Добавляем модель в БД
-      await db.upsertProductModel(offerId, fileId, fileName, fileInfo.file_size);
-      bot.sendMessage(msg.chat.id, `✅ Модель для offer_id ${offerId} успешно привязана (file_id: ${fileId}).`);
+      // НЕ используем bot.getFile – привязка работает с любым размером
+      // Размер неизвестен, сохраняем 0 (можно обновить позже, если потребуется)
+      await db.upsertProductModel(offerId, fileId, fileName, 0);
+      await bot.sendMessage(msg.chat.id, `✅ Модель "${fileName}" для offer_id ${offerId} успешно привязана (file_id: ${fileId}).`);
     } catch (err) {
-      bot.sendMessage(msg.chat.id, `❌ Ошибка привязки: ${err.message}`);
+      await bot.sendMessage(msg.chat.id, `❌ Ошибка привязки: ${err.message}`);
     }
   });
 
@@ -835,24 +747,6 @@ module.exports = function registerCommands(
     // Сохраняем состояние ожидания
     if (!global.pendingFileId) global.pendingFileId = new Map();
     global.pendingFileId.set(userId, { step: 'waiting_file' });
-  });
-
-  // Обработчик для пересланных файлов
-  bot.on('document', async (msg) => {
-    const userId = msg.from.id.toString();
-    if (!isAdmin(userId)) return;
-    if (global.pendingFileId && global.pendingFileId.has(userId)) {
-      const pending = global.pendingFileId.get(userId);
-      if (pending.step === 'waiting_file') {
-        const file = msg.document;
-        const fileId = file.file_id;
-        const fileName = file.file_name;
-        const fileSize = file.file_size;
-        await bot.sendMessage(msg.chat.id,
-          `✅ file_id: \`${fileId}\`\nИмя: ${fileName}\nРазмер: ${(fileSize / 1024 / 1024).toFixed(2)} МБ\n\nИспользуйте /bind_model <offer_id> ${fileId}`);
-        global.pendingFileId.delete(userId);
-      }
-    }
   });
 
   // --- "/cancel_bind" Команда для администратора: отменить привязку файла ---
@@ -869,42 +763,117 @@ module.exports = function registerCommands(
     }
   });
 
-  // Обработка пересланных файлов из канала моделей (альтернативный способ привязки)
+  // ---------------------- ЕДИНЫЙ ОБРАБОТЧИК ДОКУМЕНТОВ ----------------------
   bot.on('document', async (msg) => {
     const userId = msg.from.id.toString();
-    if (!isAdmin(userId)) {
-      return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
-    }
+    if (!isAdmin(userId)) return;
 
-    // Проверяем, что сообщение переслано (из канала или от пользователя)
-    if (!msg.forward_from_chat && !msg.forward_from) return;
+    // Приоритет 1: /upload_model
+    if (pendingUploadModel && pendingUploadModel.has(userId)) {
+      const pending = pendingUploadModel.get(userId);
+      if (pending.step !== 'waiting_file') return;
 
-    // Извлекаем caption
-    const caption = msg.caption || '';
-    const offerIdMatch = caption.match(/offer_id:\s*(\S+)/i);
-    const fileNameMatch = caption.match(/Файл:\s*(.+)/i);
+      const file = msg.document;
+      const fileName = file.file_name;
+      // Извлекаем offer_id из имени файла
+      let offerId = fileName;
+      const underscoreIndex = fileName.indexOf('_');
+      if (underscoreIndex !== -1) {
+        offerId = fileName.substring(0, underscoreIndex);
+      } else {
+        const dotIndex = fileName.lastIndexOf('.');
+        if (dotIndex !== -1) {
+          offerId = fileName.substring(0, dotIndex);
+        }
+      }
+      offerId = offerId.trim();
+      if (!offerId) {
+        await bot.sendMessage(msg.chat.id, '❌ Не удалось извлечь offer_id из имени файла. Убедитесь, что имя начинается с offer_id (например, 2001867564-N_...).');
+        pendingUploadModel.delete(userId);
+        return;
+      }
 
-    if (!offerIdMatch || !fileNameMatch) {
-      // Не соответствует формату – игнорируем
+      try {
+        const sent = await bot.sendDocument(process.env.MODELS_CHAT_ID, file.file_id, {
+          caption: `offer_id: ${offerId}\nФайл: ${fileName}`
+        });
+        const newFileId = sent.document.file_id;
+        await db.deleteProductModel(offerId, fileName);
+        await db.upsertProductModel(offerId, newFileId, fileName, file.file_size);
+        await bot.sendMessage(msg.chat.id, `✅ Модель ${fileName} для offer_id ${offerId} успешно загружена/обновлена.`);
+      } catch (err) {
+        console.error('Ошибка загрузки модели:', err);
+        await bot.sendMessage(msg.chat.id, `❌ Ошибка загрузки: ${err.message}`);
+      }
+      pendingUploadModel.delete(userId);
       return;
     }
 
-    const offerId = offerIdMatch[1].trim();
-    const fileName = fileNameMatch[1].trim();
-    const fileId = msg.document.file_id;
-    const fileSize = msg.document.file_size;
+    // Приоритет 2: /add_model
+    if (global.pendingModelAdd && global.pendingModelAdd.has(userId)) {
+      const pending = global.pendingModelAdd.get(userId);
+      if (pending.step !== 'waiting_file') return;
 
-    // Проверяем, что файл существует (опционально)
-    try {
-      await bot.getFile(fileId);
-    } catch (err) {
-      await bot.sendMessage(msg.chat.id, `❌ Не удалось получить доступ к файлу: ${err.message}`);
+      const file = msg.document;
+      const fileSizeMB = file.file_size / (1024 * 1024);
+      if (fileSizeMB > 50) {
+        await bot.sendMessage(msg.chat.id, `❌ Файл слишком большой (${fileSizeMB.toFixed(2)} МБ). Максимум 50 МБ.`);
+        return;
+      }
+      const fileName = file.file_name;
+      const offerId = pending.offerId;
+
+      try {
+        const sent = await bot.sendDocument(process.env.MODELS_CHAT_ID, file.file_id, {
+          caption: `offer_id: ${offerId}\nФайл: ${fileName}`
+        });
+        const newFileId = sent.document.file_id;
+        await db.deleteProductModel(offerId, fileName);
+        await db.upsertProductModel(offerId, newFileId, fileName, file.file_size);
+        await bot.sendMessage(msg.chat.id, `✅ Модель ${fileName} для offer_id ${offerId} успешно добавлена/обновлена.`);
+      } catch (err) {
+        console.error('Ошибка добавления модели:', err);
+        await bot.sendMessage(msg.chat.id, `❌ Ошибка добавления модели: ${err.message}`);
+      }
+      global.pendingModelAdd.delete(userId);
       return;
     }
 
-    // Добавляем или обновляем модель
-    await db.upsertProductModel(offerId, fileId, fileName, fileSize);
-    await bot.sendMessage(msg.chat.id, `✅ Модель ${fileName} для offer_id ${offerId} успешно привязана/обновлена.`);
+    // Приоритет 3: /get_file_id
+    if (global.pendingFileId && global.pendingFileId.has(userId)) {
+      const pending = global.pendingFileId.get(userId);
+      if (pending.step === 'waiting_file') {
+        const file = msg.document;
+        const fileId = file.file_id;
+        const fileName = file.file_name;
+        const fileSize = file.file_size;
+        await bot.sendMessage(msg.chat.id,
+          `✅ file_id: \`${fileId}\`\nИмя: ${fileName}\nРазмер: ${(fileSize / 1024 / 1024).toFixed(2)} МБ\n\nИспользуйте /bind_model <offer_id> ${fileId} "${fileName}"`);
+        global.pendingFileId.delete(userId);
+      }
+      return;
+    }
+
+    // Приоритет 4: пересылка из канала (без активного состояния)
+    if (msg.forward_from_chat || msg.forward_from) {
+      const caption = msg.caption || '';
+      const offerIdMatch = caption.match(/offer_id:\s*(\S+)/i);
+      const fileNameMatch = caption.match(/Файл:\s*(.+)/i);
+
+      if (!offerIdMatch || !fileNameMatch) {
+        return;
+      }
+
+      const offerId = offerIdMatch[1].trim();
+      const fileName = fileNameMatch[1].trim();
+      const fileId = msg.document.file_id;
+      const fileSize = msg.document.file_size;
+
+      // НЕ вызываем bot.getFile
+      await db.upsertProductModel(offerId, fileId, fileName, fileSize);
+      await bot.sendMessage(msg.chat.id, `✅ Модель ${fileName} для offer_id ${offerId} успешно привязана/обновлена.`);
+      return;
+    }
   });
 
   // --- "/bind_forward" Команда для администратора: инструкция по привязке модели через пересылку из канала ---
@@ -1304,6 +1273,7 @@ offer_id: ARD000901-NR
       helpText += `/order_details <номер> — показать детали заказа\n`;
       helpText += `/admin_cancel_order <id> — снять заказ с сотрудника\n\n`;
 
+      helpText += `📁 3D-модели:\n`;
       helpText += `/upload_model — загрузить новую модель (или обновить файл), взять Артикул из названия файла\nПример названия файла: "2001867564-N_bmw e53.stl" (отправить файл после команды)\n`;
       helpText += `/remove_model <offer_id> <имя_файла> — удалить модель\n`;
       helpText += `/list_models <offer_id> — список моделей для offer_id\n`;
@@ -1311,7 +1281,16 @@ offer_id: ARD000901-NR
 
       helpText += `/add_model <offer_id> — загрузить новую модель (отправить файл после команды)\n\n`;
 
-      helpText += `/bind_forward — инструкция по привязке модели через пересылку из канала\n\n`;
+      helpText += `
+      📌 Для больших файлов (>50 МБ):
+1. Залейте файл в канал моделей вручную (Telegram Desktop позволяет до 2 ГБ).
+2. Перешлите сообщение боту с caption:
+   offer_id: НАШ_OFFER_ID
+   Файл: ИМЯ_ФАЙЛА.расширение
+3. Бот автоматически привяжет модель.
+\n\n`;
+
+      helpText += `/bind_model <offer_id> <file_id> [имя_файла] — привязать существующий файл (любого размера) к offer_id\n\n`;
 
       helpText += `/bind_model <offer_id> <file_id> — привязать существующий файл из канала к offer_id\n`;
       helpText += `/get_file_id — получить file_id пересланного файла (для последующей привязки)\n`;

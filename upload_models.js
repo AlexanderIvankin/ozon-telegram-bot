@@ -66,7 +66,8 @@ async function uploadAll() {
             // ⚠️ Оставьте эту проверку, если хотите избежать гарантированных ошибок API.
             // Если вы уверены, что Telegram Bot API позволяет отправлять файлы >50 МБ (не позволяет), закомментируйте.
             if (sizeMB > 50) {
-                const msg = `[SKIP] ${offerId}/${file} — ${sizeMB.toFixed(2)} MB (превышает 50 МБ)\n`;
+                const relativePath = path.join(folder, file);
+                const msg = `[SKIP] ${relativePath} — ${sizeMB.toFixed(2)} MB (превышает 50 МБ)\n`;
                 skippedLog.write(msg);
                 console.log(msg);
                 continue;
@@ -83,7 +84,9 @@ async function uploadAll() {
                 // Задержка между файлами 3 секунды
                 await new Promise(resolve => setTimeout(resolve, 3000));
             } catch (err) {
-                const errMsg = `[ERROR] ${offerId}/${file} — ${err.message}\n`;
+                const relativePath = path.join(folder, file);
+                const errMsg = `[ERROR] ${relativePath} — ${err.message}\n`;
+//                const errMsg = `[ERROR] ${offerId}/${file} — ${err.message}\n`;
                 skippedLog.write(errMsg);
                 console.error(`✗ Ошибка загрузки ${offerId}/${file}:`, err.message);
             }

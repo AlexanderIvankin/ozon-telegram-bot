@@ -8,6 +8,11 @@ team-info.xlsx
 *.xls~
 ~$*.xlsx
 
+skipped_models - Copy.log
+uploaded_models - Copy.log
+
 Telegram Bot.png
 
+session.txt
 .env
+

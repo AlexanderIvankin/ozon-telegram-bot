@@ -444,12 +444,12 @@ module.exports = function registerCommands(
       adminMessage += `/status_all — статус всех сотрудников\n`;
       adminMessage += `/active_orders — активные заказы\n`;
       adminMessage += `/warehouses — список складов Ozon\n`;
-      adminMessage += `/employee_warehouses <id> — показать склады сотрудника\n`;
-      adminMessage += `/employee_stats <id> — статистика сотрудника (заказы, сумма)\n`;
       adminMessage += `/orders [warehouse_id] — показать очередь заказов из API\n`;
-      adminMessage += `/employee_orders <id> — показать активные заказы сотрудника\n`;
-      adminMessage += `/order_details <posting_number> — показать детали заказа\n`;
-      adminMessage += `/admin_cancel_order <id> — снять заказ с сотрудника\n\n`;
+      adminMessage += `/order_details <номер_заказа> — показать детали заказа\n`;
+      adminMessage += `/employee_warehouses <id_сотрудника> — показать склады сотрудника\n`;
+      adminMessage += `/employee_stats <id_сотрудника> — статистика сотрудника (заказы, сумма)\n`;
+      adminMessage += `/employee_orders <id_сотрудника> — показать активные заказы сотрудника\n`;
+      adminMessage += `/admin_cancel_order <номер_заказа> — снять заказ с сотрудника\n\n`;
 
       adminMessage += `📁 3D-модели:
 
@@ -1456,12 +1456,12 @@ module.exports = function registerCommands(
       helpText += `/status_all — статус всех сотрудников\n`;
       helpText += `/active_orders — список активных заказов\n`;
       helpText += `/warehouses — список складов Ozon\n`;
-      helpText += `/employee_warehouses <id> — склады сотрудника\n`;
-      helpText += `/employee_stats <id> — статистика сотрудника (заказы, сумма)\n`;
       helpText += `/orders [warehouse_id] — показать очередь заказов из API\n`;
-      helpText += `/employee_orders <id> — активные заказы сотрудника\n`;
-      helpText += `/order_details <номер> — показать детали заказа\n`;
-      helpText += `/admin_cancel_order <id> — снять заказ с сотрудника\n\n`;
+      helpText += `/order_details <номер_заказа> — показать детали заказа\n`;
+      helpText += `/employee_warehouses <id_сотрудника> — склады сотрудника\n`;
+      helpText += `/employee_stats <id_сотрудника> — статистика сотрудника (заказы, сумма)\n`;
+      helpText += `/employee_orders <id_сотрудника> — активные заказы сотрудника\n`;
+      helpText += `/admin_cancel_order <номер_заказа> — снять заказ с сотрудника\n\n`;
 
       helpText += `📁 3D-модели:
 

@@ -4,7 +4,8 @@ module.exports = function registerCommands(
   showOrderMenu, checkAndOfferNewOrders, processNextOrder,
   pendingNewOrders, currentOrderProcessing,
   deleteLastOrderMessages, updateModeratorActivity,
-  startInactivityTimer, stopInactivityTimer
+  startInactivityTimer, stopInactivityTimer,
+  MODERATOR_ID
 ) {
 
   // ---------------------- ОБРАБОТЧИК CALLBACK_QUERY (единый) ----------------------

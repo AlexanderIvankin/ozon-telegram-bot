@@ -363,8 +363,7 @@ process.on('SIGTERM', gracefulShutdown);
         showOrderMenu, checkAndOfferNewOrders, processNextOrder,
         pendingNewOrders, currentOrderProcessing,
         deleteLastOrderMessages, updateModeratorActivity,
-        startInactivityTimer, stopInactivityTimer,
-        MODERATOR_ID
+        startInactivityTimer, stopInactivityTimer
     );
     setTimeout(() => checkAndOfferNewOrders(), 5000);
     console.log('Бот запущен...');

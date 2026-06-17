@@ -9,7 +9,7 @@ const debugMode = require('./debugMode');
 async function syncEmployeesFromExcel(db) {
     const filePath = path.join(__dirname, 'team-info.xlsx');
     console.log('[SYNC] Загрузка сотрудников из', filePath);
-    
+
     // Читаем файл
     const workbook = XLSX.readFile(filePath);
     const sheetName = workbook.SheetNames[0];
@@ -45,24 +45,24 @@ async function syncEmployeesFromExcel(db) {
     for (let i = 2; i < rows.length; i++) {
         const row = rows[i];
         if (!row || row.length < 2) continue;
-        
+
         // Столбец A: имя сотрудника (формат "Имя (@tg_username)")
         let name = row[0] ? String(row[0]).trim() : '';
         if (!name) continue;
         // Можно извлечь чистое имя, убрав часть с @, но оставим как есть
         // Например: "Иван Петров (@ivan_p)" -> оставляем "Иван Петров (@ivan_p)"
-        
+
         // Столбец B: Telegram ID (число)
         let tgUserId = row[1] ? String(row[1]).trim() : '';
         if (!tgUserId) continue;
-        
+
         // Столбец C: телефон (не обязательно)
         let phone = row[2] ? String(row[2]).trim() : '';
-        
+
         // Столбец D: число принтеров (capacity)
         let capacity = row[3] ? parseInt(row[3]) : 1;
         if (isNaN(capacity)) capacity = 1;
-        
+
         // Столбцы F-P: склады (символ "+")
         const employeeWarehouses = [];
         for (let col = 5; col <= 15; col++) {
@@ -74,7 +74,7 @@ async function syncEmployeesFromExcel(db) {
                 }
             }
         }
-        
+
         employeesData.push({
             tgUserId,
             name,
@@ -83,20 +83,20 @@ async function syncEmployeesFromExcel(db) {
             warehouses: employeeWarehouses
         });
     }
-    
+
     console.log(`[SYNC] Найдено сотрудников: ${employeesData.length}`);
-    
+
     // --- Синхронизация с БД ---
     const dbConn = db.db; // доступ к соединению
-    
+
     // Начинаем транзакцию
     await dbConn.run('BEGIN TRANSACTION');
-    
+
     try {
         // 1. Получаем текущих сотрудников из БД
         const currentEmployees = await dbConn.all('SELECT id, tg_user_id FROM employees');
         const currentMap = new Map(currentEmployees.map(emp => [emp.tg_user_id, emp.id]));
-        
+
         // 2. Обновляем или вставляем сотрудников
         for (const emp of employeesData) {
             if (currentMap.has(emp.tgUserId)) {
@@ -113,18 +113,18 @@ async function syncEmployeesFromExcel(db) {
                 );
             }
         }
-        
-        // 3. Удаляем сотрудников, которых нет в файле (по желанию)
+
+        // 3. Удаляем сотрудников, которых нет в файле
         const newTgIds = new Set(employeesData.map(e => e.tgUserId));
         for (const [tgId, empId] of currentMap.entries()) {
             if (!newTgIds.has(tgId)) {
-                // Удаляем назначения и самого сотрудника
                 await dbConn.run('DELETE FROM assignments WHERE employee_id = ?', empId);
                 await dbConn.run('DELETE FROM employee_warehouses WHERE employee_id = ?', empId);
+                await dbConn.run('DELETE FROM employee_stats WHERE employee_id = ?', empId);
                 await dbConn.run('DELETE FROM employees WHERE id = ?', empId);
             }
         }
-        
+
         // 4. Обновляем таблицу employee_warehouses
         // Сначала очистим все связи, потом вставим заново
         await dbConn.run('DELETE FROM employee_warehouses');
@@ -140,7 +140,7 @@ async function syncEmployeesFromExcel(db) {
                 }
             }
         }
-        
+
         await dbConn.run('COMMIT');
         console.log('[SYNC] Синхронизация сотрудников завершена');
     } catch (err) {

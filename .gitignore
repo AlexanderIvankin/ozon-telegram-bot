@@ -1,5 +1,7 @@
 node_modules/
 Ozon/
+backups/
+
 bot.db
 bot.db-journal
 

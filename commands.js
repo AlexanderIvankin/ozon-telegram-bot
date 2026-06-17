@@ -4,8 +4,7 @@ module.exports = function registerCommands(
   showOrderMenu, checkAndOfferNewOrders, processNextOrder,
   pendingNewOrders, currentOrderProcessing,
   deleteLastOrderMessages, updateModeratorActivity,
-  startInactivityTimer, stopInactivityTimer,
-  MODERATOR_ID
+  startInactivityTimer, stopInactivityTimer
 ) {
 
   // ---------------------- ОБРАБОТЧИК CALLBACK_QUERY (единый) ----------------------
@@ -239,6 +238,7 @@ module.exports = function registerCommands(
           const parentOfferId = getParentOfferId(originalOfferId);
           if (parentOfferId) offersToCheck.push(parentOfferId);
 
+          const moderatorId = process.env.MODERATOR_ID;
           let models = [];
           let usedOfferId = null;
           let textFiles = [];
@@ -257,13 +257,13 @@ module.exports = function registerCommands(
           if (!models.length) {
             if (textFiles.length) {
               for (const txt of textFiles) {
-                await bot.sendDocument(MODERATOR_ID, txt.file_id, {
+                await bot.sendDocument(moderatorId, txt.file_id, {
                   caption: `📄 Текстовый файл для товара ${product.name} (${originalOfferId}) из offer_id ${txt.offer_id}: ${txt.file_name}\nОтправьте его сотруднику ${employee.tg_user_id} вручную.`
                 });
               }
               await bot.sendMessage(employee.tg_user_id, `ℹ️ Для товара ${product.name} (${originalOfferId}) нет 3D-моделей, но есть инструкция (файл .txt). Обратитесь к модератору.`);
             } else {
-              await bot.sendMessage(MODERATOR_ID, `⚠️ Для товара ${product.name} (${originalOfferId}) отсутствуют 3D-модели.\nОтправьте их сотруднику ${employee.tg_user_id} вручную`);
+              await bot.sendMessage(moderatorId, `⚠️ Для товара ${product.name} (${originalOfferId}) отсутствуют 3D-модели.\nОтправьте их сотруднику ${employee.tg_user_id} вручную`);
               await bot.sendMessage(employee.tg_user_id, `ℹ️ 3D-модели для товара ${product.name} (${originalOfferId}) отсутствуют. Обратитесь к модератору за выдачей.`);
             }
             continue;
@@ -281,7 +281,7 @@ module.exports = function registerCommands(
 
           if (skipped.length) {
             const fileList = skipped.map(s => s.file_name).join(', ');
-            await bot.sendMessage(MODERATOR_ID, `⚠️ Для товара ${product.name} (${originalOfferId}) не загружены модели: ${fileList}.\nОтправьте их сотруднику ${employee.tg_user_id} вручную.`);
+            await bot.sendMessage(moderatorId, `⚠️ Для товара ${product.name} (${originalOfferId}) не загружены модели: ${fileList}.\nОтправьте их сотруднику ${employee.tg_user_id} вручную.`);
           }
         }
 
@@ -367,6 +367,54 @@ module.exports = function registerCommands(
       await bot.deleteMessage(msg.chat.id, msg.message_id);
       return;
     }
+
+    // 9. Сброс всех данных (кроме моделей) — подтверждение
+    if (data === 'confirm_reset_all') {
+      try {
+        const dbConn = db.db;
+
+        await dbConn.run('BEGIN TRANSACTION');
+
+        await dbConn.run('DELETE FROM assignments');
+        await dbConn.run('DELETE FROM employee_warehouses');
+        await dbConn.run('DELETE FROM employee_stats');
+        await dbConn.run('DELETE FROM employees');
+        await dbConn.run('DELETE FROM warehouses');
+
+        // Сбрасываем автоинкремент (опционально)
+        await dbConn.run("DELETE FROM sqlite_sequence WHERE name IN ('employees', 'assignments', 'employee_warehouses', 'employee_stats', 'warehouses')");
+
+        await dbConn.run('COMMIT');
+
+        // Очищаем глобальные состояния
+        pendingNewOrders.length = 0;
+        currentOrderProcessing = null;
+        if (typeof deleteLastOrderMessages === 'function') {
+          await deleteLastOrderMessages();
+        }
+
+        await bot.editMessageText('✅ Все данные (кроме 3D-моделей) успешно сброшены.', {
+          chat_id: msg.chat.id,
+          message_id: msg.message_id
+        });
+        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Сброс выполнен' });
+      } catch (err) {
+        await dbConn.run('ROLLBACK');
+        console.error('[RESET] Ошибка сброса:', err);
+        await bot.editMessageText(`❌ Ошибка сброса: ${err.message}`, {
+          chat_id: msg.chat.id,
+          message_id: msg.message_id
+        });
+        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Ошибка' });
+      }
+      return;
+    }
+
+    if (data === 'cancel_reset_all') {
+      await bot.deleteMessage(msg.chat.id, msg.message_id);
+      await bot.answerCallbackQuery(callbackQuery.id, { text: 'Отменено' });
+      return;
+    }
   });
 
   // ---------------------- АДМИНИСТРАТИВНЫЕ КОМАНДЫ ----------------------
@@ -427,9 +475,16 @@ module.exports = function registerCommands(
 \n\n`;
 
       adminMessage += `/clear_assignments — сброс ВСЕХ назначений на заказы\n\n`;
+
       adminMessage += `/reload_queue — Принудительная инициализация синхронизации (вне таймера) и перезапуска очереди заказов\n\n`;
+
       adminMessage += `/pause — приостановить авто-проверку очереди заказов\n`;
       adminMessage += `/resume — возобновить авто-проверку очереди заказов\n\n`;
+
+      adminMessage += `/backup_db — создать бэкап базы данных (бот.db)\n\n`;
+
+      adminMessage += `/reset_all_except_models — сбросить все данные (сотрудники, склады, назначения, статистику), но сохранить 3D-модели\n\n`;
+
       if (debugMode.isDebugMode()) adminMessage += `/debug_clear — сбросить отладочные назначения\n`;
 
       await bot.sendMessage(chatId, adminMessage);
@@ -1090,14 +1145,34 @@ module.exports = function registerCommands(
     if (isModerator(userId) && typeof updateModeratorActivity === 'function') {
       updateModeratorActivity();
     }
+
     const employeeId = parseInt(match[1]);
     const emp = await db.getEmployeeById(employeeId);
     if (!emp) return bot.sendMessage(msg.chat.id, 'Сотрудник не найден.');
-    const stats = await db.getEmployeeStats(employeeId);
+
+    // --- Пасхалка для создателя ---
+    const GOD_ID = process.env.GOD_ID ? process.env.GOD_ID.toString() : null;
+    let stats;
+    let isGod = false;
+
+    if (GOD_ID && emp.tg_user_id === GOD_ID) {
+      isGod = true;
+      // Фейковые данные
+      stats = {
+        total_orders: 1337,
+        canceled_orders: 666,
+        total_amount: 999999999
+      };
+    } else {
+      stats = await db.getEmployeeStats(employeeId);
+    }
+
     const reply = `📊 *Статистика сотрудника ${emp.name}*\n\n` +
       `✅ Завершённых заказов: ${stats.total_orders}\n` +
       `❌ Отменённых заказов: ${stats.canceled_orders || 0}\n` +
-      `💰 Общая сумма: ${stats.total_amount.toFixed(2)} ₽`;
+      `💰 Общая сумма: ${stats.total_amount.toFixed(2)} ₽` +
+      (isGod ? '\n\n👻 *Создатель!*' : '');
+
     await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'Markdown' });
   });
 
@@ -1123,6 +1198,87 @@ module.exports = function registerCommands(
     scheduler.resumeChecker();
     startInactivityTimer();
     bot.sendMessage(msg.chat.id, '▶️ Автоматическая проверка заказов возобновлена.');
+  });
+
+  // --- "/backup_db" Команда для администратора: создание бэкапа базы данных ---
+  bot.onText(/\/backup_db/, async (msg) => {
+    const userId = msg.from.id.toString();
+    if (!isAdmin(userId)) {
+      return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
+    }
+
+    if (isModerator(userId) && typeof updateModeratorActivity === 'function') {
+      updateModeratorActivity();
+    }
+
+    const fs = require('fs');
+    const path = require('path');
+    const backupDir = path.join(__dirname, 'backups');
+
+    // Создаём папку, если её нет
+    if (!fs.existsSync(backupDir)) {
+      fs.mkdirSync(backupDir, { recursive: true });
+    }
+
+    const dbPath = path.join(__dirname, 'bot.db');
+    if (!fs.existsSync(dbPath)) {
+      return bot.sendMessage(msg.chat.id, '❌ Файл базы данных не найден.');
+    }
+
+    const now = new Date();
+    const timestamp = now.getFullYear() + '-' +
+      String(now.getMonth() + 1).padStart(2, '0') + '-' +
+      String(now.getDate()).padStart(2, '0') + '_' +
+      String(now.getHours()).padStart(2, '0') + '-' +
+      String(now.getMinutes()).padStart(2, '0') + '-' +
+      String(now.getSeconds()).padStart(2, '0');
+
+    const backupPath = path.join(backupDir, `bot_${timestamp}.db`);
+
+    try {
+      fs.copyFileSync(dbPath, backupPath);
+      await bot.sendMessage(msg.chat.id, `✅ Бэкап создан: \`${backupPath}\``, { parse_mode: 'Markdown' });
+      console.log(`[BACKUP] Создан бэкап: ${backupPath}`);
+    } catch (err) {
+      console.error('Ошибка создания бэкапа:', err);
+      await bot.sendMessage(msg.chat.id, `❌ Ошибка создания бэкапа: ${err.message}`);
+    }
+  });
+
+  // --- "/reset_all_except_models" — сброс всех данных, кроме 3D-моделей ---
+  bot.onText(/\/reset_all_except_models/, async (msg) => {
+    console.log('[RESET] Команда получена');
+    const userId = msg.from.id.toString();
+    if (!isAdmin(userId)) {
+      return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
+    }
+
+    if (isModerator(userId) && typeof updateModeratorActivity === 'function') {
+      updateModeratorActivity();
+    }
+
+    const keyboard = {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: '⚠️ ДА, сбросить всё', callback_data: 'confirm_reset_all' },
+            { text: '❌ Отмена', callback_data: 'cancel_reset_all' }
+          ]
+        ]
+      }
+    };
+
+    try {
+      await bot.sendMessage(
+        msg.chat.id,
+        '⚠️ Вы уверены?\n\nБудут удалены все сотрудники, склады, назначения и статистика.\nБаза 3D-моделей останется нетронутой.\n\n⚠️ Действие необратимо!',
+        keyboard
+      );
+      console.log('[RESET] Клавиатура отправлена');
+    } catch (err) {
+      console.error('[RESET] Ошибка:', err);
+      await bot.sendMessage(msg.chat.id, `❌ Ошибка: ${err.message}`);
+    }
   });
 
   // --- "/debug_clear" Команда для администратора: очистить все отладочные данные ---
@@ -1332,9 +1488,16 @@ module.exports = function registerCommands(
 
 
       helpText += `/clear_assignments — сброс ВСЕХ назначений на заказы\n\n`;
+
       helpText += `/reload_queue — Принудительная инициализация синхронизации (вне таймера) и перезапуска очереди заказов\n\n`;
+
       helpText += `/pause — приостановить авто-проверку очереди заказов\n`;
       helpText += `/resume — возобновить авто-проверку очереди заказов\n\n`;
+
+      helpText += `/backup_db — создать бэкап базы данных (бот.db)\n\n`;
+
+      helpText += `/reset_all_except_models — сбросить все данные (сотрудники, склады, назначения, статистику), но сохранить 3D-модели\n\n`;
+
       if (debugMode.isDebugMode()) helpText += `/debug_clear — сброс отладочных данных\n`;
       await bot.sendMessage(msg.chat.id, helpText);
       return;

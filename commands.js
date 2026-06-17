@@ -886,23 +886,21 @@ module.exports = function registerCommands(
       return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
     }
     const help = `
-📤 *Привязка модели через пересылку из канала*
+📤 Привязка модели через пересылку из канала
 
 1. Залейте файл модели (любого размера) в канал моделей вручную.
 2. Перешлите это сообщение боту.
 3. В caption (подпись к файлу) укажите:
-   \`offer_id: НАШ_OFFER_ID\`
-   \`Файл: ИМЯ_ФАЙЛА.расширение\`
+   offer_id: НАШ_OFFER_ID
+   Файл: ИМЯ_ФАЙЛА.расширение
 
 Пример:
-\`\`\`
 offer_id: ARD000901-NR
 Файл: ARD000901-NR_ABS-H2S.3mf
-\`\`\`
 
 Бот автоматически привяжет модель к offer_id.
-    `;
-    await bot.sendMessage(msg.chat.id, help, { parse_mode: 'Markdown' });
+  `;
+    await bot.sendMessage(msg.chat.id, help);
   });
 
   // --- "/send_models" Команда для администратора: отправить все модели для offer_id сотруднику (или себе) ---

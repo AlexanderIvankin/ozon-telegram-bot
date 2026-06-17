@@ -10,14 +10,34 @@ const debugMode = require('./debugMode');
 
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
-// Установка команд меню Telegram (глобальное меню для всех пользователей)
-bot.setMyCommands([
-    { command: 'start', description: 'Запустить бота' },
-    { command: 'help', description: 'Помощь' },
-    { command: 'my_orders', description: 'Мои активные заказы' },
-    { command: 'finish_order', description: 'Завершить заказ (указать номер)' },
-    { command: 'cancel_order', description: 'Отменить заказ (указать номер)' }
-]).then(() => console.log('✅ Меню команд Telegram установлено')).catch(err => console.error('Ошибка установки меню:', err));
+// --- Функция установки команд с повторами ---
+async function setCommandsWithRetry(retries = 3, delay = 5000) {
+    const commands = [
+        { command: 'start', description: 'Запустить бота' },
+        { command: 'help', description: 'Помощь' },
+        { command: 'my_orders', description: 'Мои активные заказы' },
+        { command: 'finish_order', description: 'Завершить заказ (указать номер)' },
+        { command: 'cancel_order', description: 'Отменить заказ (указать номер)' }
+    ];
+
+    for (let attempt = 1; attempt <= retries; attempt++) {
+        try {
+            await bot.setMyCommands(commands);
+            console.log('✅ Меню команд Telegram установлено');
+            return;
+        } catch (err) {
+            if (attempt < retries) {
+                console.warn(`⚠️ Ошибка установки меню (попытка ${attempt}/${retries}): ${err.message}`);
+                console.log(`⏳ Повтор через ${delay / 1000}с...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+            } else {
+                console.error('❌ Не удалось установить меню команд после нескольких попыток, продолжаем работу.');
+            }
+        }
+    }
+}
+
+setCommandsWithRetry(3, 5000);
 
 
 const ADMIN_IDS = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',').map(id => id.trim()) : []; // <<-- Administrator's Telegram IDS from .env
@@ -77,11 +97,11 @@ async function logActions(userId, action, details = '') {
     } else if (isAdmin(userId)) {
         role = 'Администратор';
     }
-    
+
     // Пытаемся получить имя из БД
     const user = await db.getEmployee(userId);
     const userName = user ? user.name : (role === 'Пользователь' ? 'Неавторизованный' : 'Unknown');
-    
+
     console.log(`[${role} ACTION] ${userName} (${userId}): ${action} ${details}`);
 }
 
@@ -161,21 +181,51 @@ async function showOrderMenu(order) {
 
     let productsInfo = '';
     let skuList = [];
+    let totalAmount = 0;
+    let currency = 'RUB'; // валюта по умолчанию
+
     if (details?.products?.length) {
         productsInfo = '\n\n*Состав:*\n';
         for (const p of details.products) {
+            // --- Артикул (выделяем жирным) ---
             let article = p.offer_id || (p.barcodes?.[0]);
-            if (article) {
-                productsInfo += `• ${p.name} — ${p.quantity} шт. (Артикул: ${article})\n`;
-            } else {
-                productsInfo += `• ${p.name} — ${p.quantity} шт. (SKU: ${p.sku})\n`;
-            }
+            let articleDisplay = article ? `*${article}*` : '—';
+
+            // --- Цена и валюта ---
+            let price = parseFloat(p.price) || 0;
+            let currencyCode = p.currency_code || 'RUB';
+            if (currencyCode && currency === 'RUB') currency = currencyCode; // берём валюту первого товара
+            let priceDisplay = price > 0 ? `${price.toFixed(2)} ${currencyCode}` : '—';
+
+            // --- Размеры и вес ---
+            let dims = p.dimensions || {};
+            let length = dims.length ? `${dims.length} см` : '—';
+            let width = dims.width ? `${dims.width} см` : '—';
+            let height = dims.height ? `${dims.height} см` : '—';
+            // Вес: сначала берём из dimensions.weight (граммы), иначе из weight_max (кг -> г)
+            let weightVal = dims.weight ? parseFloat(dims.weight) : (p.weight_max ? parseFloat(p.weight_max) * 1000 : 0);
+            let weightDisplay = weightVal > 0 ? `${weightVal.toFixed(0)} г` : '—';
+            let dimsDisplay = `📏 ${length} × ${width} × ${height}, ⚖️ ${weightDisplay}`;
+
+            // --- Строка товара ---
+            productsInfo += `• ${p.name} — ${p.quantity} шт.\n`;
+            productsInfo += `   Артикул: ${articleDisplay}\n`;
+            productsInfo += `   Цена: ${priceDisplay}\n`;
+            productsInfo += `   Размеры: ${dimsDisplay}\n`;
+
+            // --- Суммируем общую стоимость ---
+            totalAmount += price * p.quantity;
             if (p.sku) skuList.push(p.sku);
         }
+
+        // --- Итоговая сумма заказа ---
+        let totalDisplay = totalAmount > 0 ? `${totalAmount.toFixed(2)} ${currency}` : '—';
+        productsInfo += `\n*Общая сумма заказа:* ${totalDisplay}`;
     }
 
     const adminChatId = MODERATOR_ID.toString();
     const messageText = `🆕 *Новый заказ!*\nНомер: ${order.posting_number}\nСклад: ${warehouseDisplay}${productsInfo}\n\nВыберите действие:`;
+
     const keyboard = [
         [{ text: '👑 Приоритетные', callback_data: `priority_${order.posting_number}` }],
         [{ text: '👥 Другие сотрудники', callback_data: `others_${order.posting_number}` }],
@@ -192,7 +242,7 @@ async function showOrderMenu(order) {
     });
     lastOrderMessageId = sentMsg.message_id;
 
-    // Отправляем фотографии
+    // Отправляем фотографии (без изменений)
     if (skuList.length) {
         try {
             const imageMap = await ozon.fetchProductsImages(skuList);
@@ -309,7 +359,7 @@ process.on('SIGTERM', gracefulShutdown);
     // Регистрируем все команды
     registerCommands(
         bot, db, ozon, bwipjs, scheduler, debugMode,
-        isAuthorizedUser, isModerator, isAdmin, 
+        isAuthorizedUser, isModerator, isAdmin,
         showOrderMenu, checkAndOfferNewOrders, processNextOrder,
         pendingNewOrders, currentOrderProcessing,
         deleteLastOrderMessages, updateModeratorActivity,

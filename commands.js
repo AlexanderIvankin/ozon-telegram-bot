@@ -402,30 +402,28 @@ module.exports = function registerCommands(
       adminMessage += `/order_details <posting_number> — показать детали заказа\n`;
       adminMessage += `/admin_cancel_order <id> — снять заказ с сотрудника\n\n`;
 
-      adminMessage += `📁 3D-модели:\n`;
-      adminMessage += `/send_models <offer_id> [id_сотрудника] — отправить все модели для offer_id сотруднику (если ID не указан – себе)\n\n`;
+      adminMessage += `📁 3D-модели:
 
-      adminMessage += `/upload_model — загрузить новую модель (или обновить файл), взять Артикул из названия файла\nПример названия файла: "2001867564-N_bmw e53.stl" (отправить файл после команды)\n`;
-      adminMessage += `/remove_model <offer_id> <имя_файла> — удалить модель\n`;
-      adminMessage += `/list_models <offer_id> — список моделей для offer_id\n`;
-      adminMessage += `/cancel_model — отменить ожидание загрузки модели\n\n`;
+/send_models <offer_id> [id_сотрудника] — отправить все модели для offer_id сотруднику (если ID не указан – себе)
+/list_models <offer_id> — список моделей для offer_id
+/remove_model <offer_id> <имя_файла> — удалить модель
 
-      adminMessage += `/add_model <offer_id> — загрузить новую модель (отправить файл после команды)\n\n`;
+📤 Загрузка моделей до 50 МБ (через бота):
+/upload_model — загрузить модель, offer_id извлекается из имени файла (например, "2001867564-N_bmw.stl")
+/add_model <offer_id> — загрузить модель для указанного offer_id (сначала команда, потом файл)
+/cancel_model — отменить ожидание загрузки модели
 
-      adminMessage += `
-      📌 Для больших файлов (>50 МБ):
+📌 Для больших файлов (>50 МБ):
 1. Залейте файл в канал моделей вручную (Telegram Desktop позволяет до 2 ГБ).
 2. Перешлите сообщение боту с caption:
    offer_id: НАШ_OFFER_ID
    Файл: ИМЯ_ФАЙЛА.расширение
 3. Бот автоматически привяжет модель.
+Альтернативно, можно вручную привязать:
+/bind_model <offer_id> <file_id> [имя_файла] — привязать существующий файл (любого размера) к offer_id
+/get_file_id — получить file_id пересланного файла (для последующей привязки)
+/cancel_bind — отменить ожидание file_id
 \n\n`;
-
-      adminMessage += `/bind_forward — инструкция по привязке модели через пересылку из канала\n\n`;
-
-      adminMessage += `/bind_model <offer_id> <file_id> [имя_файла] — привязать существующий файл (любого размера) к offer_id\n`;
-      adminMessage += `/get_file_id — получить file_id пересланного файла (для последующей привязки)\n`;
-      adminMessage += `/cancel_bind — отменить ожидание file_id\n\n`;
 
       adminMessage += `/clear_assignments — сброс ВСЕХ назначений на заказы\n\n`;
       adminMessage += `/reload_queue — Принудительная инициализация синхронизации (вне таймера) и перезапуска очереди заказов\n\n`;
@@ -879,30 +877,6 @@ module.exports = function registerCommands(
     }
   });
 
-  // --- "/bind_forward" Команда для администратора: инструкция по привязке модели через пересылку из канала ---
-  bot.onText(/\/bind_forward/, async (msg) => {
-    const userId = msg.from.id.toString();
-    if (!isAdmin(userId)) {
-      return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
-    }
-    const help = `
-📤 Привязка модели через пересылку из канала
-
-1. Залейте файл модели (любого размера) в канал моделей вручную.
-2. Перешлите это сообщение боту.
-3. В caption (подпись к файлу) укажите:
-   offer_id: НАШ_OFFER_ID
-   Файл: ИМЯ_ФАЙЛА.расширение
-
-Пример:
-offer_id: ARD000901-NR
-Файл: ARD000901-NR_ABS-H2S.3mf
-
-Бот автоматически привяжет модель к offer_id.
-  `;
-    await bot.sendMessage(msg.chat.id, help);
-  });
-
   // --- "/send_models" Команда для администратора: отправить все модели для offer_id сотруднику (или себе) ---
   bot.onText(/\/send_models (\S+)(?:\s+(\d+))?/, async (msg, match) => {
     const userId = msg.from.id.toString();
@@ -1332,31 +1306,28 @@ offer_id: ARD000901-NR
       helpText += `/order_details <номер> — показать детали заказа\n`;
       helpText += `/admin_cancel_order <id> — снять заказ с сотрудника\n\n`;
 
-      helpText += `📁 3D-модели:\n`;
+      helpText += `📁 3D-модели:
 
-      helpText += `/send_models <offer_id> [id_сотрудника] — отправить все модели для offer_id сотруднику (если ID не указан – себе)\n\n`;
+/send_models <offer_id> [id_сотрудника] — отправить все модели для offer_id сотруднику (если ID не указан – себе)
+/list_models <offer_id> — список моделей для offer_id
+/remove_model <offer_id> <имя_файла> — удалить модель
 
-      helpText += `/upload_model — загрузить новую модель (или обновить файл), взять Артикул из названия файла\nПример названия файла: "2001867564-N_bmw e53.stl" (отправить файл после команды)\n`;
-      helpText += `/remove_model <offer_id> <имя_файла> — удалить модель\n`;
-      helpText += `/list_models <offer_id> — список моделей для offer_id\n`;
-      helpText += `/cancel_model — отменить ожидание загрузки модели\n\n`;
+📤 Загрузка моделей до 50 МБ (через бота):
+/upload_model — загрузить модель, offer_id извлекается из имени файла (например, "2001867564-N_bmw.stl")
+/add_model <offer_id> — загрузить модель для указанного offer_id (сначала команда, потом файл)
+/cancel_model — отменить ожидание загрузки модели
 
-      helpText += `/add_model <offer_id> — загрузить новую модель (отправить файл после команды)\n\n`;
-
-      helpText += `
-      📌 Для больших файлов (>50 МБ):
+📌 Для больших файлов (>50 МБ):
 1. Залейте файл в канал моделей вручную (Telegram Desktop позволяет до 2 ГБ).
 2. Перешлите сообщение боту с caption:
    offer_id: НАШ_OFFER_ID
    Файл: ИМЯ_ФАЙЛА.расширение
 3. Бот автоматически привяжет модель.
+Альтернативно, можно вручную привязать:
+/bind_model <offer_id> <file_id> [имя_файла] — привязать существующий файл (любого размера) к offer_id
+/get_file_id — получить file_id пересланного файла (для последующей привязки)
+/cancel_bind — отменить ожидание file_id
 \n\n`;
-
-      helpText += `/bind_forward — инструкция по привязке модели через пересылку из канала\n\n`;
-
-      helpText += `/bind_model <offer_id> <file_id> [имя_файла] — привязать существующий файл (любого размера) к offer_id\n\n`;
-      helpText += `/get_file_id — получить file_id пересланного файла (для последующей привязки)\n`;
-      helpText += `/cancel_bind — отменить ожидание file_id\n\n`;
 
 
       helpText += `/clear_assignments — сброс ВСЕХ назначений на заказы\n\n`;

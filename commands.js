@@ -402,6 +402,9 @@ module.exports = function registerCommands(
       adminMessage += `/order_details <posting_number> — показать детали заказа\n`;
       adminMessage += `/admin_cancel_order <id> — снять заказ с сотрудника\n\n`;
 
+      adminMessage += `📁 3D-модели:\n`;
+      adminMessage += `/send_models <offer_id> [id_сотрудника] — отправить все модели для offer_id сотруднику (если ID не указан – себе)\n\n`;
+
       adminMessage += `/upload_model — загрузить новую модель (или обновить файл), взять Артикул из названия файла\nПример названия файла: "2001867564-N_bmw e53.stl" (отправить файл после команды)\n`;
       adminMessage += `/remove_model <offer_id> <имя_файла> — удалить модель\n`;
       adminMessage += `/list_models <offer_id> — список моделей для offer_id\n`;
@@ -902,6 +905,64 @@ offer_id: ARD000901-NR
     await bot.sendMessage(msg.chat.id, help, { parse_mode: 'Markdown' });
   });
 
+  // --- "/send_models" Команда для администратора: отправить все модели для offer_id сотруднику (или себе) ---
+  bot.onText(/\/send_models (\S+)(?:\s+(\d+))?/, async (msg, match) => {
+    const userId = msg.from.id.toString();
+    if (!isAdmin(userId)) {
+      return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
+    }
+    if (isModerator(userId) && typeof updateModeratorActivity === 'function') {
+      updateModeratorActivity();
+    }
+
+    const offerId = match[1];
+    const targetEmployeeId = match[2] ? parseInt(match[2]) : null;
+
+    // Если не указан сотрудник – отправляем себе (администратору)
+    let targetChatId = msg.chat.id;
+    let targetName = 'себе';
+
+    if (targetEmployeeId) {
+      const employee = await db.getEmployeeById(targetEmployeeId);
+      if (!employee) {
+        return bot.sendMessage(msg.chat.id, `❌ Сотрудник с ID ${targetEmployeeId} не найден.`);
+      }
+      targetChatId = employee.tg_user_id;
+      targetName = employee.name;
+    }
+
+    // Получаем все модели для данного offer_id
+    const models = await db.getAllProductModels(offerId);
+    if (!models || models.length === 0) {
+      return bot.sendMessage(msg.chat.id, `📭 Нет моделей для offer_id ${offerId}.`);
+    }
+
+    // Проверяем, может ли бот писать в целевой чат
+    try {
+      await bot.sendChatAction(targetChatId, 'typing');
+    } catch (err) {
+      return bot.sendMessage(msg.chat.id, `❌ Не удалось отправить сообщение сотруднику ${targetName}. Возможно, он не начал диалог с ботом.`);
+    }
+
+    await bot.sendMessage(msg.chat.id, `📤 Отправляю ${models.length} моделей для offer_id ${offerId} ${targetEmployeeId ? `сотруднику ${targetName}` : 'себе'}...`);
+
+    let sentCount = 0;
+    for (const model of models) {
+      try {
+        const caption = `📁 Модель для offer_id: ${offerId}\nФайл: ${model.file_name}`;
+        await bot.sendDocument(targetChatId, model.file_id, { caption });
+        sentCount++;
+        // Небольшая задержка, чтобы избежать флуда
+        await new Promise(resolve => setTimeout(resolve, 300));
+      } catch (err) {
+        console.error(`Ошибка отправки модели ${model.file_name}:`, err.message);
+        await bot.sendMessage(msg.chat.id, `❌ Ошибка при отправке файла ${model.file_name}: ${err.message}`);
+      }
+    }
+
+    await bot.sendMessage(msg.chat.id, `✅ Отправлено ${sentCount} из ${models.length} моделей для offer_id ${offerId} ${targetEmployeeId ? `сотруднику ${targetName}` : 'себе'}.`);
+  });
+
   // --- "/reload_queue" Команда для администратора: Принудительная инициализация синхронизации (вне таймера) и перезапуска очереди заказов ---
   bot.onText(/\/reload_queue/, async (msg) => {
     const userId = msg.from.id.toString();
@@ -1274,6 +1335,9 @@ offer_id: ARD000901-NR
       helpText += `/admin_cancel_order <id> — снять заказ с сотрудника\n\n`;
 
       helpText += `📁 3D-модели:\n`;
+
+      helpText += `/send_models <offer_id> [id_сотрудника] — отправить все модели для offer_id сотруднику (если ID не указан – себе)\n\n`;
+
       helpText += `/upload_model — загрузить новую модель (или обновить файл), взять Артикул из названия файла\nПример названия файла: "2001867564-N_bmw e53.stl" (отправить файл после команды)\n`;
       helpText += `/remove_model <offer_id> <имя_файла> — удалить модель\n`;
       helpText += `/list_models <offer_id> — список моделей для offer_id\n`;
@@ -1290,11 +1354,12 @@ offer_id: ARD000901-NR
 3. Бот автоматически привяжет модель.
 \n\n`;
 
-      helpText += `/bind_model <offer_id> <file_id> [имя_файла] — привязать существующий файл (любого размера) к offer_id\n\n`;
+      helpText += `/bind_forward — инструкция по привязке модели через пересылку из канала\n\n`;
 
-      helpText += `/bind_model <offer_id> <file_id> — привязать существующий файл из канала к offer_id\n`;
+      helpText += `/bind_model <offer_id> <file_id> [имя_файла] — привязать существующий файл (любого размера) к offer_id\n\n`;
       helpText += `/get_file_id — получить file_id пересланного файла (для последующей привязки)\n`;
       helpText += `/cancel_bind — отменить ожидание file_id\n\n`;
+
 
       helpText += `/clear_assignments — сброс ВСЕХ назначений на заказы\n\n`;
       helpText += `/reload_queue — Принудительная инициализация синхронизации (вне таймера) и перезапуска очереди заказов\n\n`;

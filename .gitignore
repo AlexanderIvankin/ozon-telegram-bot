@@ -10,6 +10,8 @@ team-info.xlsx
 *.xls~
 ~$*.xlsx
 
+skipped_models.log
+uploaded_models.log
 skipped_models - Copy.log
 uploaded_models - Copy.log
 

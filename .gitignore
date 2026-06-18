@@ -1,6 +1,7 @@
 node_modules/
 Ozon/
 backups/
+ServerFiles/
 
 bot.db
 bot.db-journal
@@ -16,6 +17,8 @@ skipped_models - Copy.log
 uploaded_models - Copy.log
 
 Telegram Bot.png
+
+deployment.txt
 
 session.txt
 .env

@@ -230,58 +230,118 @@ module.exports = function registerCommands(
         const validExtensions = ['.stl', '.3mf', '.step', '.obj'];
 
         for (const product of orderDetails.products) {
-          const originalOfferId = product.offer_id;
-          if (!originalOfferId) continue;
-
-          // Формируем список offer_id для поиска (сначала точный, потом родительский)
-          const offersToCheck = [originalOfferId];
-          const parentOfferId = getParentOfferId(originalOfferId);
-          if (parentOfferId) offersToCheck.push(parentOfferId);
-
-          const moderatorId = process.env.MODERATOR_ID;
-          let models = [];
-          let usedOfferId = null;
-          let textFiles = [];
-          let skipped = [];
-
-          for (const oid of offersToCheck) {
-            models = await db.getProductModelsByExtensions(oid, validExtensions);
-            textFiles = await db.getTextFilesForOfferId(oid);
-            skipped = await db.getSkippedModels(oid);
-            if (models.length) {
-              usedOfferId = oid;
-              break;
+          try {
+            const originalOfferId = product.offer_id;
+            if (!originalOfferId) {
+              console.log('[DEBUG] Товар без offer_id, пропускаем');
+              continue;
             }
-          }
 
-          if (!models.length) {
-            if (textFiles.length) {
-              for (const txt of textFiles) {
-                await bot.sendDocument(moderatorId, txt.file_id, {
-                  caption: `📄 Текстовый файл для товара ${product.name} (${originalOfferId}) из offer_id ${txt.offer_id}: ${txt.file_name}\nОтправьте его сотруднику ${employee.tg_user_id} вручную.`
-                });
+            console.log(`[DEBUG] Обработка товара ${product.name} (${originalOfferId})`);
+
+            // Формируем список offer_id для поиска
+            const offersToCheck = [originalOfferId];
+            const parentOfferId = db.getParentOfferId(originalOfferId);
+            if (parentOfferId) offersToCheck.push(parentOfferId);
+            console.log(`[DEBUG] offersToCheck: ${offersToCheck.join(', ')}`);
+
+            const moderatorId = process.env.MODERATOR_ID;
+            console.log(`[DEBUG] moderatorId = ${moderatorId}`);
+
+            let models = [];
+            let usedOfferId = null;
+            let textFiles = [];
+            let skipped = [];
+
+            for (const oid of offersToCheck) {
+              console.log(`[DEBUG] Запрос моделей для offer_id ${oid}`);
+              models = await db.getProductModelsByExtensions(oid, validExtensions);
+              console.log(`[DEBUG] models: ${models.length}`);
+              textFiles = await db.getTextFilesForOfferId(oid);
+              console.log(`[DEBUG] textFiles: ${textFiles.length}`);
+              skipped = await db.getSkippedModels(oid);
+              console.log(`[DEBUG] skipped: ${skipped.length}`);
+              if (models.length) {
+                usedOfferId = oid;
+                break;
               }
-              await bot.sendMessage(employee.tg_user_id, `ℹ️ Для товара ${product.name} (${originalOfferId}) нет 3D-моделей, но есть инструкция (файл .txt). Обратитесь к модератору.`);
-            } else {
-              await bot.sendMessage(moderatorId, `⚠️ Для товара ${product.name} (${originalOfferId}) отсутствуют 3D-модели.\nОтправьте их сотруднику ${employee.tg_user_id} вручную`);
-              await bot.sendMessage(employee.tg_user_id, `ℹ️ 3D-модели для товара ${product.name} (${originalOfferId}) отсутствуют. Обратитесь к модератору за выдачей.`);
             }
-            continue;
-          }
 
-          for (const model of models) {
-            let caption = `📁 3D-модель для ${product.name}\noffer_id: ${originalOfferId}`;
-            if (usedOfferId !== originalOfferId) {
-              caption += `\n(модель взята из offer_id: ${usedOfferId})`;
+            // --- Если моделей нет ---
+            if (!models.length) {
+              console.log(`[DEBUG] Нет моделей для товара ${product.name} (${originalOfferId})`);
+
+              // Если есть текстовые файлы, отправляем их модератору
+              if (textFiles.length) {
+                console.log(`[DEBUG] Есть текстовые файлы (${textFiles.length}), отправляем модератору`);
+                for (const txt of textFiles) {
+                  try {
+                    await bot.sendDocument(moderatorId, txt.file_id, {
+                      caption: `📄 Текстовый файл для товара ${product.name} (${originalOfferId}) из offer_id ${txt.offer_id}: ${txt.file_name}\nОтправьте его сотруднику ${employee.name} вручную.`
+                    });
+                    console.log(`[DEBUG] Текстовый файл ${txt.file_name} отправлен модератору`);
+                    await new Promise(resolve => setTimeout(resolve, 300));
+                  } catch (err) {
+                    console.error(`[ERROR] Не удалось отправить текстовый файл модератору:`, err.message);
+                  }
+                }
+                try {
+                  await bot.sendMessage(employee.tg_user_id, `ℹ️ Для товара ${product.name} (${originalOfferId}) нет 3D-моделей, но есть инструкция (файл .txt). Обратитесь к модератору.`);
+                  console.log(`[DEBUG] Сообщение сотруднику отправлено`);
+                } catch (err) {
+                  console.error(`[ERROR] Не удалось отправить сообщение сотруднику:`, err.message);
+                }
+              } else {
+                // Нет ни моделей, ни текстовых файлов – уведомляем модератора
+                console.log(`[DEBUG] Нет ни моделей, ни текстовых файлов. Отправляем уведомление модератору.`);
+                try {
+                  await bot.sendMessage(moderatorId, `⚠️ Для товара ${product.name} (${originalOfferId}) отсутствуют 3D-модели.\nОтправьте их сотруднику ${employee.name} вручную`);
+                  console.log(`[DEBUG] Уведомление модератору отправлено.`);
+                  await new Promise(resolve => setTimeout(resolve, 300));
+                } catch (err) {
+                  console.error(`[ERROR] Не удалось отправить уведомление модератору:`, err.message);
+                  if (err.message && err.message.includes('chat not found')) {
+                    console.error(`[ERROR] Модератор (${moderatorId}) не начал диалог с ботом. Попросите его написать /start.`);
+                  }
+                }
+                try {
+                  await bot.sendMessage(employee.tg_user_id, `ℹ️ 3D-модели для товара ${product.name} (${originalOfferId}) отсутствуют. Обратитесь к модератору за выдачей.`);
+                  console.log(`[DEBUG] Сообщение сотруднику отправлено`);
+                } catch (err) {
+                  console.error(`[ERROR] Не удалось отправить сообщение сотруднику:`, err.message);
+                }
+              }
+              continue;
             }
-            caption += `\nФайл: ${model.file_name}`;
-            await bot.sendDocument(employee.tg_user_id, model.file_id, { caption });
-            await new Promise(resolve => setTimeout(resolve, 500));
-          }
 
-          if (skipped.length) {
-            const fileList = skipped.map(s => s.file_name).join(', ');
-            await bot.sendMessage(moderatorId, `⚠️ Для товара ${product.name} (${originalOfferId}) не загружены модели: ${fileList}.\nОтправьте их сотруднику ${employee.tg_user_id} вручную.`);
+            // --- Если модели есть, отправляем их ---
+            console.log(`[DEBUG] Найдено ${models.length} моделей, отправляем сотруднику`);
+            for (const model of models) {
+              let caption = `📁 3D-модель для ${product.name}\noffer_id: ${originalOfferId}`;
+              if (usedOfferId !== originalOfferId) {
+                caption += `\n(модель взята из offer_id: ${usedOfferId})`;
+              }
+              caption += `\nФайл: ${model.file_name}`;
+              try {
+                await bot.sendDocument(employee.tg_user_id, model.file_id, { caption });
+                await new Promise(resolve => setTimeout(resolve, 500));
+              } catch (err) {
+                console.error(`[ERROR] Не удалось отправить модель ${model.file_name} сотруднику:`, err.message);
+              }
+            }
+
+            // --- Уведомление о пропущенных моделях (если есть) ---
+            if (skipped.length) {
+              const fileList = skipped.map(s => s.file_name).join(', ');
+              try {
+                await bot.sendMessage(moderatorId, `⚠️ Для товара ${product.name} (${originalOfferId}) не загружены модели: ${fileList}.\nОтправьте их сотруднику ${employee.name} вручную.`);
+              } catch (err) {
+                console.error(`[ERROR] Не удалось отправить уведомление о пропущенных моделях:`, err.message);
+              }
+            }
+          } catch (err) {
+            console.error(`[ERROR] Критическая ошибка при обработке товара ${product.name}:`, err);
+            console.error(err.stack);
           }
         }
 
@@ -451,6 +511,10 @@ module.exports = function registerCommands(
       adminMessage += `/employee_orders <id_сотрудника> — показать активные заказы сотрудника\n`;
       adminMessage += `/admin_cancel_order <номер_заказа> — снять заказ с сотрудника\n\n`;
 
+      adminMessage += `/clear_assignments — сброс ВСЕХ назначений на заказы\n\n`;
+
+      adminMessage += `/send_label <номер_заказа> [id_сотрудника] — отправить PDF‑этикетку заказа сотруднику (если ID не указан – себе)\n\n`;
+
       adminMessage += `📁 3D-модели:
 
 /send_models <offer_id> [id_сотрудника] — отправить все модели для offer_id сотруднику (если ID не указан – себе)
@@ -473,8 +537,6 @@ module.exports = function registerCommands(
 /get_file_id — получить file_id пересланного файла (для последующей привязки)
 /cancel_bind — отменить ожидание file_id
 \n\n`;
-
-      adminMessage += `/clear_assignments — сброс ВСЕХ назначений на заказы\n\n`;
 
       adminMessage += `/reload_queue — Принудительная инициализация синхронизации (вне таймера) и перезапуска очереди заказов\n\n`;
 
@@ -567,29 +629,6 @@ module.exports = function registerCommands(
     let reply = 'Активные заказы:\n';
     for (const a of assignments) reply += `• Заказ ${a.order_id} — ${a.employee_name}\n`;
     await bot.sendMessage(msg.chat.id, reply);
-  });
-
-  // --- "/clear_assignments" Команда для администратора: сброс всех назначений (с подтверждением) при зависании ---
-  bot.onText(/\/clear_assignments/, async (msg) => {
-    const userId = msg.from.id.toString();
-    if (!isAdmin(userId)) {
-      await bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
-      return;
-    }
-    if (isModerator(userId) && typeof updateModeratorActivity === 'function') {
-      updateModeratorActivity();
-    }
-    const confirmKeyboard = {
-      reply_markup: {
-        inline_keyboard: [
-          [
-            { text: '⚠️ Да, сбросить ВСЕ назначения', callback_data: 'confirm_clear_all' },
-            { text: '❌ Отмена', callback_data: 'cancel_clear_all' }
-          ]
-        ]
-      }
-    };
-    await bot.sendMessage(msg.chat.id, '⚠️ Вы уверены, что хотите сбросить ВСЕ активные назначения? Это действие необратимо.', confirmKeyboard);
   });
 
   // --- "/warehouses" Команда для администратора: показать список всех складов ---
@@ -695,6 +734,85 @@ module.exports = function registerCommands(
       }
     };
     await bot.sendMessage(msg.chat.id, `⚠️ Снять заказ ${postingNumber} с сотрудника ${assignment.employee_name}? Заказ вернётся в очередь.`, confirmKeyboard);
+  });
+
+  // --- "/clear_assignments" Команда для администратора: сброс всех назначений (с подтверждением) при зависании ---
+  bot.onText(/\/clear_assignments/, async (msg) => {
+    const userId = msg.from.id.toString();
+    if (!isAdmin(userId)) {
+      await bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
+      return;
+    }
+    if (isModerator(userId) && typeof updateModeratorActivity === 'function') {
+      updateModeratorActivity();
+    }
+    const confirmKeyboard = {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: '⚠️ Да, сбросить ВСЕ назначения', callback_data: 'confirm_clear_all' },
+            { text: '❌ Отмена', callback_data: 'cancel_clear_all' }
+          ]
+        ]
+      }
+    };
+    await bot.sendMessage(msg.chat.id, '⚠️ Вы уверены, что хотите сбросить ВСЕ активные назначения? Это действие необратимо.', confirmKeyboard);
+  });
+
+  // --- "/send_label" — отправить этикетку заказа сотруднику (или себе) ---
+  bot.onText(/\/send_label (\S+)(?:\s+(\d+))?/, async (msg, match) => {
+    const userId = msg.from.id.toString();
+    if (!isAdmin(userId)) {
+      return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
+    }
+
+    const postingNumber = match[1];
+    const targetEmployeeId = match[2] ? parseInt(match[2]) : null;
+
+    // Если не указан сотрудник – отправляем себе (администратору)
+    let targetChatId = msg.chat.id;
+    let targetName = 'себе';
+
+    if (targetEmployeeId) {
+      const employee = await db.getEmployeeById(targetEmployeeId);
+      if (!employee) {
+        return bot.sendMessage(msg.chat.id, `❌ Сотрудник с ID ${targetEmployeeId} не найден.`);
+      }
+      targetChatId = employee.tg_user_id;
+      targetName = employee.name;
+    }
+
+    // Проверяем, может ли бот писать в целевой чат
+    try {
+      await bot.sendChatAction(targetChatId, 'typing');
+    } catch (err) {
+      return bot.sendMessage(msg.chat.id, `❌ Не удалось отправить сообщение ${targetName}. Возможно, он не начал диалог с ботом.`);
+    }
+
+    try {
+      const labelBuffer = await ozon.getPackageLabel(postingNumber);
+      if (labelBuffer) {
+        if (labelBuffer) {
+          await bot.sendDocument(
+            targetChatId,
+            labelBuffer,
+            {
+              caption: `✅ Этикетка для заказа ${postingNumber}`
+            },
+            {
+              filename: `label_${postingNumber}.pdf`,
+              contentType: 'application/pdf'
+            }
+          );
+        }
+        await bot.sendMessage(msg.chat.id, `✅ Этикетка для заказа ${postingNumber} отправлена ${targetName}.`);
+      } else {
+        await bot.sendMessage(msg.chat.id, `❌ Не удалось получить этикетку для заказа ${postingNumber}.`);
+      }
+    } catch (err) {
+      console.error('Ошибка отправки этикетки:', err);
+      await bot.sendMessage(msg.chat.id, `❌ Ошибка: ${err.message}`);
+    }
   });
 
   // Ожидание файла для /upload_model
@@ -1369,22 +1487,26 @@ module.exports = function registerCommands(
       const orderAmount = await ozon.getOrderTotalAmount(postingNumber);
       await db.updateEmployeeStats(employee.id, orderAmount);
 
-      // 1. Создаём акт (формируем документы)
+      // 1. Подтверждаем сборку (ship)
       const actResponse = await ozon.confirmPostingShip(postingNumber);
-      const actId = actResponse?.result?.id || actResponse?.id;
+      console.log(`[FINISH] Ответ ship:`, JSON.stringify(actResponse, null, 2));
+
+      // Пытаемся извлечь actId из разных возможных полей
+      let actId = actResponse?.result?.id || actResponse?.id;
+      if (!actId && actResponse?.additional_data) {
+        for (const item of actResponse.additional_data) {
+          if (item.posting_number === postingNumber && item.act_id) {
+            actId = item.act_id;
+            break;
+          }
+        }
+      }
       console.log(`[FINISH] Получен actId: ${actId}`);
 
-      // Задержка 10 секунд для обработки на стороне Ozon
-      await new Promise(resolve => setTimeout(resolve, 10000));
+      // Ждём 15 секунд для обработки на стороне Ozon
+      await new Promise(resolve => setTimeout(resolve, 15000));
 
-      // 2. Переводим заказ в awaiting_deliver
-      const deliveryResponse = await ozon.awaitingDelivery(postingNumber);
-      console.log(`[FINISH] awaiting-delivery ответ:`, deliveryResponse);
-
-      // 3. Ждём 5 секунд для синхронизации
-      await new Promise(resolve => setTimeout(resolve, 5000));
-
-      // 4. Получаем этикетку (пробуем через actId, затем через posting_number)
+      // 2. Получаем этикетку
       let labelBuffer = null;
       if (actId) {
         labelBuffer = await ozon.getPackageLabel(null, actId);
@@ -1396,10 +1518,19 @@ module.exports = function registerCommands(
       await db.completeOrder(postingNumber);
 
       if (labelBuffer) {
-        await bot.sendDocument(msg.chat.id, labelBuffer, {
-          caption: `✅ Заказ ${postingNumber} успешно собран.\nЭтикетка для наклеивания:`,
-          filename: `label_${postingNumber}.pdf`
-        });
+        if (labelBuffer) {
+          await bot.sendDocument(
+            msg.chat.id,
+            labelBuffer,
+            {
+              caption: `✅ Этикетка для заказа ${postingNumber}`
+            },
+            {
+              filename: `label_${postingNumber}.pdf`,
+              contentType: 'application/pdf'
+            }
+          );
+        }
       } else {
         await bot.sendMessage(msg.chat.id, `✅ Заказ ${postingNumber} подтверждён. Этикетку можно скачать в личном кабинете Ozon.`);
       }
@@ -1463,6 +1594,10 @@ module.exports = function registerCommands(
       helpText += `/employee_orders <id_сотрудника> — активные заказы сотрудника\n`;
       helpText += `/admin_cancel_order <номер_заказа> — снять заказ с сотрудника\n\n`;
 
+      helpText += `/clear_assignments — сброс ВСЕХ назначений на заказы\n\n`;
+
+      helpText += `/send_label <номер_заказа> [id_сотрудника] — отправить PDF‑этикетку заказа сотруднику (если ID не указан – себе)\n\n`;
+
       helpText += `📁 3D-модели:
 
 /send_models <offer_id> [id_сотрудника] — отправить все модели для offer_id сотруднику (если ID не указан – себе)
@@ -1485,9 +1620,6 @@ module.exports = function registerCommands(
 /get_file_id — получить file_id пересланного файла (для последующей привязки)
 /cancel_bind — отменить ожидание file_id
 \n\n`;
-
-
-      helpText += `/clear_assignments — сброс ВСЕХ назначений на заказы\n\n`;
 
       helpText += `/reload_queue — Принудительная инициализация синхронизации (вне таймера) и перезапуска очереди заказов\n\n`;
 

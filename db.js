@@ -322,11 +322,15 @@ async function upsertProductModel(offerId, fileId, fileName, fileSize) {
 
 // Получить модели с расширениями из списка
 async function getProductModelsByExtensions(offerId, extensions) {
-    const placeholders = extensions.map(() => '?').join(',');
+    if (!extensions || !extensions.length) return [];
+    // Строим условия: file_name LIKE '%ext1' OR file_name LIKE '%ext2' ...
+    const conditions = extensions.map(() => 'file_name LIKE ?').join(' OR ');
+    // Параметры: сначала offer_id, затем каждый extension с добавленным %
+    const params = [offerId, ...extensions.map(ext => `%${ext}`)];
     return database.all(
         `SELECT file_id, file_name, file_size FROM product_models 
-         WHERE offer_id = ? AND (${placeholders.map(e => `file_name LIKE '%${e}'`).join(' OR ')})`,
-        [offerId, ...extensions]
+         WHERE offer_id = ? AND (${conditions})`,
+        params
     );
 }
 

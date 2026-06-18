@@ -347,7 +347,7 @@ async function confirmPostingShip(postingNumber) {
         maxHeight = Math.max(maxHeight, height);
 
         return {
-            [identifierType]: identifier,
+            product_id: identifier,
             quantity: p.quantity
         };
     });
@@ -405,28 +405,29 @@ async function getPackageLabel(postingNumber, actId = null) {
         console.log(`[DEBUG] Эмуляция получения этикетки для ${postingNumber || actId}`);
         return Buffer.from('%PDF-1.4\n%EOF', 'binary');
     }
-
     try {
         if (actId) {
-            // Получаем этикетку по ID акта
             const response = await apiClient.get('/v2/posting/fbs/act/get-pdf', {
                 params: { id: actId },
                 responseType: 'arraybuffer'
             });
-            console.log(`[LABEL] Этикетка получена по actId ${actId}, размер: ${response.data.length} байт`);
             return Buffer.from(response.data);
         } else if (postingNumber) {
-            // Старый способ через package-label
             const response = await apiClient.post('/v2/posting/fbs/package-label', {
                 posting_number: [postingNumber]
-            });
-            if (response.data.file_content && response.data.content_type === 'application/pdf') {
-                return Buffer.from(response.data.file_content, 'base64');
+            }, { responseType: 'arraybuffer' });
+            // Проверяем, что это PDF
+            const pdfHeader = Buffer.from('%PDF');
+            if (response.data.slice(0, 4).compare(pdfHeader) === 0) {
+                return response.data;
+            } else {
+                console.warn('[LABEL] Ответ не является PDF');
+                return null;
             }
         }
         return null;
     } catch (err) {
-        console.error('Ошибка получения этикетки:', err.response?.data || err.message);
+        console.error('[LABEL] Ошибка:', err.response?.data || err.message);
         return null;
     }
 }

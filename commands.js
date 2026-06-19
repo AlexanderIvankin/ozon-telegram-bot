@@ -664,7 +664,7 @@ module.exports = function registerCommands(
 
       adminMessage += `/send_label <номер_заказа> [id_сотрудника] — отправить PDF‑этикетку заказа сотруднику (если ID не указан – себе)\n\n`;
 
-      adminMessage += `/admin_assign_order <номер_заказа> [id_сотрудника] — назначить заказ сотруднику (если ID не указан – показать список)\n\n`;
+      adminMessage += `/admin_assign_order <номер_заказа> [id_сотрудника] — назначить заказ сотруднику (если ID не указан – показать список сотрудников)\n\n`;
 
       adminMessage += `/admin_cancel_order <номер_заказа> — снять заказ с сотрудника\n\n`;
 
@@ -1821,7 +1821,7 @@ module.exports = function registerCommands(
 
       helpText += `/send_label <номер_заказа> [id_сотрудника] — отправить PDF‑этикетку заказа сотруднику (если ID не указан – себе)\n\n`;
 
-      helpText += `/admin_assign_order <номер_заказа> [id_сотрудника] — назначить заказ сотруднику (если ID не указан – показать список)\n\n`;
+      helpText += `/admin_assign_order <номер_заказа> [id_сотрудника] — назначить заказ сотруднику (если ID не указан – показать список сотрудников)\n\n`;
 
       helpText += `/admin_cancel_order <номер_заказа> — снять заказ с сотрудника\n\n`;
 

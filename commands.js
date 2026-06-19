@@ -1195,36 +1195,38 @@ module.exports = function registerCommands(
       const fileName = file.file_name;
       console.log(`[UPLOAD_MODEL] Имя файла: "${fileName}"`);
 
-      // Извлекаем offer_id из имени файла
-      let offerId = fileName;
+      // --- Простой сплит по первому символу '_' ---
       const underscoreIndex = fileName.indexOf('_');
-      if (underscoreIndex !== -1) {
-        offerId = fileName.substring(0, underscoreIndex);
-      } else {
-        const dotIndex = fileName.lastIndexOf('.');
-        if (dotIndex !== -1) {
-          offerId = fileName.substring(0, dotIndex);
-        }
-      }
-      offerId = offerId.trim();
-      console.log(`[UPLOAD_MODEL] Извлечённый offerId: "${offerId}"`);
-
-      // Корректируем суффикс, если он был потерян
-      // Ищем в исходном имени шаблон: буквы/цифры, затем -N, -NR или -NL, затем _
-      const suffixMatch = fileName.match(/^([A-Z0-9]+)(-[A-Z]+)?_/);
-      if (suffixMatch && suffixMatch[2]) {
-        const fullOfferId = suffixMatch[1] + suffixMatch[2];
-        if (offerId !== fullOfferId) {
-          console.log(`[UPLOAD_MODEL] Обнаружен суффикс, корректируем offerId: "${fullOfferId}"`);
-          offerId = fullOfferId;
-        }
-      }
-
-      if (!offerId) {
-        await bot.sendMessage(msg.chat.id, '❌ Не удалось извлечь offer_id из имени файла. Убедитесь, что имя начинается с offer_id (например, 2001867564-N_...).');
+      if (underscoreIndex === -1) {
+        await bot.sendMessage(msg.chat.id, '❌ Имя файла должно содержать символ "_" после offer_id (например, "2001867564-N_avs.stl").');
         pendingUploadModel.delete(userId);
         return;
       }
+
+      let offerId = fileName.substring(0, underscoreIndex);
+      const rest = fileName.substring(underscoreIndex + 1);
+
+      // --- Восстановление суффикса, если он был заменён ---
+      // Если offerId не содержит дефис, но в начале rest есть N, NR или NL и затем '_' или '.' 
+      // (т.е. был суффикс, но его заменили на подчёркивание)
+      const suffixMatch = rest.match(/^([A-Z]+)(?:_|\.)/);
+      if (!offerId.includes('-') && suffixMatch) {
+        const possibleSuffix = suffixMatch[1];
+        if (possibleSuffix === 'N' || possibleSuffix === 'NR' || possibleSuffix === 'NL') {
+          const newOfferId = offerId + '-' + possibleSuffix;
+          console.log(`[UPLOAD_MODEL] Обнаружен суффикс, восстанавливаем: "${newOfferId}"`);
+          offerId = newOfferId;
+        }
+      }
+
+      // --- Проверка на допустимые символы ---
+      if (!/^[A-Z0-9-]+$/.test(offerId)) {
+        await bot.sendMessage(msg.chat.id, '❌ Артикул может содержать только буквы, цифры и дефис. Проверьте имя файла.');
+        pendingUploadModel.delete(userId);
+        return;
+      }
+
+      console.log(`[UPLOAD_MODEL] Итоговый offerId: "${offerId}"`);
 
       try {
         const sent = await bot.sendDocument(process.env.MODELS_CHAT_ID, file.file_id, {

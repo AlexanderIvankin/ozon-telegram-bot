@@ -1,3 +1,8 @@
+const fs = require('fs');
+const path = require('path');
+const axios = require('axios');
+const { syncEmployeesFromExcel } = require('./syncEmployees');
+
 module.exports = function registerCommands(
   bot, db, ozon, bwipjs, scheduler, debugMode,
   isAuthorizedUser, isModerator, isAdmin,
@@ -18,6 +23,70 @@ module.exports = function registerCommands(
     // Проверяем, что пользователь – авторизованный сотрудник
     if (!(await isAuthorizedUser(userId))) {
       await bot.answerCallbackQuery(callbackQuery.id, { text: '⛔ Вы не авторизованы как сотрудник.' });
+      return;
+    }
+
+    // Подтверждение завершения заказа сотрудником
+    if (data.startsWith('finish_order_')) {
+      const orderId = data.substring(13);
+      const userId = callbackQuery.from.id.toString();
+      const employee = await db.getEmployee(userId);
+      if (!employee) {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Вы не зарегистрированы как сотрудник.' });
+        return;
+      }
+      const assignment = await db.db.get(
+        'SELECT * FROM assignments WHERE order_id = ? AND employee_id = ? AND status = "assigned"',
+        orderId, employee.id
+      );
+      if (!assignment) {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Заказ не найден или не ваш.' });
+        return;
+      }
+      // Показываем подтверждение
+      const confirmKeyboard = {
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: '✅ Да, завершить', callback_data: `confirm_finish_${orderId}` },
+              { text: '❌ Отмена', callback_data: `cancel_finish_${orderId}` }
+            ]
+          ]
+        }
+      };
+      await bot.editMessageText(`⚠️ Вы действительно хотите завершить заказ ${orderId}?`, {
+        chat_id: callbackQuery.message.chat.id,
+        message_id: callbackQuery.message.message_id,
+        ...confirmKeyboard
+      });
+      await bot.answerCallbackQuery(callbackQuery.id);
+      return;
+    }
+
+    // Отмена завершения заказа сотрудником
+    if (data.startsWith('confirm_finish_')) {
+      const orderId = data.substring(15);
+      const userId = callbackQuery.from.id.toString();
+      const employee = await db.getEmployee(userId);
+      if (!employee) {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Сотрудник не найден.' });
+        return;
+      }
+      // Вызываем общую функцию завершения
+      await finishOrder(callbackQuery.message.chat.id, orderId, employee);
+      // Удаляем сообщение с подтверждением
+      await bot.deleteMessage(callbackQuery.message.chat.id, callbackQuery.message.message_id);
+      await bot.answerCallbackQuery(callbackQuery.id, { text: '✅ Заказ завершён' });
+      return;
+    }
+
+    if (data.startsWith('cancel_finish_')) {
+      const orderId = data.substring(14);
+      await bot.editMessageText(`❌ Завершение заказа ${orderId} отменено.`, {
+        chat_id: callbackQuery.message.chat.id,
+        message_id: callbackQuery.message.message_id
+      });
+      await bot.answerCallbackQuery(callbackQuery.id, { text: 'Отменено' });
       return;
     }
 
@@ -60,7 +129,7 @@ module.exports = function registerCommands(
       return;
     }
 
-    // Кнопка "Нет" (отклонение подтверждения)
+    // Кнопка "Нет" (отклонение отмены заказа)
     if (data.startsWith('cancel_cancel_')) {
       await bot.answerCallbackQuery(callbackQuery.id, { text: 'Отмена отклонена' });
       await bot.deleteMessage(msg.chat.id, msg.message_id);
@@ -189,7 +258,15 @@ module.exports = function registerCommands(
           skuList = orderDetails.products.map(p => p.sku).filter(Boolean);
         }
 
-        let caption = `✅ Вам назначен заказ №: ${orderId}${detailsText}\n\nКогда упакуете, выполните команду:\n /finish_order ${orderId}`;
+        const finishKeyboard = {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '✅ Завершить заказ', callback_data: `finish_order_${orderId}` }]
+            ]
+          }
+        };
+
+        let caption = `✅ Вам назначен заказ №: ${orderId}${detailsText}\n\nКогда упакуете, нажмите кнопку ниже или выполните команду:\n/finish_order ${orderId}`;
         try {
           const barcodeBuffer = await bwipjs.toBuffer({
             bcid: 'code128',
@@ -199,10 +276,13 @@ module.exports = function registerCommands(
             includetext: true,
             textxalign: 'center'
           });
-          await bot.sendPhoto(employee.tg_user_id, barcodeBuffer, { caption });
+          await bot.sendPhoto(employee.tg_user_id, barcodeBuffer, {
+            caption,
+            ...finishKeyboard
+          });
         } catch (barcodeError) {
           console.error('Ошибка генерации штрихкода:', barcodeError);
-          await bot.sendMessage(employee.tg_user_id, `✅ Вам назначен заказ №: ${orderId}${detailsText}\n\n(Штрихкод не сгенерирован)`);
+          await bot.sendMessage(employee.tg_user_id, caption, finishKeyboard);
         }
 
         // Отправляем фото товаров сотруднику
@@ -428,22 +508,17 @@ module.exports = function registerCommands(
       return;
     }
 
-    // 9. Сброс всех данных (кроме моделей) — подтверждение
-    if (data === 'confirm_reset_all') {
+    // 9. Сброс всех данных (кроме моделей) и синхронизация — подтверждение
+    if (data === 'confirm_full_reset_sync') {
       try {
         const dbConn = db.db;
-
         await dbConn.run('BEGIN TRANSACTION');
-
         await dbConn.run('DELETE FROM assignments');
         await dbConn.run('DELETE FROM employee_warehouses');
         await dbConn.run('DELETE FROM employee_stats');
         await dbConn.run('DELETE FROM employees');
         await dbConn.run('DELETE FROM warehouses');
-
-        // Сбрасываем автоинкремент (опционально)
         await dbConn.run("DELETE FROM sqlite_sequence WHERE name IN ('employees', 'assignments', 'employee_warehouses', 'employee_stats', 'warehouses')");
-
         await dbConn.run('COMMIT');
 
         // Очищаем глобальные состояния
@@ -453,15 +528,29 @@ module.exports = function registerCommands(
           await deleteLastOrderMessages();
         }
 
-        await bot.editMessageText('✅ Все данные (кроме 3D-моделей) успешно сброшены.', {
+        // Синхронизация складов
+        const warehouses = await ozon.fetchWarehousesFromOzon();
+        if (warehouses.length) await db.syncWarehouses(warehouses);
+
+        // Синхронизация сотрудников
+        await syncEmployeesFromExcel(db);
+
+        // Перезагрузка очереди заказов
+        await checkAndOfferNewOrders();
+        if (pendingNewOrders.length) {
+          currentOrderProcessing = null;
+          await processNextOrder();
+        }
+
+        await bot.editMessageText('✅ Полный сброс и синхронизация выполнены. Очередь заказов обновлена.', {
           chat_id: msg.chat.id,
           message_id: msg.message_id
         });
-        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Сброс выполнен' });
+        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Выполнено' });
       } catch (err) {
         await dbConn.run('ROLLBACK');
-        console.error('[RESET] Ошибка сброса:', err);
-        await bot.editMessageText(`❌ Ошибка сброса: ${err.message}`, {
+        console.error('[FULL_RESET_SYNC] Ошибка:', err);
+        await bot.editMessageText(`❌ Ошибка: ${err.message}`, {
           chat_id: msg.chat.id,
           message_id: msg.message_id
         });
@@ -469,13 +558,70 @@ module.exports = function registerCommands(
       }
       return;
     }
-
-    if (data === 'cancel_reset_all') {
+    if (data === 'cancel_full_reset_sync') {
       await bot.deleteMessage(msg.chat.id, msg.message_id);
       await bot.answerCallbackQuery(callbackQuery.id, { text: 'Отменено' });
       return;
     }
   });
+
+  // ---------------------- ОБЩАЯ ФУНКЦИЯ ДЛЯ ЗАВЕРШЕНИЯ ЗАКАЗА ----------------------
+  async function finishOrder(chatId, postingNumber, employee) {
+    try {
+      const orderAmount = await ozon.getOrderTotalAmount(postingNumber);
+      await db.updateEmployeeStats(employee.id, orderAmount);
+
+      // 1. Подтверждаем сборку (ship)
+      const actResponse = await ozon.confirmPostingShip(postingNumber);
+      console.log(`[FINISH] Ответ ship:`, JSON.stringify(actResponse, null, 2));
+
+      // Пытаемся извлечь actId
+      let actId = actResponse?.result?.id || actResponse?.id;
+      if (!actId && actResponse?.additional_data) {
+        for (const item of actResponse.additional_data) {
+          if (item.posting_number === postingNumber && item.act_id) {
+            actId = item.act_id;
+            break;
+          }
+        }
+      }
+      console.log(`[FINISH] Получен actId: ${actId}`);
+
+      // Ждём 15 секунд для обработки на стороне Ozon
+      await new Promise(resolve => setTimeout(resolve, 15000));
+
+      // 2. Получаем этикетку
+      let labelBuffer = null;
+      if (actId) {
+        labelBuffer = await ozon.getPackageLabel(null, actId);
+      }
+      if (!labelBuffer) {
+        labelBuffer = await ozon.getPackageLabel(postingNumber);
+      }
+
+      await db.completeOrder(postingNumber);
+
+      if (labelBuffer) {
+        await bot.sendDocument(
+          chatId,
+          labelBuffer,
+          { caption: `✅ Этикетка для заказа ${postingNumber}` },
+          { filename: `label_${postingNumber}.pdf`, contentType: 'application/pdf' }
+        );
+      } else {
+        await bot.sendMessage(chatId, `✅ Заказ ${postingNumber} подтверждён. Этикетку можно скачать в личном кабинете Ozon.`);
+      }
+
+      // Уведомляем модератора
+      const moderatorId = process.env.MODERATOR_ID;
+      if (moderatorId) {
+        await bot.sendMessage(moderatorId, `📦 Сотрудник ${employee.name} завершил заказ ${postingNumber}.`);
+      }
+    } catch (err) {
+      console.error('Ошибка завершения заказа:', err);
+      await bot.sendMessage(chatId, `❌ Не удалось подтвердить сборку заказа ${postingNumber}: ${err.message}`);
+    }
+  }
 
   // ---------------------- АДМИНИСТРАТИВНЫЕ КОМАНДЫ ----------------------
 
@@ -504,16 +650,17 @@ module.exports = function registerCommands(
       adminMessage += `/status_all — статус всех сотрудников\n`;
       adminMessage += `/active_orders — активные заказы\n`;
       adminMessage += `/warehouses — список складов Ozon\n`;
-      adminMessage += `/orders [warehouse_id] — показать очередь заказов из API\n`;
+      adminMessage += `/orders [warehouse_id] — показать очередь заказов из API (с фильтром по складу)\n`;
       adminMessage += `/order_details <номер_заказа> — показать детали заказа\n`;
       adminMessage += `/employee_warehouses <id_сотрудника> — показать склады сотрудника\n`;
       adminMessage += `/employee_stats <id_сотрудника> — статистика сотрудника (заказы, сумма)\n`;
-      adminMessage += `/employee_orders <id_сотрудника> — показать активные заказы сотрудника\n`;
+      adminMessage += `/employee_orders <id_сотрудника> — показать активные заказы сотрудника\n\n`;
+
+      adminMessage += `/send_label <номер_заказа> [id_сотрудника] — отправить PDF‑этикетку заказа сотруднику (если ID не указан – себе)\n\n`;
+
       adminMessage += `/admin_cancel_order <номер_заказа> — снять заказ с сотрудника\n\n`;
 
       adminMessage += `/clear_assignments — сброс ВСЕХ назначений на заказы\n\n`;
-
-      adminMessage += `/send_label <номер_заказа> [id_сотрудника] — отправить PDF‑этикетку заказа сотруднику (если ID не указан – себе)\n\n`;
 
       adminMessage += `📁 3D-модели:
 
@@ -545,7 +692,9 @@ module.exports = function registerCommands(
 
       adminMessage += `/backup_db — создать бэкап базы данных (бот.db)\n\n`;
 
-      adminMessage += `/reset_all_except_models — сбросить все данные (сотрудники, склады, назначения, статистику), но сохранить 3D-модели\n\n`;
+      adminMessage += `/upload_employees — загрузить новый файл team-info.xlsx с сотрудниками (автоматически синхронизирует БД)\n\n`;
+
+      adminMessage += `/full_reset_and_sync — сброс всех данных (сотрудники, склады, назначения, статистика), кроме 3D-моделей и синхронизация складов/сотрудников\n\n`;
 
       if (debugMode.isDebugMode()) adminMessage += `/debug_clear — сбросить отладочные назначения\n`;
 
@@ -556,7 +705,7 @@ module.exports = function registerCommands(
     // --- Обычный сотрудник (есть в БД) ---
     if (employee) {
       const activeCount = await db.getEmployeeActiveOrdersCount(employee.id);
-      let msgText = `С возвращением, ${employee.name}!\n Новые заказы назначает модератор.\n У вас активно заказов: ${activeCount}. \n\n`;
+      let msgText = `С возвращением, ${employee.name}!\n Новые заказы назначает Модератор.\n У вас активно заказов: ${activeCount}. \n\n`;
       msgText += `Доступные команды:\n`;
       msgText += `/my_orders — показать мои активные заказы\n`;
       msgText += `/finish_order <номер_заказа> — завершить заказ (получить этикетку)\n`;
@@ -701,6 +850,18 @@ module.exports = function registerCommands(
     let reply = `Активные заказы сотрудника ${emp.name}:\n`;
     orders.forEach(o => { reply += `- ${o.order_id} (назначен ${new Date(o.assigned_at).toLocaleString()})\n`; });
     await bot.sendMessage(msg.chat.id, reply || 'Нет активных заказов');
+  });
+
+  let pendingEmployeeUpload = new Map(); // userId -> { step: 'waiting_file' }
+  // --- "/upload_employees" Команда для администратора: загрузить новый файл team-info.xlsx с сотрудниками (автоматически синхронизирует БД) ---
+  bot.onText(/\/upload_employees/, async (msg) => {
+    const userId = msg.from.id.toString();
+    if (!isAdmin(userId)) {
+      await bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
+      return;
+    }
+    pendingEmployeeUpload.set(userId, { step: 'waiting_file' });
+    await bot.sendMessage(msg.chat.id, '📤 Отправьте файл team-info.xlsx с сотрудниками.');
   });
 
   // --- "/admin_cancel_order" Команда для администратора: снять заказ с сотрудника (с подтверждением) ---
@@ -941,7 +1102,45 @@ module.exports = function registerCommands(
   // ---------------------- ЕДИНЫЙ ОБРАБОТЧИК ДОКУМЕНТОВ ----------------------
   bot.on('document', async (msg) => {
     const userId = msg.from.id.toString();
-    if (!isAdmin(userId)) return;
+    if (!isAdmin(userId)) {
+      return bot.sendMessage(msg.chat.id, '⛔ Только администратор может загружать файлы.');
+    }
+
+    // Приоритет 0: /upload_employees (загрузка team-info.xlsx)
+    if (pendingEmployeeUpload && pendingEmployeeUpload.has(userId)) {
+      const pending = pendingEmployeeUpload.get(userId);
+      if (pending.step !== 'waiting_file') return;
+      const file = msg.document;
+      const fileName = file.file_name;
+      if (fileName !== 'team-info.xlsx') {
+        await bot.sendMessage(msg.chat.id, '❌ Пожалуйста, отправьте файл с именем team-info.xlsx');
+        pendingEmployeeUpload.delete(userId);
+        return;
+      }
+      try {
+        // Скачиваем файл
+        const fileLink = await bot.getFileLink(file.file_id);
+        const tempPath = path.join(__dirname, 'temp_team_info.xlsx');
+        const writer = fs.createWriteStream(tempPath);
+        const response = await axios({ url: fileLink, method: 'GET', responseType: 'stream' });
+        response.data.pipe(writer);
+        await new Promise((resolve, reject) => {
+          writer.on('finish', resolve);
+          writer.on('error', reject);
+        });
+        // Заменяем основной файл
+        const targetPath = path.join(__dirname, 'team-info.xlsx');
+        fs.renameSync(tempPath, targetPath);
+        // Синхронизация
+        await syncEmployeesFromExcel(db);
+        await bot.sendMessage(msg.chat.id, '✅ Сотрудники успешно обновлены из загруженного файла.');
+      } catch (err) {
+        console.error('[UPLOAD_EMPLOYEES] Ошибка:', err);
+        await bot.sendMessage(msg.chat.id, `❌ Ошибка: ${err.message}`);
+      }
+      pendingEmployeeUpload.delete(userId);
+      return;
+    }
 
     // Приоритет 1: /upload_model
     if (pendingUploadModel && pendingUploadModel.has(userId)) {
@@ -950,6 +1149,8 @@ module.exports = function registerCommands(
 
       const file = msg.document;
       const fileName = file.file_name;
+      console.log(`[UPLOAD_MODEL] Имя файла: "${fileName}"`);
+
       // Извлекаем offer_id из имени файла
       let offerId = fileName;
       const underscoreIndex = fileName.indexOf('_');
@@ -962,6 +1163,19 @@ module.exports = function registerCommands(
         }
       }
       offerId = offerId.trim();
+      console.log(`[UPLOAD_MODEL] Извлечённый offerId: "${offerId}"`);
+
+      // Корректируем суффикс, если он был потерян
+      // Ищем в исходном имени шаблон: буквы/цифры, затем -N, -NR или -NL, затем _
+      const suffixMatch = fileName.match(/^([A-Z0-9]+)(-[A-Z]+)?_/);
+      if (suffixMatch && suffixMatch[2]) {
+        const fullOfferId = suffixMatch[1] + suffixMatch[2];
+        if (offerId !== fullOfferId) {
+          console.log(`[UPLOAD_MODEL] Обнаружен суффикс, корректируем offerId: "${fullOfferId}"`);
+          offerId = fullOfferId;
+        }
+      }
+
       if (!offerId) {
         await bot.sendMessage(msg.chat.id, '❌ Не удалось извлечь offer_id из имени файла. Убедитесь, что имя начинается с offer_id (например, 2001867564-N_...).');
         pendingUploadModel.delete(userId);
@@ -1136,7 +1350,7 @@ module.exports = function registerCommands(
     }
   });
 
-  // --- "/orders" Команда для администратора: просмотр списка заказов из API (отладка) ---
+  // --- "/orders" Команда для администратора: просмотр списка заказов из API (с фильтром по складу) ---
   bot.onText(/\/orders(?:\s+(\d+))?/, async (msg, match) => {
     const userId = msg.from.id.toString();
     if (!isAdmin(userId)) {
@@ -1146,9 +1360,8 @@ module.exports = function registerCommands(
       updateModeratorActivity();
     }
 
-    const warehouseId = match[1] || null; // если передан ID склада, используем его
+    const warehouseId = match[1] || null;
     try {
-      // Используем ту же функцию, что и для выдачи заказов сотрудникам
       const orders = await ozon.fetchAwaitingOrders(warehouseId);
 
       if (!orders || orders.length === 0) {
@@ -1159,17 +1372,45 @@ module.exports = function registerCommands(
         );
       }
 
-      let reply = `📋 *Список заказов (awaiting_packaging)*${warehouseId ? ` для склада ${warehouseId}` : ''}:\n\n`;
+      // Определяем название склада (если фильтр по складу)
+      let warehouseName = null;
+      if (warehouseId) {
+        warehouseName = await db.getWarehouseNameById(warehouseId);
+      }
+
+      // Формируем заголовок
+      let reply = '📋 Список заказов (awaiting_packaging)';
+      if (warehouseName) {
+        reply += ` для склада «${warehouseName}»`;
+      } else if (warehouseId) {
+        reply += ` для склада ID: ${warehouseId}`;
+      }
+      reply += `\nВсего: ${orders.length} заказ(ов)\n`;
+      reply += '──────────────────\n\n';
+
+      // Для каждого заказа
       for (const order of orders) {
         const orderNumber = order.posting_number;
         const productsCount = order.products ? order.products.length : (order.products_count || '?');
-        // Если в объекте есть информация о складе (может быть warehouse_id или warehouse)
-        const whInfo = order.warehouse_id || order.delivery_method?.warehouse_id || 'не указан';
-        reply += `• Заказ \`${orderNumber}\` — товаров: ${productsCount}, склад: ${whInfo}\n`;
+
+        // Получаем ID склада из заказа
+        let whId = order.warehouse_id || order.delivery_method?.warehouse_id || null;
+        let whName = 'не указан';
+        if (whId) {
+          whName = await db.getWarehouseNameById(whId) || whId;
+        }
+
+        // Формируем строку заказа
+        reply += `• Заказ ${orderNumber}\n`;
+        reply += `  Товаров: ${productsCount}\n`;
+        reply += `  Склад: ${whName}\n\n`;
       }
-      // Добавляем подсказку: если нужны детали, можно использовать /order_details <posting_number>
-      reply += `\n_Для просмотра деталей заказа используйте /order_details <posting_number>_`;
-      await bot.sendMessage(msg.chat.id, reply); // без parse_mode
+
+      reply += '──────────────────\n';
+      reply += '📌 Для просмотра деталей заказа используйте:\n';
+      reply += '/order_details <posting_number>';
+
+      await bot.sendMessage(msg.chat.id, reply);
     } catch (err) {
       console.error('Ошибка в /orders:', err);
       bot.sendMessage(msg.chat.id, '❌ Ошибка при получении списка заказов. Проверьте логи.');
@@ -1363,8 +1604,8 @@ module.exports = function registerCommands(
     }
   });
 
-  // --- "/reset_all_except_models" — сброс всех данных, кроме 3D-моделей ---
-  bot.onText(/\/reset_all_except_models/, async (msg) => {
+  // --- "/full_reset_and_sync" Команда для администратора: сброс всех данных, кроме 3D-моделей (с синхронизацией) ---
+  bot.onText(/\/full_reset_and_sync/, async (msg) => {
     console.log('[RESET] Команда получена');
     const userId = msg.from.id.toString();
     if (!isAdmin(userId)) {
@@ -1379,17 +1620,16 @@ module.exports = function registerCommands(
       reply_markup: {
         inline_keyboard: [
           [
-            { text: '⚠️ ДА, сбросить всё', callback_data: 'confirm_reset_all' },
-            { text: '❌ Отмена', callback_data: 'cancel_reset_all' }
+            { text: '⚠️ ДА, сбросить и синхронизировать', callback_data: 'confirm_full_reset_sync' },
+            { text: '❌ Отмена', callback_data: 'cancel_full_reset_sync' }
           ]
         ]
       }
     };
 
     try {
-      await bot.sendMessage(
-        msg.chat.id,
-        '⚠️ Вы уверены?\n\nБудут удалены все сотрудники, склады, назначения и статистика.\nБаза 3D-моделей останется нетронутой.\n\n⚠️ Действие необратимо!',
+      await bot.sendMessage(msg.chat.id,
+        '⚠️ Вы уверены?\n\nБудут удалены все сотрудники, склады, назначения и статистика.\nЗатем будет выполнена синхронизация складов и сотрудников из файла и Ozon.\nБаза 3D-моделей останется нетронутой.\n\n⚠️ Действие необратимо!',
         keyboard
       );
       console.log('[RESET] Клавиатура отправлена');
@@ -1482,68 +1722,7 @@ module.exports = function registerCommands(
       assignment.order_id, employee.id, employee.name, msg.chat.id, postingNumber
     );
     if (isDebugFinished) return;
-
-    try {
-      const orderAmount = await ozon.getOrderTotalAmount(postingNumber);
-      await db.updateEmployeeStats(employee.id, orderAmount);
-
-      // 1. Подтверждаем сборку (ship)
-      const actResponse = await ozon.confirmPostingShip(postingNumber);
-      console.log(`[FINISH] Ответ ship:`, JSON.stringify(actResponse, null, 2));
-
-      // Пытаемся извлечь actId из разных возможных полей
-      let actId = actResponse?.result?.id || actResponse?.id;
-      if (!actId && actResponse?.additional_data) {
-        for (const item of actResponse.additional_data) {
-          if (item.posting_number === postingNumber && item.act_id) {
-            actId = item.act_id;
-            break;
-          }
-        }
-      }
-      console.log(`[FINISH] Получен actId: ${actId}`);
-
-      // Ждём 15 секунд для обработки на стороне Ozon
-      await new Promise(resolve => setTimeout(resolve, 15000));
-
-      // 2. Получаем этикетку
-      let labelBuffer = null;
-      if (actId) {
-        labelBuffer = await ozon.getPackageLabel(null, actId);
-      }
-      if (!labelBuffer) {
-        labelBuffer = await ozon.getPackageLabel(postingNumber);
-      }
-
-      await db.completeOrder(postingNumber);
-
-      if (labelBuffer) {
-        if (labelBuffer) {
-          await bot.sendDocument(
-            msg.chat.id,
-            labelBuffer,
-            {
-              caption: `✅ Этикетка для заказа ${postingNumber}`
-            },
-            {
-              filename: `label_${postingNumber}.pdf`,
-              contentType: 'application/pdf'
-            }
-          );
-        }
-      } else {
-        await bot.sendMessage(msg.chat.id, `✅ Заказ ${postingNumber} подтверждён. Этикетку можно скачать в личном кабинете Ozon.`);
-      }
-
-      // Уведомляем модератора
-      const moderatorId = process.env.MODERATOR_ID;
-      if (moderatorId) {
-        await bot.sendMessage(moderatorId, `📦 Сотрудник ${employee.name} завершил заказ ${postingNumber}.`);
-      }
-    } catch (err) {
-      console.error('Ошибка завершения заказа:', err);
-      bot.sendMessage(msg.chat.id, `❌ Не удалось подтвердить сборку заказа ${postingNumber}: ${err.message}`);
-    }
+    await finishOrder(msg.chat.id, postingNumber, employee);
   });
 
   // --- "/cancel_order" – отмена заказа сотрудником (с подтверждением) ---
@@ -1587,16 +1766,17 @@ module.exports = function registerCommands(
       helpText += `/status_all — статус всех сотрудников\n`;
       helpText += `/active_orders — список активных заказов\n`;
       helpText += `/warehouses — список складов Ozon\n`;
-      helpText += `/orders [warehouse_id] — показать очередь заказов из API\n`;
+      helpText += `/orders [warehouse_id] — показать очередь заказов из API (с фильтром по складу)\n`;
       helpText += `/order_details <номер_заказа> — показать детали заказа\n`;
       helpText += `/employee_warehouses <id_сотрудника> — склады сотрудника\n`;
       helpText += `/employee_stats <id_сотрудника> — статистика сотрудника (заказы, сумма)\n`;
       helpText += `/employee_orders <id_сотрудника> — активные заказы сотрудника\n`;
+
+      helpText += `/send_label <номер_заказа> [id_сотрудника] — отправить PDF‑этикетку заказа сотруднику (если ID не указан – себе)\n\n`;
+
       helpText += `/admin_cancel_order <номер_заказа> — снять заказ с сотрудника\n\n`;
 
       helpText += `/clear_assignments — сброс ВСЕХ назначений на заказы\n\n`;
-
-      helpText += `/send_label <номер_заказа> [id_сотрудника] — отправить PDF‑этикетку заказа сотруднику (если ID не указан – себе)\n\n`;
 
       helpText += `📁 3D-модели:
 
@@ -1628,7 +1808,9 @@ module.exports = function registerCommands(
 
       helpText += `/backup_db — создать бэкап базы данных (бот.db)\n\n`;
 
-      helpText += `/reset_all_except_models — сбросить все данные (сотрудники, склады, назначения, статистику), но сохранить 3D-модели\n\n`;
+      helpText += `/upload_employees — загрузить новый файл team-info.xlsx с сотрудниками (автоматически синхронизирует БД)\n\n`;
+
+      helpText += `/full_reset_and_sync — сброс всех данных (сотрудники, склады, назначения, статистика), кроме 3D-моделей и синхронизация складов/сотрудников\n\n`;
 
       if (debugMode.isDebugMode()) helpText += `/debug_clear — сброс отладочных данных\n`;
       await bot.sendMessage(msg.chat.id, helpText);
@@ -1641,7 +1823,7 @@ module.exports = function registerCommands(
       helpText += `/cancel_order <номер_заказа> — отменить заказ (если не можете выполнить)\n`;
       helpText += `/start — перезапустить бота\n`;
       helpText += `/help — эта справка\n\n`;
-      helpText += `Внимание: Новые заказы вам назначает администратор.`;
+      helpText += `Внимание: Новые заказы вам назначает Модератор.`;
       await bot.sendMessage(msg.chat.id, helpText);
       return;
     }

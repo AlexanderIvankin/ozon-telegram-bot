@@ -12,6 +12,10 @@ module.exports = function registerCommands(
   startInactivityTimer, stopInactivityTimer
 ) {
 
+  let pendingFinishConfirmations = new Map(); // key: orderId, value: { originalChatId, originalMessageId }
+  let pendingEmployeeUpload = new Map(); // userId -> { step: 'waiting_file' }
+  let pendingUploadModel = new Map(); // userId -> { step: 'waiting_file' }
+
   // ---------------------- ОБРАБОТЧИК CALLBACK_QUERY (единый) ----------------------
   bot.on('callback_query', async (callbackQuery) => {
     const msg = callbackQuery.message;
@@ -43,7 +47,14 @@ module.exports = function registerCommands(
         await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Заказ не найден или не ваш.' });
         return;
       }
-      // Показываем подтверждение
+
+      // Сохраняем исходное сообщение для последующего удаления при подтверждении
+      pendingFinishConfirmations.set(orderId, {
+        originalChatId: callbackQuery.message.chat.id,
+        originalMessageId: callbackQuery.message.message_id
+      });
+
+      // Отправляем новое сообщение с подтверждением
       const confirmKeyboard = {
         reply_markup: {
           inline_keyboard: [
@@ -54,16 +65,12 @@ module.exports = function registerCommands(
           ]
         }
       };
-      await bot.editMessageText(`⚠️ Вы действительно хотите завершить заказ ${orderId}?`, {
-        chat_id: callbackQuery.message.chat.id,
-        message_id: callbackQuery.message.message_id,
-        ...confirmKeyboard
-      });
+      await bot.sendMessage(callbackQuery.message.chat.id, `⚠️ Вы действительно хотите завершить заказ ${orderId}?`, confirmKeyboard);
       await bot.answerCallbackQuery(callbackQuery.id);
       return;
     }
 
-    // Отмена завершения заказа сотрудником
+    // Подтверждение завершения заказа сотрудником
     if (data.startsWith('confirm_finish_')) {
       const orderId = data.substring(15);
       const userId = callbackQuery.from.id.toString();
@@ -72,20 +79,47 @@ module.exports = function registerCommands(
         await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Сотрудник не найден.' });
         return;
       }
-      // Вызываем общую функцию завершения
-      await finishOrder(callbackQuery.message.chat.id, orderId, employee);
-      // Удаляем сообщение с подтверждением
-      await bot.deleteMessage(callbackQuery.message.chat.id, callbackQuery.message.message_id);
-      await bot.answerCallbackQuery(callbackQuery.id, { text: '✅ Заказ завершён' });
+      try {
+        // Вызываем завершение заказа
+        await finishOrder(callbackQuery.message.chat.id, orderId, employee);
+
+        // Удаляем исходное сообщение (штрихкод), если оно сохранено
+        const original = pendingFinishConfirmations.get(orderId);
+        if (original) {
+          try {
+            await bot.deleteMessage(original.originalChatId, original.originalMessageId);
+          } catch (err) {
+            console.warn('Не удалось удалить исходное сообщение:', err.message);
+          }
+          pendingFinishConfirmations.delete(orderId);
+        }
+
+        // Удаляем сообщение-подтверждение
+        try {
+          await bot.deleteMessage(callbackQuery.message.chat.id, callbackQuery.message.message_id);
+        } catch (err) {
+          console.warn('Не удалось удалить сообщение подтверждения:', err.message);
+        }
+
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '✅ Заказ завершён' });
+      } catch (err) {
+        console.error('Ошибка при завершении заказа из callback:', err);
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Ошибка при завершении заказа' });
+      }
       return;
     }
 
+    // Отмена завершения заказа сотрудником
     if (data.startsWith('cancel_finish_')) {
       const orderId = data.substring(14);
-      await bot.editMessageText(`❌ Завершение заказа ${orderId} отменено.`, {
-        chat_id: callbackQuery.message.chat.id,
-        message_id: callbackQuery.message.message_id
-      });
+      // Удаляем только сообщение-подтверждение, исходное оставляем
+      try {
+        await bot.deleteMessage(callbackQuery.message.chat.id, callbackQuery.message.message_id);
+      } catch (err) {
+        console.warn('Не удалось удалить сообщение подтверждения:', err.message);
+      }
+      // Удаляем запись из Map (если есть)
+      pendingFinishConfirmations.delete(orderId);
       await bot.answerCallbackQuery(callbackQuery.id, { text: 'Отменено' });
       return;
     }
@@ -852,7 +886,7 @@ module.exports = function registerCommands(
     await bot.sendMessage(msg.chat.id, reply || 'Нет активных заказов');
   });
 
-  let pendingEmployeeUpload = new Map(); // userId -> { step: 'waiting_file' }
+
   // --- "/upload_employees" Команда для администратора: загрузить новый файл team-info.xlsx с сотрудниками (автоматически синхронизирует БД) ---
   bot.onText(/\/upload_employees/, async (msg) => {
     const userId = msg.from.id.toString();
@@ -975,9 +1009,6 @@ module.exports = function registerCommands(
       await bot.sendMessage(msg.chat.id, `❌ Ошибка: ${err.message}`);
     }
   });
-
-  // Ожидание файла для /upload_model
-  let pendingUploadModel = new Map(); // userId -> { step: 'waiting_file' }
 
   // --- "/upload_model" Команда для администратора: добавление/обновление 3D-модели ---
   bot.onText(/\/upload_model/, async (msg) => {
@@ -1372,15 +1403,13 @@ module.exports = function registerCommands(
         );
       }
 
-      // Определяем название склада (если фильтр по складу)
       let warehouseName = null;
       if (warehouseId) {
         warehouseName = await db.getWarehouseNameById(warehouseId);
       }
 
-      // Формируем заголовок
       let reply = '📋 Список заказов (awaiting_packaging)';
-      if (warehouseName) {
+      if (warehouseName && warehouseName !== warehouseId) {
         reply += ` для склада «${warehouseName}»`;
       } else if (warehouseId) {
         reply += ` для склада ID: ${warehouseId}`;
@@ -1388,22 +1417,27 @@ module.exports = function registerCommands(
       reply += `\nВсего: ${orders.length} заказ(ов)\n`;
       reply += '──────────────────\n\n';
 
-      // Для каждого заказа
       for (const order of orders) {
         const orderNumber = order.posting_number;
         const productsCount = order.products ? order.products.length : (order.products_count || '?');
 
-        // Получаем ID склада из заказа
         let whId = order.warehouse_id || order.delivery_method?.warehouse_id || null;
-        let whName = 'не указан';
+        let whDisplay = 'не указан';
+
         if (whId) {
-          whName = await db.getWarehouseNameById(whId) || whId;
+          whId = String(whId); // ПРИВОДИМ К СТРОКЕ
+          const whName = await db.getWarehouseNameById(whId);
+          if (whName === whId) {
+            console.warn(`[ORDERS] Склад с ID ${whId} не найден в БД, проверьте синхронизацию складов.`);
+            whDisplay = `ID: ${whId}`;
+          } else {
+            whDisplay = `${whName} (ID: ${whId})`;
+          }
         }
 
-        // Формируем строку заказа
         reply += `• Заказ ${orderNumber}\n`;
         reply += `  Товаров: ${productsCount}\n`;
-        reply += `  Склад: ${whName}\n\n`;
+        reply += `  Склад: ${whDisplay}\n\n`;
       }
 
       reply += '──────────────────\n';
@@ -1770,7 +1804,7 @@ module.exports = function registerCommands(
       helpText += `/order_details <номер_заказа> — показать детали заказа\n`;
       helpText += `/employee_warehouses <id_сотрудника> — склады сотрудника\n`;
       helpText += `/employee_stats <id_сотрудника> — статистика сотрудника (заказы, сумма)\n`;
-      helpText += `/employee_orders <id_сотрудника> — активные заказы сотрудника\n`;
+      helpText += `/employee_orders <id_сотрудника> — активные заказы сотрудника\n\n`;
 
       helpText += `/send_label <номер_заказа> [id_сотрудника] — отправить PDF‑этикетку заказа сотруднику (если ID не указан – себе)\n\n`;
 

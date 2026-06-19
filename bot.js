@@ -179,52 +179,54 @@ async function showOrderMenu(order) {
 
     let warehouseDisplay = order.analytics_data?.warehouse || (order.warehouse_id ? `ID: ${order.warehouse_id}` : 'не указан');
 
+    // --- Время создания заказа ---
+    let createdAtDisplay = '';
+    if (details.in_process_at) {
+        const date = new Date(details.in_process_at);
+        const dateStr = date.toLocaleDateString('ru-RU');
+        const timeStr = date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        createdAtDisplay = `\nЗаказ создан: ${dateStr}, ${timeStr}`;
+    }
+
     let productsInfo = '';
     let skuList = [];
     let totalAmount = 0;
-    let currency = 'RUB'; // валюта по умолчанию
+    let currency = 'RUB';
 
     if (details?.products?.length) {
         productsInfo = '\n\n*Состав:*\n';
         for (const p of details.products) {
-            // --- Артикул (выделяем жирным) ---
             let article = p.offer_id || (p.barcodes?.[0]);
             let articleDisplay = article ? `*${article}*` : '—';
 
-            // --- Цена и валюта ---
             let price = parseFloat(p.price) || 0;
             let currencyCode = p.currency_code || 'RUB';
-            if (currencyCode && currency === 'RUB') currency = currencyCode; // берём валюту первого товара
+            if (currencyCode && currency === 'RUB') currency = currencyCode;
             let priceDisplay = price > 0 ? `${price.toFixed(2)} ${currencyCode}` : '—';
 
-            // --- Размеры и вес ---
             let dims = p.dimensions || {};
             let length = dims.length ? `${dims.length} см` : '—';
             let width = dims.width ? `${dims.width} см` : '—';
             let height = dims.height ? `${dims.height} см` : '—';
-            // Вес: сначала берём из dimensions.weight (граммы), иначе из weight_max (кг -> г)
             let weightVal = dims.weight ? parseFloat(dims.weight) : (p.weight_max ? parseFloat(p.weight_max) * 1000 : 0);
             let weightDisplay = weightVal > 0 ? `${weightVal.toFixed(0)} г` : '—';
             let dimsDisplay = `📏 ${length} × ${width} × ${height}, ⚖️ ${weightDisplay}`;
 
-            // --- Строка товара ---
             productsInfo += `• ${p.name} — ${p.quantity} шт.\n`;
             productsInfo += `   Артикул: ${articleDisplay}\n`;
             productsInfo += `   Цена: ${priceDisplay}\n`;
             productsInfo += `   Размеры: ${dimsDisplay}\n`;
 
-            // --- Суммируем общую стоимость ---
             totalAmount += price * p.quantity;
             if (p.sku) skuList.push(p.sku);
         }
 
-        // --- Итоговая сумма заказа ---
         let totalDisplay = totalAmount > 0 ? `${totalAmount.toFixed(2)} ${currency}` : '—';
         productsInfo += `\n*Общая сумма заказа:* ${totalDisplay}`;
     }
 
     const adminChatId = MODERATOR_ID.toString();
-    const messageText = `🆕 *Новый заказ!*\nНомер: ${order.posting_number}\nСклад: ${warehouseDisplay}${productsInfo}\n\nВыберите действие:`;
+    const messageText = `🆕 *Новый заказ!*\nНомер: ${order.posting_number}\nСклад: ${warehouseDisplay}${createdAtDisplay}${productsInfo}\n\nВыберите действие:`;
 
     const keyboard = [
         [{ text: '👑 Приоритетные', callback_data: `priority_${order.posting_number}` }],
@@ -232,17 +234,14 @@ async function showOrderMenu(order) {
         [{ text: '⏩ Пропустить (на 30 мин)', callback_data: `skip_${order.posting_number}` }]
     ];
 
-    // Удаляем старые сообщения
     await deleteLastOrderMessages();
 
-    // Отправляем текст и сохраняем ID
     const sentMsg = await bot.sendMessage(adminChatId, messageText, {
         reply_markup: { inline_keyboard: keyboard },
         parse_mode: 'Markdown'
     });
     lastOrderMessageId = sentMsg.message_id;
 
-    // Отправляем фотографии (без изменений)
     if (skuList.length) {
         try {
             const imageMap = await ozon.fetchProductsImages(skuList);

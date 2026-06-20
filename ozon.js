@@ -81,7 +81,7 @@ async function fetchWarehousesFromOzon() {
 
 // Получить список заказов FBS со статусом "awaiting_packaging" (ожидает упаковки)
 // Документация: метод /v4/posting/fbs/list
-async function fetchAwaitingOrders(warehouseId = null) {
+async function fetchAwaitingOrders(warehouseId = null, limit = 100) {
     if (debugMode.isDebugMode()) console.log('[Ozon] Запрос списка заказов...');
     if (MOCK_MODE) {
         console.log('[Ozon MOCK] Возвращаем тестовые заказы');
@@ -97,28 +97,44 @@ async function fetchAwaitingOrders(warehouseId = null) {
         since.setDate(since.getDate() - 90);
         const to = new Date();
 
-        const filter = {
-            statuses: ['awaiting_packaging'],
-            since: since.toISOString(),
-            to: to.toISOString()
-        };
+        let allOrders = [];
+        let lastId = null;
+        let hasMore = true;
 
-        if (warehouseId) {
-            filter.warehouse_id = [warehouseId];
+        while (hasMore) {
+            const filter = {
+                statuses: ['awaiting_packaging'],
+                since: since.toISOString(),
+                to: to.toISOString()
+            };
+
+            if (warehouseId) {
+                filter.warehouse_id = [warehouseId];
+            }
+
+            const requestBody = {
+                filter,
+                limit,
+                with: {
+                    analytics_data: true
+                }
+            };
+
+            if (lastId) {
+                requestBody.last_id = lastId;
+            }
+
+            const response = await apiClient.post('/v4/posting/fbs/list', requestBody);
+            const orders = response.data.postings || [];
+            allOrders = allOrders.concat(orders);
+
+            // Проверяем, есть ли ещё страницы
+            lastId = response.data.last_id;
+            hasMore = !!lastId && orders.length === limit;
         }
 
-        const requestBody = {
-            filter,
-            limit: 20,
-            with: {
-                analytics_data: true
-            }
-        };
-
-        const response = await apiClient.post('/v4/posting/fbs/list', requestBody);
-        const orders = response.data.postings || [];   // Исправлено: данные напрямую в поле postings
-        if (debugMode.isDebugMode()) console.log(`[Ozon] Успешно получено ${orders.length} заказов.`);
-        return orders;
+        if (debugMode.isDebugMode()) console.log(`[Ozon] Успешно получено ${allOrders.length} заказов.`);
+        return allOrders;
     } catch (error) {
         console.error('[Ozon] Ошибка при получении заказов:', error.response?.data || error.message);
         return [];

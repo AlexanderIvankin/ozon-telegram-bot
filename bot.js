@@ -134,40 +134,54 @@ async function checkAndOfferNewOrders() {
     try {
         const allOrders = await ozon.fetchAwaitingOrders();
         if (debug) console.log(`[CHECK] Получено заказов из API: ${allOrders.length}`);
-        if (!allOrders.length) return;
+
+        // Если API вернул пустой массив — значит, заказов действительно нет
+        if (!allOrders.length) {
+            // НЕ сбрасываем очередь, если в ней уже есть заказы
+            // Если очередь пуста, можно сбросить currentOrderProcessing
+            if (pendingNewOrders.length === 0) {
+                currentOrderProcessing = null;
+            }
+            return;
+        }
 
         const assignedOrderIds = (await db.db.all('SELECT order_id FROM assignments WHERE status = "assigned"')).map(r => r.order_id);
         if (debug) console.log(`[CHECK] Уже назначенных заказов: ${assignedOrderIds.length}`);
 
         const newOrders = allOrders.filter(order => !assignedOrderIds.includes(order.posting_number));
         if (debug) console.log(`[CHECK] Новых заказов (не назначенных): ${newOrders.length}`);
+
         if (!newOrders.length) {
-            // Если нет новых заказов, сбрасываем очередь
-            pendingNewOrders = [];
-            currentOrderProcessing = null;
+            // Новых заказов нет, но текущие оставляем
             return;
         }
 
-        // Обновляем очередь
+        // Сохраняем текущий обрабатываемый заказ, если он ещё есть в новом списке
+        const currentOrderId = currentOrderProcessing?.order?.posting_number;
+        if (currentOrderId && !newOrders.some(o => o.posting_number === currentOrderId)) {
+            // Текущий заказ уже не в статусе awaiting_packaging — сбрасываем
+            console.log(`[CHECK] Текущий заказ ${currentOrderId} больше не в статусе awaiting_packaging, сбрасываем`);
+            currentOrderProcessing = null;
+        }
+
+        // Заменяем очередь новыми заказами (но если текущий заказ ещё актуален, он уже в newOrders)
         pendingNewOrders.length = 0;
         pendingNewOrders.push(...newOrders);
 
-        // Проверяем текущий обрабатываемый заказ
-        const currentOrderId = currentOrderProcessing?.order?.posting_number;
-        if (currentOrderId) {
-            const stillInQueue = pendingNewOrders.some(o => o.posting_number === currentOrderId);
-            if (!stillInQueue) {
-                console.log(`[CHECK] Текущий заказ ${currentOrderId} больше не в очереди, сбрасываем`);
-                currentOrderProcessing = null;
-            }
-        }
-
-        // Если нет активного заказа и есть заказы в очереди – отправляем первый
+        // Если нет активного заказа и есть заказы – отправляем первый
         if (!currentOrderProcessing && pendingNewOrders.length) {
             await processNextOrder();
         }
     } catch (err) {
         console.error('[CHECK] Ошибка в checkAndOfferNewOrders:', err);
+        // При ошибке НЕ сбрасываем очередь, чтобы не потерять уже имеющиеся заказы
+        // Можно отправить уведомление администратору
+        try {
+            const moderatorId = process.env.MODERATOR_ID;
+            if (moderatorId) {
+                await bot.sendMessage(moderatorId, `⚠️ Ошибка синхронизации заказов: ${err.message}`);
+            }
+        } catch (e) { /* игнорируем */ }
     }
 }
 
@@ -324,16 +338,17 @@ async function deleteLastOrderMessages() {
 }
 
 async function forceReloadQueue() {
-    // Удаляем старое сообщение
     await deleteLastOrderMessages();
-    // Сбрасываем состояние
     currentOrderProcessing = null;
     pendingNewOrders.length = 0;
-    // Обновляем очередь из API
-    await checkAndOfferNewOrders();
-    // Если появились заказы – отправляем первый
-    if (!currentOrderProcessing && pendingNewOrders.length) {
-        await processNextOrder();
+    try {
+        await checkAndOfferNewOrders();
+        if (!currentOrderProcessing && pendingNewOrders.length) {
+            await processNextOrder();
+        }
+    } catch (err) {
+        console.error('❌ Ошибка при принудительной перезагрузке:', err);
+        await bot.sendMessage(MODERATOR_ID, `❌ Ошибка перезагрузки: ${err.message}`);
     }
 }
 

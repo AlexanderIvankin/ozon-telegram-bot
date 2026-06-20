@@ -81,7 +81,7 @@ async function fetchWarehousesFromOzon() {
 
 // Получить список заказов FBS со статусом "awaiting_packaging" (ожидает упаковки)
 // Документация: метод /v4/posting/fbs/list
-async function fetchAwaitingOrders(warehouseId = null, limit = 100) {
+async function fetchAwaitingOrders(warehouseId = null, limit = 100, retries = 3) {
     if (debugMode.isDebugMode()) console.log('[Ozon] Запрос списка заказов...');
     if (MOCK_MODE) {
         console.log('[Ozon MOCK] Возвращаем тестовые заказы');
@@ -91,53 +91,70 @@ async function fetchAwaitingOrders(warehouseId = null, limit = 100) {
         return mockOrders;
     }
 
-    try {
-        // Диапазон дат: от 90 дней назад до сегодня
-        const since = new Date();
-        since.setDate(since.getDate() - 90);
-        const to = new Date();
+    let attempt = 0;
+    while (attempt < retries) {
+        try {
+            const since = new Date();
+            since.setDate(since.getDate() - 90);
+            const to = new Date();
 
-        let allOrders = [];
-        let lastId = null;
-        let hasMore = true;
+            let allOrders = [];
+            let lastId = null;
+            let hasMore = true;
 
-        while (hasMore) {
-            const filter = {
-                statuses: ['awaiting_packaging'],
-                since: since.toISOString(),
-                to: to.toISOString()
-            };
+            while (hasMore) {
+                const filter = {
+                    statuses: ['awaiting_packaging'],
+                    since: since.toISOString(),
+                    to: to.toISOString()
+                };
 
-            if (warehouseId) {
-                filter.warehouse_id = [warehouseId];
-            }
-
-            const requestBody = {
-                filter,
-                limit,
-                with: {
-                    analytics_data: true
+                if (warehouseId) {
+                    filter.warehouse_id = [warehouseId];
                 }
-            };
 
-            if (lastId) {
-                requestBody.last_id = lastId;
+                const requestBody = {
+                    filter,
+                    limit,
+                    with: {
+                        analytics_data: true
+                    }
+                };
+
+                if (lastId) {
+                    requestBody.last_id = lastId;
+                }
+
+                const response = await apiClient.post('/v4/posting/fbs/list', requestBody);
+                const orders = response.data.postings || [];
+                allOrders = allOrders.concat(orders);
+
+                lastId = response.data.last_id;
+                hasMore = !!lastId && orders.length === limit;
             }
 
-            const response = await apiClient.post('/v4/posting/fbs/list', requestBody);
-            const orders = response.data.postings || [];
-            allOrders = allOrders.concat(orders);
+            if (debugMode.isDebugMode()) console.log(`[Ozon] Успешно получено ${allOrders.length} заказов.`);
+            return allOrders;
 
-            // Проверяем, есть ли ещё страницы
-            lastId = response.data.last_id;
-            hasMore = !!lastId && orders.length === limit;
+        } catch (error) {
+            attempt++;
+            const isRetryable = error.response
+                ? [429, 500, 502, 503, 504].includes(error.response.status)
+                : true;
+
+            if (isRetryable && attempt < retries) {
+                const delay = Math.pow(2, attempt) * 1000; // 2, 4, 8 секунд
+                console.warn(`[Ozon] Ошибка при получении заказов (попытка ${attempt}/${retries}):`,
+                    error.response?.data || error.message);
+                console.log(`[Ozon] Повтор через ${delay} мс...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+                continue;
+            }
+
+            // Если ошибка не повторяемая или закончились попытки – выбрасываем
+            console.error('[Ozon] Критическая ошибка при получении заказов:', error.response?.data || error.message);
+            throw new Error(`Ошибка Ozon API при получении заказов: ${error.message}`);
         }
-
-        if (debugMode.isDebugMode()) console.log(`[Ozon] Успешно получено ${allOrders.length} заказов.`);
-        return allOrders;
-    } catch (error) {
-        console.error('[Ozon] Ошибка при получении заказов:', error.response?.data || error.message);
-        return [];
     }
 }
 

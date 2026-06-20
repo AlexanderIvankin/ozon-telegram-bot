@@ -1376,23 +1376,31 @@ module.exports = function registerCommands(
       await bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
       return;
     }
-    // 1. Удаляем старое сообщение и фото
-    if (typeof deleteLastOrderMessages === 'function') {
-      await deleteLastOrderMessages();
-    }
-    // 2. Сбрасываем состояние (очищаем массив, не пересоздавая)
-    pendingNewOrders.length = 0;
-    currentOrderProcessing = null;
-    // 3. Перезагружаем очередь из API
-    await checkAndOfferNewOrders();
-    // 4. Если после обновления есть заказы – отправляем первый
-    if (pendingNewOrders.length) {
-      // Убедимся, что нет активного заказа
+
+    try {
+      // 1. Удаляем старое сообщение и фото
+      if (typeof deleteLastOrderMessages === 'function') {
+        await deleteLastOrderMessages();
+      }
+      // 2. Сбрасываем состояние (очищаем массив, не пересоздавая)
+      pendingNewOrders.length = 0;
       currentOrderProcessing = null;
-      await processNextOrder();
-      bot.sendMessage(msg.chat.id, `✅ Перезагрузка выполнена. Отправлен первый заказ. Осталось: ${pendingNewOrders.length}`);
-    } else {
-      bot.sendMessage(msg.chat.id, '✅ Перезагрузка выполнена. Новых заказов нет.');
+
+      // 3. Перезагружаем очередь из API
+      await checkAndOfferNewOrders();
+
+      // 4. Если после обновления есть заказы – отправляем первый
+      if (pendingNewOrders.length) {
+        // Убедимся, что нет активного заказа
+        currentOrderProcessing = null;
+        await processNextOrder();
+        bot.sendMessage(msg.chat.id, `✅ Перезагрузка выполнена. Отправлен первый заказ. Осталось: ${pendingNewOrders.length}`);
+      } else {
+        bot.sendMessage(msg.chat.id, '✅ Перезагрузка выполнена. Новых заказов нет.');
+      }
+    } catch (err) {
+      console.error('[RELOAD_QUEUE] Ошибка:', err);
+      bot.sendMessage(msg.chat.id, `❌ Ошибка при перезагрузке: ${err.message}`);
     }
   });
 

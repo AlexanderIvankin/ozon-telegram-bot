@@ -1209,7 +1209,7 @@ module.exports = function registerCommands(
       // --- Восстановление суффикса, если он был заменён ---
       // Если offerId не содержит дефис, но в начале rest есть N, NR или NL и затем '_' или '.' 
       // (т.е. был суффикс, но его заменили на подчёркивание)
-      const suffixMatch = rest.match(/^([A-Z]+)(?:_|\.)/);
+      const suffixMatch = rest.match(/^([A-Z]+)(?:-|_|\.)/);
       if (!offerId.includes('-') && suffixMatch) {
         const possibleSuffix = suffixMatch[1];
         if (possibleSuffix === 'N' || possibleSuffix === 'NR' || possibleSuffix === 'NL') {

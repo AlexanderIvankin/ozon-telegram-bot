@@ -165,6 +165,20 @@ async function cancelOrder(orderId, employeeId) {
     return true;
 }
 
+// Автоматическая отмена заказа (без увеличения счётчика отмен)
+async function autoCancelOrder(orderId, employeeId) {
+    // Проверяем, что заказ принадлежит этому сотруднику и ещё не завершён
+    const assignment = await database.get(
+        'SELECT * FROM assignments WHERE order_id = ? AND employee_id = ? AND status = "assigned"',
+        orderId, employeeId
+    );
+    if (!assignment) throw new Error('Заказ не найден или уже завершён');
+    // Удаляем назначение
+    await database.run('DELETE FROM assignments WHERE order_id = ?', orderId);
+    // НЕ обновляем статистику отмен
+    return true;
+}
+
 // Завершить заказ
 async function completeOrder(orderId) {
     await database.run(
@@ -379,6 +393,7 @@ module.exports = {
     getEmployeeById,
     assignOrderToEmployee,
     cancelOrder,
+    autoCancelOrder,
     completeOrder,
     getAllEmployeesWithStats,
     getEmployeeActiveOrders,

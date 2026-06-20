@@ -135,6 +135,10 @@ async function checkAndOfferNewOrders() {
         const allOrders = await ozon.fetchAwaitingOrders();
         if (debug) console.log(`[CHECK] Получено заказов из API: ${allOrders.length}`);
 
+        // Очистка устаревших назначений
+        const activeOrderIds = allOrders.map(o => o.posting_number);
+        await cleanExpiredAssignments(activeOrderIds);
+
         // Если API вернул пустой массив — значит, заказов действительно нет
         if (!allOrders.length) {
             // НЕ сбрасываем очередь, если в ней уже есть заказы
@@ -182,6 +186,53 @@ async function checkAndOfferNewOrders() {
                 await bot.sendMessage(moderatorId, `⚠️ Ошибка синхронизации заказов: ${err.message}`);
             }
         } catch (e) { /* игнорируем */ }
+    }
+}
+
+// Функция для очистки устаревших назначений
+async function cleanExpiredAssignments(activeOrderIds) {
+    // activeOrderIds — множество posting_number из свежего списка
+    const activeSet = new Set(activeOrderIds);
+
+    // Получаем все активные назначения
+    const assignments = await db.db.all(
+        'SELECT a.order_id, a.employee_id, e.tg_user_id, e.name as employee_name ' +
+        'FROM assignments a JOIN employees e ON a.employee_id = e.id ' +
+        'WHERE a.status = "assigned"'
+    );
+
+    for (const assignment of assignments) {
+        const orderId = assignment.order_id;
+        if (!activeSet.has(orderId)) {
+            console.log(`[CLEAN] Заказ ${orderId} больше не в awaiting_packaging, отменяем назначение у ${assignment.employee_name}`);
+
+            // Отменяем назначение (обновляем статус в БД) - БЕЗ увеличения счётчика
+            await db.autoCancelOrder(orderId, assignment.employee_id);
+
+            // Если заказ был в очереди — удаляем
+            const idx = pendingNewOrders.findIndex(o => o.posting_number === orderId);
+            if (idx !== -1) pendingNewOrders.splice(idx, 1);
+            if (currentOrderProcessing && currentOrderProcessing.order.posting_number === orderId) {
+                currentOrderProcessing = null;
+            }
+
+            // Уведомляем сотрудника
+            try {
+                await bot.sendMessage(
+                    assignment.tg_user_id,
+                    `❌ Заказ ${orderId} был отменён (или более не актуален). Он снят с вас.`
+                );
+            } catch (e) { /* игнорируем, если не можем отправить */ }
+
+            // Уведомляем модератора
+            const moderatorId = process.env.MODERATOR_ID;
+            if (moderatorId) {
+                await bot.sendMessage(
+                    moderatorId,
+                    `🔄 Заказ ${orderId} автоматически снят с сотрудника ${assignment.employee_name}, так как он больше не в статусе awaiting_packaging.`
+                );
+            }
+        }
     }
 }
 

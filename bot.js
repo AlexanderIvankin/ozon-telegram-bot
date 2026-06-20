@@ -231,7 +231,7 @@ async function showOrderMenu(order) {
     const keyboard = [
         [{ text: '👑 Приоритетные', callback_data: `priority_${order.posting_number}` }],
         [{ text: '👥 Другие сотрудники', callback_data: `others_${order.posting_number}` }],
-        [{ text: '⏩ Пропустить (на 30 мин)', callback_data: `skip_${order.posting_number}` }]
+        [{ text: `⏩ Пропустить (на ${SYNC_ORDERS_TIME} мин)`, callback_data: `skip_${order.posting_number}` }]
     ];
 
     await deleteLastOrderMessages();

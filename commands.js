@@ -544,6 +544,17 @@ module.exports = function registerCommands(
     // 6. Сброс всех назначений (подтверждение)
     if (data === 'confirm_clear_all') {
       await db.db.run('DELETE FROM assignments WHERE status = "assigned"');
+
+      // --- Очистка всех pendingForms и удаление сообщений ---
+      for (const [userId, state] of pendingForms) {
+        for (const offerId of Object.keys(state.offers)) {
+          try {
+            await bot.deleteMessage(userId, state.offers[offerId].messageId);
+          } catch (e) { /* игнорируем */ }
+        }
+      }
+      pendingForms.clear();
+
       await bot.editMessageText('✅ Все активные назначения сброшены.', {
         chat_id: msg.chat.id,
         message_id: msg.message_id

@@ -1,7 +1,39 @@
 const fs = require('fs');
 const path = require('path');
+const XLSX = require('xlsx');
 const axios = require('axios');
 const { syncEmployeesFromExcel } = require('./syncEmployees');
+
+let pendingFinishConfirmations = new Map(); // key: orderId, value: { originalChatId, originalMessageId }
+let pendingEmployeeUpload = new Map(); // userId -> { step: 'waiting_file' }
+let pendingMaterialsUpload = new Map(); // userId -> { step: 'waiting_file' }
+let pendingUploadModel = new Map(); // userId -> { step: 'waiting_file' }
+let pendingForms = new Map(); // userId -> { orderId, remainingOffers, currentOffer, tempData, waitingForWeight }
+let materialsData = null;
+
+// Загружаем справочники при старте
+function loadMaterials() {
+  try {
+    const raw = fs.readFileSync(path.join(__dirname, 'materials.json'), 'utf8');
+    materialsData = JSON.parse(raw);
+    console.log('✅ Справочники материалов загружены');
+  } catch (err) {
+    console.error('❌ Ошибка загрузки materials.json:', err.message);
+    // Задаём дефолтные значения
+    materialsData = {
+      colors: ["Черный", "Белый", "Серый", "Прозрачный", "Красный", "Желтый", "Зеленый"],
+      materials: {
+        "Pet-G": 0.05,
+        "ABS": 0.04,
+        "Нейлон Pa-6": 0.08,
+        "Нейлон Pa-12": 0.09,
+        "НейлонАрмир": 0.12,
+        "ASA": 0.06
+      }
+    };
+  }
+}
+loadMaterials();
 
 module.exports = function registerCommands(
   bot, db, ozon, bwipjs, scheduler, debugMode,
@@ -12,9 +44,78 @@ module.exports = function registerCommands(
   startInactivityTimer, stopInactivityTimer
 ) {
 
-  let pendingFinishConfirmations = new Map(); // key: orderId, value: { originalChatId, originalMessageId }
-  let pendingEmployeeUpload = new Map(); // userId -> { step: 'waiting_file' }
-  let pendingUploadModel = new Map(); // userId -> { step: 'waiting_file' }
+  async function exportProductStats() {
+    try {
+      const stats = await db.getAllProductStats();
+      if (!stats.length) return;
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.json_to_sheet(stats.map(s => ({
+        'Артикул': s.offer_id,
+        'Материал': s.material,
+        'Цвет': s.color,
+        'Вес (г)': s.weight_grams,
+        'Кто заполнил': s.employee_id,
+        'Дата': new Date(s.updated_at).toLocaleString()
+      })));
+      XLSX.utils.book_append_sheet(wb, ws, 'Статистика');
+      const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+      const outputPath = path.join(__dirname, 'exports', 'product-stats.xlsx');
+      fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+      fs.writeFileSync(outputPath, buffer);
+    } catch (err) {
+      console.error('[EXPORT] Ошибка создания Excel:', err);
+    }
+  }
+
+  async function askMaterial(employeeId, offerId) {
+    const materialNames = Object.keys(materialsData.materials);
+    // Разбиваем на ряды по 2 кнопки
+    const keyboard = [];
+    for (let i = 0; i < materialNames.length; i += 2) {
+      const row = [];
+      row.push({ text: materialNames[i], callback_data: `mat_${offerId}_${materialNames[i]}` });
+      if (i + 1 < materialNames.length) {
+        row.push({ text: materialNames[i + 1], callback_data: `mat_${offerId}_${materialNames[i + 1]}` });
+      }
+      keyboard.push(row);
+    }
+    await bot.sendMessage(employeeId, `Выберите материал для товара ${offerId}:`, {
+      reply_markup: { inline_keyboard: keyboard }
+    });
+  }
+
+  async function askColor(employeeId, offerId) {
+    const colors = materialsData.colors;
+    const keyboard = [];
+    for (let i = 0; i < colors.length; i += 2) {
+      const row = [];
+      row.push({ text: colors[i], callback_data: `color_${offerId}_${colors[i]}` });
+      if (i + 1 < colors.length) {
+        row.push({ text: colors[i + 1], callback_data: `color_${offerId}_${colors[i + 1]}` });
+      }
+      keyboard.push(row);
+    }
+    await bot.sendMessage(employeeId, `Выберите цвет для товара ${offerId}:`, {
+      reply_markup: { inline_keyboard: keyboard }
+    });
+  }
+
+  async function askWeight(employeeId, offerId) {
+    await bot.sendMessage(employeeId, `Введите вес пластика в граммах (только число) для товара ${offerId}:`);
+    const state = pendingForms.get(employeeId);
+    if (state) state.waitingForWeight = true;
+  }
+
+  async function sendFinishButton(employeeId, orderId) {
+    const finishKeyboard = {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '✅ Завершить заказ', callback_data: `finish_order_${orderId}` }]
+        ]
+      }
+    };
+    await bot.sendMessage(employeeId, `✅ Все данные для заказа ${orderId} заполнены. Теперь вы можете завершить заказ.`, finishKeyboard);
+  }
 
   // ---------------------- ОБРАБОТЧИК CALLBACK_QUERY (единый) ----------------------
   bot.on('callback_query', async (callbackQuery) => {
@@ -121,6 +222,38 @@ module.exports = function registerCommands(
       // Удаляем запись из Map (если есть)
       pendingFinishConfirmations.delete(orderId);
       await bot.answerCallbackQuery(callbackQuery.id, { text: 'Отменено' });
+      return;
+    }
+
+    // Обработка заполнения материала товара
+    if (data.startsWith('mat_')) {
+      const parts = data.split('_');
+      const offerId = parts[1];
+      const material = parts.slice(2).join('_'); // на случай если материал содержит подчёркивание
+      const state = pendingForms.get(userId);
+      if (state && state.currentOffer === offerId) {
+        state.tempData.material = material;
+        await askColor(userId, offerId);
+        await bot.answerCallbackQuery(callbackQuery.id);
+      } else {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Ошибка: состояние не найдено' });
+      }
+      return;
+    }
+
+    // Обработка заполнения цвета товара
+    if (data.startsWith('color_')) {
+      const parts = data.split('_');
+      const offerId = parts[1];
+      const color = parts.slice(2).join('_');
+      const state = pendingForms.get(userId);
+      if (state && state.currentOffer === offerId) {
+        state.tempData.color = color;
+        await askWeight(userId, offerId);
+        await bot.answerCallbackQuery(callbackQuery.id);
+      } else {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Ошибка: состояние не найдено' });
+      }
       return;
     }
 
@@ -482,7 +615,16 @@ module.exports = function registerCommands(
       // Назначаем в БД
       await db.assignOrderToEmployee(orderId, employeeId);
 
-      // --- Отправка штрихкода и сообщения ---
+      // --- Проверка наличия статистики для каждого товара ---
+      const missingStats = [];
+      for (const product of orderDetails.products) {
+        const offerId = product.offer_id;
+        if (!offerId) continue;
+        const stats = await db.getProductStats(offerId);
+        if (!stats) missingStats.push(offerId);
+      }
+
+      // --- Подготовка сообщения и штрихкода ---
       let detailsText = '';
       let skuList = [];
       if (orderDetails && orderDetails.products) {
@@ -491,15 +633,20 @@ module.exports = function registerCommands(
         skuList = orderDetails.products.map(p => p.sku).filter(Boolean);
       }
 
-      const finishKeyboard = {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: '✅ Завершить заказ', callback_data: `finish_order_${orderId}` }]
-          ]
-        }
-      };
+      // Кнопка завершения только если все данные есть
+      let finishKeyboard = null;
+      if (missingStats.length === 0) {
+        finishKeyboard = {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '✅ Завершить заказ', callback_data: `finish_order_${orderId}` }]
+            ]
+          }
+        };
+      }
 
       let caption = `✅ Вам назначен заказ №: ${orderId}${detailsText}\n\nКогда упакуете, нажмите кнопку ниже или выполните команду:\n/finish_order ${orderId}`;
+
       try {
         const barcodeBuffer = await bwipjs.toBuffer({
           bcid: 'code128',
@@ -509,13 +656,23 @@ module.exports = function registerCommands(
           includetext: true,
           textxalign: 'center'
         });
-        await bot.sendPhoto(employee.tg_user_id, barcodeBuffer, {
-          caption,
-          ...finishKeyboard
-        });
+        if (finishKeyboard) {
+          await bot.sendPhoto(employee.tg_user_id, barcodeBuffer, {
+            caption,
+            ...finishKeyboard
+          });
+        } else {
+          await bot.sendPhoto(employee.tg_user_id, barcodeBuffer, {
+            caption: caption + '\n\n⚠️ Для этого заказа требуется заполнить данные по материалам. Следуйте инструкциям.'
+          });
+        }
       } catch (barcodeError) {
         console.error('Ошибка генерации штрихкода:', barcodeError);
-        await bot.sendMessage(employee.tg_user_id, caption, finishKeyboard);
+        if (finishKeyboard) {
+          await bot.sendMessage(employee.tg_user_id, caption, finishKeyboard);
+        } else {
+          await bot.sendMessage(employee.tg_user_id, caption + '\n\n⚠️ Для этого заказа требуется заполнить данные по материалам. Следуйте инструкциям.');
+        }
       }
 
       // --- Отправка фото товаров ---
@@ -602,6 +759,18 @@ module.exports = function registerCommands(
         }
       }
 
+      // --- Если есть недостающие статистики, запускаем опрос ---
+      if (missingStats.length > 0) {
+        pendingForms.set(employee.tg_user_id, {
+          orderId: orderId,
+          remainingOffers: missingStats,
+          currentOffer: missingStats[0],
+          tempData: {},
+          waitingForWeight: false
+        });
+        await askMaterial(employee.tg_user_id, missingStats[0]);
+      }
+
       // --- Удаляем заказ из очереди ---
       const idx = pendingNewOrders.findIndex(o => o.posting_number === orderId);
       if (idx !== -1) pendingNewOrders.splice(idx, 1);
@@ -670,6 +839,8 @@ module.exports = function registerCommands(
 
       adminMessage += `/clear_assignments — сброс ВСЕХ назначений на заказы\n\n`;
 
+      adminMessage += `/clear_product_stats <offer_id> — удалить статистику для продукта\n\n`;
+
       adminMessage += `📁 3D-модели:
 
 /send_models <offer_id> [id_сотрудника] — отправить все модели для offer_id сотруднику (если ID не указан – себе)
@@ -698,9 +869,13 @@ module.exports = function registerCommands(
       adminMessage += `/pause — приостановить авто-проверку очереди заказов\n`;
       adminMessage += `/resume — возобновить авто-проверку очереди заказов\n\n`;
 
+      adminMessage += `/download_team_info — скачать файл сотрудников team-info.xlsx\n`;
+      adminMessage += `/download_product_stats — скачать файл статистики продуктов product-stats.xlsx\n\n`;
+
       adminMessage += `/backup_db — создать бэкап базы данных (бот.db)\n\n`;
 
-      adminMessage += `/upload_employees — загрузить новый файл team-info.xlsx с сотрудниками (автоматически синхронизирует БД)\n\n`;
+      adminMessage += `/upload_employees — загрузить новый файл team-info.xlsx с сотрудниками (автоматически синхронизирует БД)\n`;
+      adminMessage += `/upload_materials — загрузить новый файл materials.json с ценами материалов\n\n`;
 
       adminMessage += `/full_reset_and_sync — сброс всех данных (сотрудники, склады, назначения, статистика), кроме 3D-моделей и синхронизация складов/сотрудников\n\n`;
 
@@ -870,6 +1045,17 @@ module.exports = function registerCommands(
     }
     pendingEmployeeUpload.set(userId, { step: 'waiting_file' });
     await bot.sendMessage(msg.chat.id, '📤 Отправьте файл team-info.xlsx с сотрудниками.');
+  });
+
+  // --- "/upload_materials" Команда для администратора: загрузить новый файл materials.json с ценами материалов ---
+  bot.onText(/\/upload_materials/, async (msg) => {
+    const userId = msg.from.id.toString();
+    if (!isAdmin(userId)) {
+      await bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
+      return;
+    }
+    pendingMaterialsUpload.set(userId, { step: 'waiting_file' });
+    await bot.sendMessage(msg.chat.id, '📤 Отправьте файл materials.json с настройками материалов.');
   });
 
   // --- "/admin_assign_order" Команда для администратора: назначить заказ сотруднику вручную ---
@@ -1150,12 +1336,13 @@ module.exports = function registerCommands(
       return bot.sendMessage(msg.chat.id, '⛔ Только администратор может загружать файлы.');
     }
 
+    const file = msg.document;
+    const fileName = file.file_name;
+
     // Приоритет 0: /upload_employees (загрузка team-info.xlsx)
     if (pendingEmployeeUpload && pendingEmployeeUpload.has(userId)) {
       const pending = pendingEmployeeUpload.get(userId);
       if (pending.step !== 'waiting_file') return;
-      const file = msg.document;
-      const fileName = file.file_name;
       if (fileName !== 'team-info.xlsx') {
         await bot.sendMessage(msg.chat.id, '❌ Пожалуйста, отправьте файл с именем team-info.xlsx');
         pendingEmployeeUpload.delete(userId);
@@ -1183,6 +1370,38 @@ module.exports = function registerCommands(
         await bot.sendMessage(msg.chat.id, `❌ Ошибка: ${err.message}`);
       }
       pendingEmployeeUpload.delete(userId);
+      return;
+    }
+
+    // Приоритет 0.5: загрузка материалов (команда /upload_materials)
+    if (pendingMaterialsUpload && pendingMaterialsUpload.has(userId)) {
+      const pending = pendingMaterialsUpload.get(userId);
+      if (pending.step !== 'waiting_file') return;
+      if (fileName !== 'materials.json') {
+        await bot.sendMessage(msg.chat.id, '❌ Пожалуйста, отправьте файл с именем materials.json.');
+        pendingMaterialsUpload.delete(userId);
+        return;
+      }
+      try {
+        const fileLink = await bot.getFileLink(file.file_id);
+        const tempPath = path.join(__dirname, 'temp_materials.json');
+        const writer = fs.createWriteStream(tempPath);
+        const response = await axios({ url: fileLink, method: 'GET', responseType: 'stream' });
+        response.data.pipe(writer);
+        await new Promise((resolve, reject) => {
+          writer.on('finish', resolve);
+          writer.on('error', reject);
+        });
+        // Заменяем основной файл
+        const targetPath = path.join(__dirname, 'materials.json');
+        fs.renameSync(tempPath, targetPath);
+        loadMaterials(); // перезагружаем в память
+        await bot.sendMessage(msg.chat.id, '✅ Справочник материалов обновлён.');
+      } catch (err) {
+        console.error('[UPLOAD_MATERIALS] Ошибка:', err);
+        await bot.sendMessage(msg.chat.id, `❌ Ошибка: ${err.message}`);
+      }
+      pendingMaterialsUpload.delete(userId);
       return;
     }
 
@@ -1592,6 +1811,19 @@ module.exports = function registerCommands(
     await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'Markdown' });
   });
 
+  // --- "/clear_product_stats" Команда для администратора: очистка статистики заказа ---
+  bot.onText(/\/clear_product_stats (\S+)/, async (msg, match) => {
+    const userId = msg.from.id.toString();
+    if (!isAdmin(userId)) return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
+    const offerId = match[1];
+    try {
+      await db.db.run('DELETE FROM product_stats WHERE offer_id = ?', offerId);
+      bot.sendMessage(msg.chat.id, `✅ Запись для ${offerId} удалена.`);
+    } catch (err) {
+      bot.sendMessage(msg.chat.id, `❌ Ошибка: ${err.message}`);
+    }
+  });
+
   // --- "/pause" Команда для администратора: Пауза работы бота ---
   bot.onText(/\/pause/, async (msg) => {
     const userId = msg.from.id.toString();
@@ -1614,6 +1846,24 @@ module.exports = function registerCommands(
     scheduler.resumeChecker();
     startInactivityTimer();
     bot.sendMessage(msg.chat.id, '▶️ Автоматическая проверка заказов возобновлена.');
+  });
+
+  // --- "/download_team_info" Команда для администратора: скачать файл team-info.xlsx ---
+  bot.onText(/\/download_team_info/, async (msg) => {
+    const userId = msg.from.id.toString();
+    if (!isAdmin(userId)) return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
+    const filePath = path.join(__dirname, 'team-info.xlsx');
+    if (!fs.existsSync(filePath)) return bot.sendMessage(msg.chat.id, '❌ Файл team-info.xlsx не найден.');
+    await bot.sendDocument(msg.chat.id, filePath, { caption: '📄 Актуальный файл сотрудников.' });
+  });
+
+  // --- "/download_product_stats" Команда для администратора: скачать файл product-stats.xlsx ---
+  bot.onText(/\/download_product_stats/, async (msg) => {
+    const userId = msg.from.id.toString();
+    if (!isAdmin(userId)) return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
+    const filePath = path.join(__dirname, 'exports', 'product-stats.xlsx');
+    if (!fs.existsSync(filePath)) return bot.sendMessage(msg.chat.id, '❌ Файл статистики пока не создан.');
+    await bot.sendDocument(msg.chat.id, filePath, { caption: '📊 Актуальная статистика по артикулам.' });
   });
 
   // --- "/backup_db" Команда для администратора: создание бэкапа базы данных ---
@@ -1837,6 +2087,8 @@ module.exports = function registerCommands(
 
       helpText += `/clear_assignments — сброс ВСЕХ назначений на заказы\n\n`;
 
+      helpText += `/clear_product_stats <offer_id> — удалить статистику для продукта\n\n`;
+
       helpText += `📁 3D-модели:
 
 /send_models <offer_id> [id_сотрудника] — отправить все модели для offer_id сотруднику (если ID не указан – себе)
@@ -1865,9 +2117,13 @@ module.exports = function registerCommands(
       helpText += `/pause — приостановить авто-проверку очереди заказов\n`;
       helpText += `/resume — возобновить авто-проверку очереди заказов\n\n`;
 
+      helpText += `/download_team_info — скачать файл сотрудников team-info.xlsx\n`;
+      helpText += `/download_product_stats — скачать файл статистики продуктов product-stats.xlsx\n\n`;
+
       helpText += `/backup_db — создать бэкап базы данных (бот.db)\n\n`;
 
-      helpText += `/upload_employees — загрузить новый файл team-info.xlsx с сотрудниками (автоматически синхронизирует БД)\n\n`;
+      helpText += `/upload_employees — загрузить новый файл team-info.xlsx с сотрудниками (автоматически синхронизирует БД)\n`;
+      adminMessage += `/upload_materials — загрузить новый файл materials.json с ценами материалов\n\n`;
 
       helpText += `/full_reset_and_sync — сброс всех данных (сотрудники, склады, назначения, статистика), кроме 3D-моделей и синхронизация складов/сотрудников\n\n`;
 
@@ -1891,4 +2147,47 @@ module.exports = function registerCommands(
   });
 
   console.log('Команды зарегистрированы');
+
+  // ---------------------- ОБРАБОТЧИК TEXT (единый) ----------------------
+
+  bot.on('text', async (msg) => {
+    const text = msg.text;
+    // Игнорируем команды (начинаются с /)
+    if (text && text.startsWith('/')) {
+      return;
+    }
+
+    const userId = msg.from.id.toString();
+    const state = pendingForms.get(userId);
+
+    // Обработка заполнения веса пластика для заказа
+    if (state && state.waitingForWeight) {
+      const weight = parseFloat(msg.text.trim().replace(',', '.'));
+      if (isNaN(weight) || weight <= 0) {
+        await bot.sendMessage(userId, '❌ Введите корректное положительное число (например, 12.5)');
+        return;
+      }
+      // Сохраняем запись
+      const offerId = state.currentOffer;
+      const employee = await db.getEmployee(userId);
+      await db.upsertProductStats(offerId, state.tempData.material, state.tempData.color, weight, employee.id);
+
+      // Добавляем изменения в Excel файл
+      await exportProductStats();
+      // Убираем текущий offer из очереди
+      state.remainingOffers.shift();
+      state.waitingForWeight = false;
+      if (state.remainingOffers.length > 0) {
+        state.currentOffer = state.remainingOffers[0];
+        state.tempData = {};
+        await askMaterial(userId, state.currentOffer);
+      } else {
+        // Все товары заполнены
+        pendingForms.delete(userId);
+        await sendFinishButton(userId, state.orderId);
+      }
+      return;
+    }
+    // ... остальной код обработки текста
+  });
 };

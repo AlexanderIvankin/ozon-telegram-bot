@@ -80,6 +80,19 @@ async function initDB() {
         console.log('[DB] Добавлена колонка capacity в employees');
     }
 
+    // Таблица статистики по товарам product_stats
+    await database.exec(`
+    CREATE TABLE IF NOT EXISTS product_stats (
+        offer_id TEXT PRIMARY KEY,
+        material TEXT NOT NULL,
+        color TEXT NOT NULL,
+        weight_grams REAL NOT NULL,
+        employee_id INTEGER,
+        updated_at INTEGER,
+        FOREIGN KEY (employee_id) REFERENCES employees(id)
+    )
+`);
+
     // Таблица 3D-моделей товаров
     await database.exec(`
     CREATE TABLE IF NOT EXISTS product_models (
@@ -279,6 +292,38 @@ async function getEmployeeStats(employeeId) {
     return stats || { total_orders: 0, total_amount: 0, canceled_orders: 0 };
 }
 
+/**
+ * Получить статистику товара по артикулу
+ */
+async function getProductStats(offerId) {
+    return database.get('SELECT * FROM product_stats WHERE offer_id = ?', offerId);
+}
+
+/**
+ * Вставить новую запись по товару (только если её нет)
+ */
+async function upsertProductStats(offerId, material, color, weight, employeeId) {
+    // Используем INSERT OR REPLACE – если запись существует, обновим (но по заданию не нужно)
+    // Вместо этого можно просто INSERT, но чтобы избежать ошибки, сделаем UPSERT
+    await database.run(`
+        INSERT INTO product_stats (offer_id, material, color, weight_grams, employee_id, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(offer_id) DO UPDATE SET
+            material = excluded.material,
+            color = excluded.color,
+            weight_grams = excluded.weight_grams,
+            employee_id = excluded.employee_id,
+            updated_at = excluded.updated_at
+    `, offerId, material, color, weight, employeeId, Date.now());
+}
+
+/**
+ * Получить все записи для экспорта
+ */
+async function getAllProductStats() {
+    return database.all('SELECT * FROM product_stats ORDER BY offer_id');
+}
+
 // Добавить модель (при заливке)
 async function addProductModel(offerId, fileId, fileName, fileSize) {
     await database.run(
@@ -403,6 +448,9 @@ module.exports = {
     getWarehouseNameById,
     updateEmployeeStats,
     getEmployeeStats,
+    getProductStats,
+    upsertProductStats,
+    getAllProductStats,
     addProductModel,
     getProductModels,
     deleteProductModel,

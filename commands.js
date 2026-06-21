@@ -95,7 +95,7 @@ module.exports = function registerCommands(
       }
       keyboard.push(row);
     }
-    await bot.sendMessage(employeeId, `Выберите цвет для товара ${offerId}:`, {
+    await bot.sendMessage(employeeId, `Выберите цвет пластика для товара ${offerId}:`, {
       reply_markup: { inline_keyboard: keyboard }
     });
   }
@@ -241,7 +241,7 @@ module.exports = function registerCommands(
       return;
     }
 
-    // Обработка заполнения цвета товара
+    // Обработка заполнения цвета пластика товара
     if (data.startsWith('color_')) {
       const parts = data.split('_');
       const offerId = parts[1];
@@ -697,7 +697,7 @@ module.exports = function registerCommands(
       }
 
       // --- Отправка 3D-моделей и уведомления ---
-      const validExtensions = ['.stl', '.3mf', '.step', '.obj'];
+      const validExtensions = ['.stl', '.3mf', '.step', '.obj', '.zip'];
       const moderatorId = process.env.MODERATOR_ID;
 
       for (const product of orderDetails.products) {

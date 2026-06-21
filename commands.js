@@ -8,7 +8,7 @@ let pendingFinishConfirmations = new Map(); // key: orderId, value: { originalCh
 let pendingEmployeeUpload = new Map(); // userId -> { step: 'waiting_file' }
 let pendingMaterialsUpload = new Map(); // userId -> { step: 'waiting_file' }
 let pendingUploadModel = new Map(); // userId -> { step: 'waiting_file' }
-let pendingForms = new Map(); // userId -> { orderId, remainingOffers, currentOffer, tempData, waitingForWeight }
+let pendingForms = new Map(); // userId -> { orderId, offers: { offerId: { material, color, weight, status, messageId, waitingForWeight } }, allCompleted }
 let materialsData = null;
 
 // Загружаем справочники при старте
@@ -67,9 +67,8 @@ module.exports = function registerCommands(
     }
   }
 
-  async function askMaterial(employeeId, offerId) {
+  async function askMaterial(employeeId, offerId, orderId) {
     const materialNames = Object.keys(materialsData.materials);
-    // Разбиваем на ряды по 2 кнопки
     const keyboard = [];
     for (let i = 0; i < materialNames.length; i += 2) {
       const row = [];
@@ -79,12 +78,13 @@ module.exports = function registerCommands(
       }
       keyboard.push(row);
     }
+    keyboard.push([{ text: '🔄 Сбросить', callback_data: `reset_stats_${orderId}_${offerId}` }]);
     await bot.sendMessage(employeeId, `Выберите материал для товара ${offerId}:`, {
       reply_markup: { inline_keyboard: keyboard }
     });
   }
 
-  async function askColor(employeeId, offerId) {
+  async function askColor(employeeId, offerId, orderId) {
     const colors = materialsData.colors;
     const keyboard = [];
     for (let i = 0; i < colors.length; i += 2) {
@@ -95,15 +95,19 @@ module.exports = function registerCommands(
       }
       keyboard.push(row);
     }
+    keyboard.push([{ text: '🔄 Сбросить', callback_data: `reset_stats_${orderId}_${offerId}` }]);
     await bot.sendMessage(employeeId, `Выберите цвет пластика для товара ${offerId}:`, {
       reply_markup: { inline_keyboard: keyboard }
     });
   }
 
-  async function askWeight(employeeId, offerId) {
+  async function askWeight(employeeId, offerId, orderId) {
     await bot.sendMessage(employeeId, `Введите вес пластика в граммах (только число) для товара ${offerId}:`);
     const state = pendingForms.get(employeeId);
-    if (state) state.waitingForWeight = true;
+    if (state && state.offers[offerId]) {
+      state.offers[offerId].waitingForWeight = true;
+      state.offers[offerId].status = 'weight_entered';
+    }
   }
 
   async function sendFinishButton(employeeId, orderId) {
@@ -149,6 +153,13 @@ module.exports = function registerCommands(
         return;
       }
 
+      // Проверяем, все ли товары заполнены
+      const state = pendingForms.get(userId);
+      if (state && state.orderId === orderId && !state.allCompleted) {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Сначала заполните статистику для всех товаров.' });
+        return;
+      }
+
       // Сохраняем исходное сообщение для последующего удаления при подтверждении
       pendingFinishConfirmations.set(orderId, {
         originalChatId: callbackQuery.message.chat.id,
@@ -181,6 +192,18 @@ module.exports = function registerCommands(
         return;
       }
       try {
+
+        // Очищаем pendingForms и удаляем сообщения перед завершением
+        const state = pendingForms.get(userId);
+        if (state && state.orderId === orderId) {
+          for (const offerId of Object.keys(state.offers)) {
+            try {
+              await bot.deleteMessage(userId, state.offers[offerId].messageId);
+            } catch (e) { }
+          }
+          pendingForms.delete(userId);
+        }
+
         // Вызываем завершение заказа
         await finishOrder(callbackQuery.message.chat.id, orderId, employee);
 
@@ -225,15 +248,16 @@ module.exports = function registerCommands(
       return;
     }
 
-    // Обработка заполнения материала товара
+    // --- Обработка заполнения материала ---
     if (data.startsWith('mat_')) {
       const parts = data.split('_');
       const offerId = parts[1];
-      const material = parts.slice(2).join('_'); // на случай если материал содержит подчёркивание
+      const material = parts.slice(2).join('_');
       const state = pendingForms.get(userId);
-      if (state && state.currentOffer === offerId) {
-        state.tempData.material = material;
-        await askColor(userId, offerId);
+      if (state && state.offers[offerId]) {
+        state.offers[offerId].material = material;
+        state.offers[offerId].status = 'material_selected';
+        await askColor(userId, offerId, state.orderId);
         await bot.answerCallbackQuery(callbackQuery.id);
       } else {
         await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Ошибка: состояние не найдено' });
@@ -241,19 +265,99 @@ module.exports = function registerCommands(
       return;
     }
 
-    // Обработка заполнения цвета пластика товара
+    // --- Обработка заполнения цвета ---
     if (data.startsWith('color_')) {
       const parts = data.split('_');
       const offerId = parts[1];
       const color = parts.slice(2).join('_');
       const state = pendingForms.get(userId);
-      if (state && state.currentOffer === offerId) {
-        state.tempData.color = color;
-        await askWeight(userId, offerId);
+      if (state && state.offers[offerId]) {
+        state.offers[offerId].color = color;
+        state.offers[offerId].status = 'color_selected';
+        await askWeight(userId, offerId, state.orderId);
         await bot.answerCallbackQuery(callbackQuery.id);
       } else {
         await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Ошибка: состояние не найдено' });
       }
+      return;
+    }
+
+    // --- Заполнить статистику (параллельный опрос) ---
+    if (data.startsWith('fill_stats_')) {
+      const parts = data.split('_'); // fill_stats_orderId_offerId
+      const orderId = parts[2];
+      const offerId = parts[3];
+      const state = pendingForms.get(userId);
+      if (!state || state.orderId !== orderId) {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Ошибка: состояние не найдено.' });
+        return;
+      }
+      const offerState = state.offers[offerId];
+      if (!offerState) {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Ошибка: товар не найден.' });
+        return;
+      }
+
+      // Проверка дублирования
+      const existingStats = await db.getProductStats(offerId);
+      if (existingStats) {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '⚠️ Статистика для этого товара уже существует.' });
+        delete state.offers[offerId];
+        const allCompleted = Object.values(state.offers).every(o => o.status === 'completed');
+        state.allCompleted = allCompleted;
+        if (allCompleted) {
+          await sendFinishButton(userId, orderId);
+        }
+        try {
+          await bot.editMessageReplyMarkup(
+            { chat_id: userId, message_id: offerState.messageId },
+            { reply_markup: { inline_keyboard: [] } }
+          );
+        } catch (e) { }
+        await bot.answerCallbackQuery(callbackQuery.id);
+        return;
+      }
+
+      // Начинаем или продолжаем опрос
+      if (offerState.status === 'not_started') {
+        await askMaterial(userId, offerId, orderId);
+        await bot.answerCallbackQuery(callbackQuery.id);
+      } else if (offerState.status === 'material_selected') {
+        await askColor(userId, offerId, orderId);
+        await bot.answerCallbackQuery(callbackQuery.id);
+      } else if (offerState.status === 'color_selected' || offerState.status === 'weight_entered') {
+        await askWeight(userId, offerId, orderId);
+        await bot.answerCallbackQuery(callbackQuery.id);
+      } else if (offerState.status === 'completed') {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '✅ Статистика уже заполнена.' });
+      } else {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Неизвестный статус.' });
+      }
+      return;
+    }
+
+    // --- Сброс опроса ---
+    if (data.startsWith('reset_stats_')) {
+      const parts = data.split('_');
+      const orderId = parts[2];
+      const offerId = parts[3];
+      const state = pendingForms.get(userId);
+      if (!state || state.orderId !== orderId) {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Ошибка: состояние не найдено' });
+        return;
+      }
+      const offerState = state.offers[offerId];
+      if (!offerState) {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Товар не найден' });
+        return;
+      }
+      offerState.material = null;
+      offerState.color = null;
+      offerState.weight = null;
+      offerState.status = 'not_started';
+      offerState.waitingForWeight = false;
+      await askMaterial(userId, offerId, orderId);
+      await bot.answerCallbackQuery(callbackQuery.id, { text: '🔄 Опрос сброшен' });
       return;
     }
 
@@ -267,276 +371,314 @@ module.exports = function registerCommands(
         return;
       }
       try {
-        await db.cancelOrder(orderId, employee.id);
-        if (currentOrderProcessing && currentOrderProcessing.order.posting_number === orderId) {
-          currentOrderProcessing = null;
-          console.log(`[CONFIRM_CANCEL] Сброшен currentOrderProcessing для заказа ${orderId}`);
-        }
-        await bot.answerCallbackQuery(callbackQuery.id, { text: '✅ Заказ отменён' });
-        await bot.editMessageText(`✅ Заказ ${orderId} отменён.`, {
-          chat_id: msg.chat.id,
-          message_id: msg.message_id
-        });
 
-        // Уведомляем модератора
-        const moderatorId = process.env.MODERATOR_ID;
-        if (moderatorId) {
-          await bot.sendMessage(moderatorId, `📦 Сотрудник ${employee.name} отменил заказ ${orderId}. Заказ возвращён в очередь.`);
-        }
+        try {
+          // Очищаем pendingForms и удаляем сообщения
+          const state = pendingForms.get(userId);
+          if (state && state.orderId === orderId) {
+            for (const offerId of Object.keys(state.offers)) {
+              try {
+                await bot.deleteMessage(userId, state.offers[offerId].messageId);
+              } catch (e) { }
+            }
+            pendingForms.delete(userId);
+          }
+          await db.cancelOrder(orderId, employee.id);
+          if (currentOrderProcessing && currentOrderProcessing.order.posting_number === orderId) {
+            currentOrderProcessing = null;
+            console.log(`[CONFIRM_CANCEL] Сброшен currentOrderProcessing для заказа ${orderId}`);
+          }
+          await bot.answerCallbackQuery(callbackQuery.id, { text: '✅ Заказ отменён' });
+          await bot.editMessageText(`✅ Заказ ${orderId} отменён.`, {
+            chat_id: msg.chat.id,
+            message_id: msg.message_id
+          });
 
-        await checkAndOfferNewOrders();
-        if (!currentOrderProcessing && pendingNewOrders.length) {
-          console.log(`[CONFIRM_CANCEL] Отправляем следующий заказ, осталось: ${pendingNewOrders.length}`);
-          await processNextOrder();
+          // Уведомляем модератора
+          const moderatorId = process.env.MODERATOR_ID;
+          if (moderatorId) {
+            await bot.sendMessage(moderatorId, `📦 Сотрудник ${employee.name} отменил заказ ${orderId}. Заказ возвращён в очередь.`);
+          }
+
+          await checkAndOfferNewOrders();
+          if (!currentOrderProcessing && pendingNewOrders.length) {
+            console.log(`[CONFIRM_CANCEL] Отправляем следующий заказ, осталось: ${pendingNewOrders.length}`);
+            await processNextOrder();
+          }
+        } catch (err) {
+          console.error(`[CONFIRM_CANCEL] Ошибка:`, err.message);
+          await bot.answerCallbackQuery(callbackQuery.id, { text: err.message });
         }
-      } catch (err) {
-        console.error(`[CONFIRM_CANCEL] Ошибка:`, err.message);
-        await bot.answerCallbackQuery(callbackQuery.id, { text: err.message });
+        return;
       }
-      return;
-    }
 
     // Кнопка "Нет" (отклонение отмены заказа)
     if (data.startsWith('cancel_cancel_')) {
-      await bot.answerCallbackQuery(callbackQuery.id, { text: 'Отмена отклонена' });
-      await bot.deleteMessage(msg.chat.id, msg.message_id);
-      return;
-    }
-
-    // ---------------------- ОСТАЛЬНЫЕ КОМАНДЫ (для админов/модераторов) ----------------------
-
-    const adminId = userId;
-
-    if (!isAdmin(adminId)) {
-      await bot.answerCallbackQuery(callbackQuery.id, { text: '⛔ Нет прав' });
-      return;
-    }
-
-    if (isModerator(adminId) && typeof updateModeratorActivity === 'function') {
-      updateModeratorActivity();
-    }
-
-    if (debugMode.isDebugMode()) console.log(`[CALLBACK] admin ${adminId} вызвал ${data}`);
-
-    // 1. Пропуск заказа
-    if (data.startsWith('skip_')) {
-      if (!isModerator(adminId)) {
-        await bot.answerCallbackQuery(callbackQuery.id, { text: '⛔ Только модератор' });
-        return;
-      }
-      console.log(`[SKIP] Получен пропуск заказа ${data.substring(5)} от модератора ${adminId}`);
-      const orderId = data.substring(5);
-      // Удаляем этот заказ из глобальной очереди, если он там есть
-      const index = pendingNewOrders.findIndex(o => o.posting_number === orderId);
-      if (index !== -1) pendingNewOrders.splice(index, 1);
-      // Сбрасываем текущий обрабатываемый заказ
-      if (currentOrderProcessing && currentOrderProcessing.order.posting_number === orderId) {
-        currentOrderProcessing = null;
-      }
-      await bot.answerCallbackQuery(callbackQuery.id, { text: 'Заказ пропущен' });
-      await bot.deleteMessage(msg.chat.id, msg.message_id);
-      if (typeof processNextOrder === 'function') processNextOrder();
-      return;
-    }
-
-    // 2. Показать приоритетных сотрудников
-    if (data.startsWith('priority_')) {
-      if (!isModerator(adminId)) {
-        await bot.answerCallbackQuery(callbackQuery.id, { text: '⛔ Только модератор' });
-        return;
-      }
-      const orderId = data.substring(9);
-      const order = await ozon.fetchAwaitingOrdersById(orderId);
-      const warehouseId = order?.warehouse_id || order?.delivery_method?.warehouse_id;
-      const employees = await db.getAllEmployeesWithStats(warehouseId ? String(warehouseId) : null);
-      const header = '👑 Приоритетные сотрудники (по складу):';
-      if (!employees.length) {
-        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Нет сотрудников' });
-        return;
-      }
-      const kb = employees.map(emp => ([{
-        text: `${emp.name} (активных: ${emp.active_count}, принтеры: ${emp.capacity})`,
-        callback_data: `assign_${orderId}_${emp.id}`
-      }]));
-      kb.push([{ text: '🔙 Назад', callback_data: `back_${orderId}` }]);
-      await bot.editMessageText(header, {
-        chat_id: msg.chat.id,
-        message_id: msg.message_id,
-        reply_markup: { inline_keyboard: kb }
-      });
-      await bot.answerCallbackQuery(callbackQuery.id);
-      return;
-    }
-
-    // 3. Показать всех сотрудников
-    if (data.startsWith('others_')) {
-      if (!isModerator(adminId)) {
-        await bot.answerCallbackQuery(callbackQuery.id, { text: '⛔ Только модератор' });
-        return;
-      }
-      const orderId = data.substring(7);
-      const employees = await db.getAllEmployeesWithStats();
-      const header = '👥 Все сотрудники:';
-      if (!employees.length) {
-        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Нет сотрудников' });
-        return;
-      }
-      const kb = employees.map(emp => ([{
-        text: `${emp.name} (активных: ${emp.active_count}, принтеры: ${emp.capacity})`,
-        callback_data: `assign_${orderId}_${emp.id}`
-      }]));
-      kb.push([{ text: '🔙 Назад', callback_data: `back_${orderId}` }]);
-      await bot.editMessageText(header, {
-        chat_id: msg.chat.id,
-        message_id: msg.message_id,
-        reply_markup: { inline_keyboard: kb }
-      });
-      await bot.answerCallbackQuery(callbackQuery.id);
-      return;
-    }
-
-    // 4. Назначение заказа
-    if (data.startsWith('assign_')) {
-      if (!isModerator(adminId)) {
-        await bot.answerCallbackQuery(callbackQuery.id, { text: '⛔ Только модератор' });
-        return;
-      }
-      const parts = data.split('_');
-      const orderId = parts[1];
-      const employeeId = parseInt(parts[2]);
-      try {
-        await assignOrder(orderId, employeeId, msg.chat.id);
-        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Заказ назначен' });
+        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Отмена отклонена' });
         await bot.deleteMessage(msg.chat.id, msg.message_id);
-      } catch (err) {
-        await bot.answerCallbackQuery(callbackQuery.id, { text: err.message });
-      }
-      return;
-    }
-
-    // 5. Кнопка "Назад"
-    if (data.startsWith('back_')) {
-      const orderId = data.substring(5);
-      await bot.deleteMessage(msg.chat.id, msg.message_id);
-      await bot.answerCallbackQuery(callbackQuery.id);
-      const order = await ozon.fetchAwaitingOrdersById(orderId);
-      if (order && typeof showOrderMenu === 'function') {
-        await showOrderMenu(order);
-      }
-      return;
-    }
-
-    // 6. Сброс всех назначений (подтверждение)
-    if (data === 'confirm_clear_all') {
-      await db.db.run('DELETE FROM assignments WHERE status = "assigned"');
-      await bot.editMessageText('✅ Все активные назначения сброшены.', {
-        chat_id: msg.chat.id,
-        message_id: msg.message_id
-      });
-      await bot.answerCallbackQuery(callbackQuery.id, { text: 'Сброс выполнен' });
-      return;
-    }
-    if (data === 'cancel_clear_all') {
-      await bot.deleteMessage(msg.chat.id, msg.message_id);
-      await bot.answerCallbackQuery(callbackQuery.id, { text: 'Сброс отменён' });
-      return;
-    }
-
-    // 7. Снятие заказа администратором (подтверждение)
-    if (data.startsWith('admin_cancel_confirm_')) {
-      const orderId = data.substring(21);
-      // Удаляем назначение
-      await db.db.run('DELETE FROM assignments WHERE order_id = ? AND status = "assigned"', orderId);
-      console.log(`[ADMIN] Снят заказ ${orderId} с сотрудника`);
-
-      // Если этот заказ сейчас в обработке у админа – сбрасываем currentOrderProcessing
-      const idx = pendingNewOrders.findIndex(o => o.posting_number === orderId);
-      if (idx !== -1) pendingNewOrders.splice(idx, 1);
-      if (currentOrderProcessing && currentOrderProcessing.order.posting_number === orderId) {
-        currentOrderProcessing = null;
-        console.log(`[ADMIN] Сброшен текущий обрабатываемый заказ ${orderId}`);
+        return;
       }
 
-      // Обновляем сообщение у админа
-      await bot.editMessageText(`✅ Заказ ${orderId} снят с сотрудника и возвращён в очередь.`, {
-        chat_id: msg.chat.id,
-        message_id: msg.message_id
-      });
-      await bot.answerCallbackQuery(callbackQuery.id, { text: 'Заказ снят' });
+      // ---------------------- ОСТАЛЬНЫЕ КОМАНДЫ (для админов/модераторов) ----------------------
 
-      // Принудительно обновляем очередь заказов из API
-      await checkAndOfferNewOrders();
+      const adminId = userId;
 
-      // Если после обновления нет активного заказа, но есть новые – отправляем следующий
-      if (!currentOrderProcessing && pendingNewOrders.length) {
-        await processNextOrder();
+      if (!isAdmin(adminId)) {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '⛔ Нет прав' });
+        return;
       }
-      return;
-    }
 
-    // 8. Кнопка "Нет" для снятия заказа администратором
-    if (data.startsWith('admin_cancel_abort_')) {
-      await bot.answerCallbackQuery(callbackQuery.id, { text: 'Снятие заказа отменено' });
-      await bot.deleteMessage(msg.chat.id, msg.message_id);
-      return;
-    }
+      if (isModerator(adminId) && typeof updateModeratorActivity === 'function') {
+        updateModeratorActivity();
+      }
 
-    // 9. Сброс всех данных (кроме моделей) и синхронизация — подтверждение
-    if (data === 'confirm_full_reset_sync') {
-      try {
-        const dbConn = db.db;
-        await dbConn.run('BEGIN TRANSACTION');
-        await dbConn.run('DELETE FROM assignments');
-        await dbConn.run('DELETE FROM employee_warehouses');
-        await dbConn.run('DELETE FROM employee_stats');
-        await dbConn.run('DELETE FROM employees');
-        await dbConn.run('DELETE FROM warehouses');
-        await dbConn.run("DELETE FROM sqlite_sequence WHERE name IN ('employees', 'assignments', 'employee_warehouses', 'employee_stats', 'warehouses')");
-        await dbConn.run('COMMIT');
+      if (debugMode.isDebugMode()) console.log(`[CALLBACK] admin ${adminId} вызвал ${data}`);
 
-        // Очищаем глобальные состояния
-        pendingNewOrders.length = 0;
-        currentOrderProcessing = null;
-        if (typeof deleteLastOrderMessages === 'function') {
-          await deleteLastOrderMessages();
+      // 1. Пропуск заказа
+      if (data.startsWith('skip_')) {
+        if (!isModerator(adminId)) {
+          await bot.answerCallbackQuery(callbackQuery.id, { text: '⛔ Только модератор' });
+          return;
+        }
+        console.log(`[SKIP] Получен пропуск заказа ${data.substring(5)} от модератора ${adminId}`);
+        const orderId = data.substring(5);
+        // Удаляем этот заказ из глобальной очереди, если он там есть
+        const index = pendingNewOrders.findIndex(o => o.posting_number === orderId);
+        if (index !== -1) pendingNewOrders.splice(index, 1);
+        // Сбрасываем текущий обрабатываемый заказ
+        if (currentOrderProcessing && currentOrderProcessing.order.posting_number === orderId) {
+          currentOrderProcessing = null;
+        }
+        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Заказ пропущен' });
+        await bot.deleteMessage(msg.chat.id, msg.message_id);
+        if (typeof processNextOrder === 'function') processNextOrder();
+        return;
+      }
+
+      // 2. Показать приоритетных сотрудников
+      if (data.startsWith('priority_')) {
+        if (!isModerator(adminId)) {
+          await bot.answerCallbackQuery(callbackQuery.id, { text: '⛔ Только модератор' });
+          return;
+        }
+        const orderId = data.substring(9);
+        const order = await ozon.fetchAwaitingOrdersById(orderId);
+        const warehouseId = order?.warehouse_id || order?.delivery_method?.warehouse_id;
+        const employees = await db.getAllEmployeesWithStats(warehouseId ? String(warehouseId) : null);
+        const header = '👑 Приоритетные сотрудники (по складу):';
+        if (!employees.length) {
+          await bot.answerCallbackQuery(callbackQuery.id, { text: 'Нет сотрудников' });
+          return;
+        }
+        const kb = employees.map(emp => ([{
+          text: `${emp.name} (активных: ${emp.active_count}, принтеры: ${emp.capacity})`,
+          callback_data: `assign_${orderId}_${emp.id}`
+        }]));
+        kb.push([{ text: '🔙 Назад', callback_data: `back_${orderId}` }]);
+        await bot.editMessageText(header, {
+          chat_id: msg.chat.id,
+          message_id: msg.message_id,
+          reply_markup: { inline_keyboard: kb }
+        });
+        await bot.answerCallbackQuery(callbackQuery.id);
+        return;
+      }
+
+      // 3. Показать всех сотрудников
+      if (data.startsWith('others_')) {
+        if (!isModerator(adminId)) {
+          await bot.answerCallbackQuery(callbackQuery.id, { text: '⛔ Только модератор' });
+          return;
+        }
+        const orderId = data.substring(7);
+        const employees = await db.getAllEmployeesWithStats();
+        const header = '👥 Все сотрудники:';
+        if (!employees.length) {
+          await bot.answerCallbackQuery(callbackQuery.id, { text: 'Нет сотрудников' });
+          return;
+        }
+        const kb = employees.map(emp => ([{
+          text: `${emp.name} (активных: ${emp.active_count}, принтеры: ${emp.capacity})`,
+          callback_data: `assign_${orderId}_${emp.id}`
+        }]));
+        kb.push([{ text: '🔙 Назад', callback_data: `back_${orderId}` }]);
+        await bot.editMessageText(header, {
+          chat_id: msg.chat.id,
+          message_id: msg.message_id,
+          reply_markup: { inline_keyboard: kb }
+        });
+        await bot.answerCallbackQuery(callbackQuery.id);
+        return;
+      }
+
+      // 4. Назначение заказа
+      if (data.startsWith('assign_')) {
+        if (!isModerator(adminId)) {
+          await bot.answerCallbackQuery(callbackQuery.id, { text: '⛔ Только модератор' });
+          return;
+        }
+        const parts = data.split('_');
+        const orderId = parts[1];
+        const employeeId = parseInt(parts[2]);
+        try {
+          await assignOrder(orderId, employeeId, msg.chat.id);
+          await bot.answerCallbackQuery(callbackQuery.id, { text: 'Заказ назначен' });
+          await bot.deleteMessage(msg.chat.id, msg.message_id);
+        } catch (err) {
+          await bot.answerCallbackQuery(callbackQuery.id, { text: err.message });
+        }
+        return;
+      }
+
+      // 5. Кнопка "Назад"
+      if (data.startsWith('back_')) {
+        const orderId = data.substring(5);
+        await bot.deleteMessage(msg.chat.id, msg.message_id);
+        await bot.answerCallbackQuery(callbackQuery.id);
+        const order = await ozon.fetchAwaitingOrdersById(orderId);
+        if (order && typeof showOrderMenu === 'function') {
+          await showOrderMenu(order);
+        }
+        return;
+      }
+
+      // 6. Сброс всех назначений (подтверждение)
+      if (data === 'confirm_clear_all') {
+        await db.db.run('DELETE FROM assignments WHERE status = "assigned"');
+        await bot.editMessageText('✅ Все активные назначения сброшены.', {
+          chat_id: msg.chat.id,
+          message_id: msg.message_id
+        });
+        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Сброс выполнен' });
+        return;
+      }
+      if (data === 'cancel_clear_all') {
+        await bot.deleteMessage(msg.chat.id, msg.message_id);
+        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Сброс отменён' });
+        return;
+      }
+
+      // 7. Снятие заказа администратором (подтверждение)
+      if (data.startsWith('admin_cancel_confirm_')) {
+        const orderId = data.substring(21);
+        // Находим сотрудника, у которого был этот заказ
+        const assignment = await db.db.get('SELECT employee_id FROM assignments WHERE order_id = ? AND status = "assigned"', orderId);
+        if (assignment) {
+          const employee = await db.getEmployeeById(assignment.employee_id);
+          if (employee) {
+            const state = pendingForms.get(employee.tg_user_id);
+            if (state && state.orderId === orderId) {
+              for (const offerId of Object.keys(state.offers)) {
+                try {
+                  await bot.deleteMessage(employee.tg_user_id, state.offers[offerId].messageId);
+                } catch (e) { }
+              }
+              pendingForms.delete(employee.tg_user_id);
+            }
+          }
+        }
+        // Удаляем назначение
+        await db.db.run('DELETE FROM assignments WHERE order_id = ? AND status = "assigned"', orderId);
+        console.log(`[ADMIN] Снят заказ ${orderId} с сотрудника`);
+
+        // Если этот заказ сейчас в обработке у админа – сбрасываем currentOrderProcessing
+        const idx = pendingNewOrders.findIndex(o => o.posting_number === orderId);
+        if (idx !== -1) pendingNewOrders.splice(idx, 1);
+        if (currentOrderProcessing && currentOrderProcessing.order.posting_number === orderId) {
+          currentOrderProcessing = null;
+          console.log(`[ADMIN] Сброшен текущий обрабатываемый заказ ${orderId}`);
         }
 
-        // Синхронизация складов
-        const warehouses = await ozon.fetchWarehousesFromOzon();
-        if (warehouses.length) await db.syncWarehouses(warehouses);
+        // Обновляем сообщение у админа
+        await bot.editMessageText(`✅ Заказ ${orderId} снят с сотрудника и возвращён в очередь.`, {
+          chat_id: msg.chat.id,
+          message_id: msg.message_id
+        });
+        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Заказ снят' });
 
-        // Синхронизация сотрудников
-        await syncEmployeesFromExcel(db);
-
-        // Перезагрузка очереди заказов
+        // Принудительно обновляем очередь заказов из API
         await checkAndOfferNewOrders();
-        if (pendingNewOrders.length) {
-          currentOrderProcessing = null;
+
+        // Если после обновления нет активного заказа, но есть новые – отправляем следующий
+        if (!currentOrderProcessing && pendingNewOrders.length) {
           await processNextOrder();
         }
-
-        await bot.editMessageText('✅ Полный сброс и синхронизация выполнены. Очередь заказов обновлена.', {
-          chat_id: msg.chat.id,
-          message_id: msg.message_id
-        });
-        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Выполнено' });
-      } catch (err) {
-        await dbConn.run('ROLLBACK');
-        console.error('[FULL_RESET_SYNC] Ошибка:', err);
-        await bot.editMessageText(`❌ Ошибка: ${err.message}`, {
-          chat_id: msg.chat.id,
-          message_id: msg.message_id
-        });
-        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Ошибка' });
+        return;
       }
-      return;
-    }
-    if (data === 'cancel_full_reset_sync') {
-      await bot.deleteMessage(msg.chat.id, msg.message_id);
-      await bot.answerCallbackQuery(callbackQuery.id, { text: 'Отменено' });
-      return;
-    }
-  });
+
+      // 8. Кнопка "Нет" для снятия заказа администратором
+      if (data.startsWith('admin_cancel_abort_')) {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Снятие заказа отменено' });
+        await bot.deleteMessage(msg.chat.id, msg.message_id);
+        return;
+      }
+
+      // 9. Сброс всех данных (кроме моделей) и синхронизация — подтверждение
+      if (data === 'confirm_full_reset_sync') {
+        try {
+          const dbConn = db.db;
+          await dbConn.run('BEGIN TRANSACTION');
+          await dbConn.run('DELETE FROM assignments');
+          await dbConn.run('DELETE FROM employee_warehouses');
+          await dbConn.run('DELETE FROM employee_stats');
+          await dbConn.run('DELETE FROM employees');
+          await dbConn.run('DELETE FROM warehouses');
+          await dbConn.run("DELETE FROM sqlite_sequence WHERE name IN ('employees', 'assignments', 'employee_warehouses', 'employee_stats', 'warehouses')");
+          await dbConn.run('COMMIT');
+
+          // Очищаем глобальные состояния
+          pendingNewOrders.length = 0;
+          currentOrderProcessing = null;
+          if (typeof deleteLastOrderMessages === 'function') {
+            await deleteLastOrderMessages();
+          }
+
+          // Очищаем все pendingForms
+          for (const [userId, state] of pendingForms) {
+            for (const offerId of Object.keys(state.offers)) {
+              try {
+                await bot.deleteMessage(userId, state.offers[offerId].messageId);
+              } catch (e) { }
+            }
+          }
+          pendingForms.clear();
+
+          // Синхронизация складов
+          const warehouses = await ozon.fetchWarehousesFromOzon();
+          if (warehouses.length) await db.syncWarehouses(warehouses);
+
+          // Синхронизация сотрудников
+          await syncEmployeesFromExcel(db);
+
+          // Перезагрузка очереди заказов
+          await checkAndOfferNewOrders();
+          if (pendingNewOrders.length) {
+            currentOrderProcessing = null;
+            await processNextOrder();
+          }
+
+          await bot.editMessageText('✅ Полный сброс и синхронизация выполнены. Очередь заказов обновлена.', {
+            chat_id: msg.chat.id,
+            message_id: msg.message_id
+          });
+          await bot.answerCallbackQuery(callbackQuery.id, { text: 'Выполнено' });
+        } catch (err) {
+          await dbConn.run('ROLLBACK');
+          console.error('[FULL_RESET_SYNC] Ошибка:', err);
+          await bot.editMessageText(`❌ Ошибка: ${err.message}`, {
+            chat_id: msg.chat.id,
+            message_id: msg.message_id
+          });
+          await bot.answerCallbackQuery(callbackQuery.id, { text: 'Ошибка' });
+        }
+        return;
+      }
+      if (data === 'cancel_full_reset_sync') {
+        await bot.deleteMessage(msg.chat.id, msg.message_id);
+        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Отменено' });
+        return;
+      }
+    });
 
   // ---------------------- ОБЩАЯ ФУНКЦИЯ ДЛЯ ЗАВЕРШЕНИЯ ЗАКАЗА ----------------------
   async function finishOrder(chatId, postingNumber, employee) {
@@ -759,16 +901,43 @@ module.exports = function registerCommands(
         }
       }
 
-      // --- Если есть недостающие статистики, запускаем опрос ---
+      // --- Если есть недостающие статистики, создаём параллельные опросы ---
       if (missingStats.length > 0) {
+        // Инициализируем состояние для этого заказа
+        const offersState = {};
+        for (const offerId of missingStats) {
+          offersState[offerId] = {
+            material: null,
+            color: null,
+            weight: null,
+            status: 'not_started',
+            messageId: null,
+            waitingForWeight: false
+          };
+        }
         pendingForms.set(employee.tg_user_id, {
           orderId: orderId,
-          remainingOffers: missingStats,
-          currentOffer: missingStats[0],
-          tempData: {},
-          waitingForWeight: false
+          offers: offersState,
+          allCompleted: false
         });
-        await askMaterial(employee.tg_user_id, missingStats[0]);
+
+        // Отправляем отдельное сообщение для каждого offer_id
+        for (const offerId of missingStats) {
+          // Найдём название товара
+          const product = orderDetails.products.find(p => p.offer_id === offerId);
+          const productName = product ? product.name : offerId;
+          const caption = `🛍️ Товар: ${productName}\nАртикул: ${offerId}\nДля этого товара ещё нет данных по материалу, цвету и весу.\nНажмите кнопку ниже, чтобы заполнить статистику.`;
+          const keyboard = {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: `📝 Заполнить статистику для ${offerId}`, callback_data: `fill_stats_${orderId}_${offerId}` }]
+              ]
+            }
+          };
+          const sentMsg = await bot.sendMessage(employee.tg_user_id, caption, keyboard);
+          // Сохраняем messageId для последующего редактирования/удаления
+          offersState[offerId].messageId = sentMsg.message_id;
+        }
       }
 
       // --- Удаляем заказ из очереди ---
@@ -936,7 +1105,7 @@ module.exports = function registerCommands(
     if (!employees.length) return bot.sendMessage(msg.chat.id, 'Нет сотрудников.');
     let reply = 'Статус сотрудников:\n';
     for (const emp of employees) {
-      reply += `• ${emp.name} (ID: ${emp.id}) — активных: ${emp.active_count}, принтеры: ${emp.capacity}\n`;
+      reply += `• ${emp.name} (ID сотрудника: ${emp.id}) — активных заказов: ${emp.active_count}, принтеры: ${emp.capacity}\n`;
     }
     await bot.sendMessage(msg.chat.id, reply);
   });
@@ -1277,7 +1446,6 @@ module.exports = function registerCommands(
     // Ожидаем, что следующим сообщением администратор отправит файл
     bot.sendMessage(msg.chat.id, `Отправьте файл модели для offer_id ${offerId} (до 50 МБ).`);
     // Сохраняем состояние: ожидаем файл для этого offer_id
-    // Можно использовать временное хранилище, например, Map
     if (!global.pendingModelAdd) global.pendingModelAdd = new Map();
     global.pendingModelAdd.set(userId, { offerId, step: 'waiting_file' });
   });
@@ -1604,6 +1772,19 @@ module.exports = function registerCommands(
       // 2. Сбрасываем состояние (очищаем массив, не пересоздавая)
       pendingNewOrders.length = 0;
       currentOrderProcessing = null;
+
+      // Очистка pendingForms для заказов, которых нет в актуальной очереди
+      const activeOrderIds = new Set(pendingNewOrders.map(o => o.posting_number));
+      for (const [userId, state] of pendingForms) {
+        if (!activeOrderIds.has(state.orderId)) {
+          for (const offerId of Object.keys(state.offers)) {
+            try {
+              await bot.deleteMessage(userId, state.offers[offerId].messageId);
+            } catch (e) { }
+          }
+          pendingForms.delete(userId);
+        }
+      }
 
       // 3. Перезагружаем очередь из API
       await checkAndOfferNewOrders();
@@ -1965,7 +2146,7 @@ module.exports = function registerCommands(
 
   // ---------------------- КОМАНДЫ СОТРУДНИКОВ ----------------------
 
-  // --- "/my_orders" – список активных заказов сотрудника ---
+  // --- "/my_orders" – список активных заказов с навигацией ---
   bot.onText(/\/my_orders/, async (msg) => {
     const userId = msg.from.id.toString();
     const employee = await db.getEmployee(userId);
@@ -1976,11 +2157,51 @@ module.exports = function registerCommands(
     if (!orders.length) {
       return bot.sendMessage(msg.chat.id, '✅ У вас нет активных заказов.');
     }
+
     let reply = '📋 *Ваши активные заказы:*\n';
+    const keyboard = [];
     for (const o of orders) {
-      reply += `• \`${o.order_id}\` (назначен ${new Date(o.assigned_at).toLocaleString()})\n`;
+      const orderId = o.order_id;
+      const state = pendingForms.get(userId);
+      let statusText = '';
+      let button = null;
+      if (state && state.orderId === orderId) {
+        const allCompleted = state.allCompleted;
+        if (allCompleted) {
+          statusText = '✅ Статистика заполнена';
+          button = { text: '✅ Завершить заказ', callback_data: `finish_order_${orderId}` };
+        } else {
+          // Найдём первый offer со статусом не 'completed'
+          const firstIncomplete = Object.values(state.offers).find(o => o.status !== 'completed');
+          if (firstIncomplete) {
+            statusText = '⏳ Ожидает заполнения статистики';
+            const offerId = Object.keys(state.offers).find(key => state.offers[key] === firstIncomplete);
+            button = { text: '📝 Продолжить заполнение', callback_data: `fill_stats_${orderId}_${offerId}` };
+          } else {
+            // Если нет незавершённых, но allCompleted false – баг, исправляем
+            state.allCompleted = true;
+            statusText = '✅ Статистика заполнена';
+            button = { text: '✅ Завершить заказ', callback_data: `finish_order_${orderId}` };
+          }
+        }
+      } else {
+        statusText = '✅ Можно завершить';
+        button = { text: '✅ Завершить заказ', callback_data: `finish_order_${orderId}` };
+      }
+      reply += `• Заказ \`${orderId}\` — ${statusText}\n`;
+      if (button) {
+        keyboard.push([button]);
+      }
     }
-    await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'Markdown' });
+
+    if (keyboard.length) {
+      await bot.sendMessage(msg.chat.id, reply, {
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: keyboard }
+      });
+    } else {
+      await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'Markdown' });
+    }
   });
 
   // Функция для безопасной эмуляции (только для отладки)
@@ -2025,6 +2246,13 @@ module.exports = function registerCommands(
     if (!assignment) {
       return bot.sendMessage(msg.chat.id, `❌ Заказ ${postingNumber} не найден среди ваших активных заказов.`);
     }
+
+    // Проверяем незавершённые опросы
+    const state = pendingForms.get(userId);
+    if (state && state.orderId === postingNumber && !state.allCompleted) {
+      return bot.sendMessage(msg.chat.id, `❌ Сначала заполните статистику для всех товаров в заказе ${postingNumber}. Используйте /my_orders, чтобы продолжить.`);
+    }
+
     const isDebugFinished = await safeDebugFinish(
       assignment.order_id, employee.id, employee.name, msg.chat.id, postingNumber
     );
@@ -2123,7 +2351,7 @@ module.exports = function registerCommands(
       helpText += `/backup_db — создать бэкап базы данных (бот.db)\n\n`;
 
       helpText += `/upload_employees — загрузить новый файл team-info.xlsx с сотрудниками (автоматически синхронизирует БД)\n`;
-      adminMessage += `/upload_materials — загрузить новый файл materials.json с ценами материалов\n\n`;
+      helpText += `/upload_materials — загрузить новый файл materials.json с ценами материалов\n\n`;
 
       helpText += `/full_reset_and_sync — сброс всех данных (сотрудники, склады, назначения, статистика), кроме 3D-моделей и синхронизация складов/сотрудников\n\n`;
 

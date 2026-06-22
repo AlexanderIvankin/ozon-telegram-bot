@@ -877,28 +877,43 @@ module.exports = function registerCommands(
       console.log(`[FINISH] Сумма заказа: ${orderAmount}`);
       await db.updateEmployeeStats(employee.id, orderAmount);
 
+      let actId = null;
+      let labelBuffer = null;
+      let isAlreadyConfirmed = false;
+
       // 1. Подтверждаем сборку (ship)
       console.log(`[FINISH] Статистика обновлена`);
-      const actResponse = await ozon.confirmPostingShip(postingNumber);
-      console.log(`[FINISH] Ответ ship:`, JSON.stringify(actResponse, null, 2));
+      try {
+        const actResponse = await ozon.confirmPostingShip(postingNumber);
+        console.log(`[FINISH] Ответ ship:`, JSON.stringify(actResponse, null, 2));
 
-      // Пытаемся извлечь actId
-      let actId = actResponse?.result?.id || actResponse?.id;
-      if (!actId && actResponse?.additional_data) {
-        for (const item of actResponse.additional_data) {
-          if (item.posting_number === postingNumber && item.act_id) {
-            actId = item.act_id;
-            break;
+        // Пытаемся извлечь actId
+        actId = actResponse?.result?.id || actResponse?.id;
+        if (!actId && actResponse?.additional_data) {
+          for (const item of actResponse.additional_data) {
+            if (item.posting_number === postingNumber && item.act_id) {
+              actId = item.act_id;
+              break;
+            }
           }
         }
+        console.log(`[FINISH] Получен actId: ${actId}`);
+      } catch (shipError) {
+        // Если заказ уже не в awaiting_packaging, считаем, что он уже подтверждён
+        if (shipError.message && shipError.message.includes('не в статусе awaiting_packaging')) {
+          console.warn(`[FINISH] Заказ ${postingNumber} уже подтверждён (статус не awaiting_packaging)`);
+          isAlreadyConfirmed = true;
+        } else {
+          throw shipError; // другие ошибки пробрасываем
+        }
       }
-      console.log(`[FINISH] Получен actId: ${actId}`);
 
-      // Ждём 15 секунд для обработки на стороне Ozon
-      await new Promise(resolve => setTimeout(resolve, 15000));
+      // 2. Ждём 15 секунд только если заказ только что подтверждён (не уже подтверждён)
+      if (!isAlreadyConfirmed) {
+        await new Promise(resolve => setTimeout(resolve, 15000));
+      }
 
-      // 2. Получаем этикетку
-      let labelBuffer = null;
+      // 3. Получаем этикетку
       if (actId) {
         labelBuffer = await ozon.getPackageLabel(null, actId);
       }
@@ -921,16 +936,13 @@ module.exports = function registerCommands(
         await bot.sendMessage(chatId, `✅ Заказ ${postingNumber} подтверждён. Этикетку можно скачать в личном кабинете Ozon.`);
       }
 
-      // --- Расчёт заработка ---
+      // --- Расчёт заработка (без изменений) ---
       try {
-        // Получаем детали заказа (повторно, чтобы быть уверенным)
         const orderDetails = await ozon.getOrderDetails(postingNumber);
         if (orderDetails && orderDetails.products) {
           const earnings = await calculateOrderEarnings(orderDetails, employee.id);
           if (earnings.allHaveStats && earnings.total > 0) {
-            // Сохраняем в БД
             await db.saveEmployeeEarnings(employee.id, postingNumber, earnings.total);
-            // Формируем сообщение
             let msg = `💰 *Заработок за заказ ${postingNumber}*\n\n`;
             for (const item of earnings.details) {
               msg += `• ${item.productName} (${item.offerId})\n`;
@@ -938,9 +950,7 @@ module.exports = function registerCommands(
               msg += `  Заработок за единицу: ${item.earningsPerUnit.toFixed(2)} руб., Итого: ${item.totalForProduct.toFixed(2)} руб.\n`;
             }
             msg += `\n*Итого: ${earnings.total.toFixed(2)} руб.*`;
-            // Отправляем сотруднику
             await bot.sendMessage(employee.tg_user_id, msg, { parse_mode: 'Markdown' });
-            // Небольшая задержка
             await new Promise(resolve => setTimeout(resolve, 200));
           } else if (!earnings.allHaveStats) {
             console.warn(`[FINISH] Не все товары имеют статистику для заказа ${postingNumber}`);
@@ -2247,7 +2257,6 @@ module.exports = function registerCommands(
       toDate = new Date(year, month + 1, 1).getTime() - 1;
     }
 
-    // Получаем данные за период
     const earningsData = await db.getAllEmployeeEarningsForPeriod(fromDate, toDate);
     if (!earningsData.length) {
       return bot.sendMessage(msg.chat.id, '📭 Нет данных о заработке за указанный период.');
@@ -2285,16 +2294,37 @@ module.exports = function registerCommands(
     rows.sort((a, b) => b['Сумма заработка (руб)'] - a['Сумма заработка (руб)']);
 
     // Создаём Excel
-    const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.json_to_sheet(rows);
-    XLSX.utils.book_append_sheet(wb, ws, 'Заработок');
-    const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    try {
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.json_to_sheet(rows);
+      XLSX.utils.book_append_sheet(wb, ws, 'Заработок');
+      const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+      console.log(`[EXPORT_EARNINGS] Размер буфера: ${buffer.length} байт`);
 
-    const monthLabel = monthStr || `${new Date(fromDate).toLocaleString('ru-RU', { month: 'long', year: 'numeric' })}`;
-    await bot.sendDocument(msg.chat.id, buffer, {
-      filename: `earnings_${monthStr || (new Date(fromDate).toISOString().slice(0, 7))}.xlsx`,
-      caption: `📊 Отчёт по заработку за ${monthLabel}`,
-    });
+      // Сохраняем файл на диск
+      const fileName = `earnings_${monthStr || (new Date(fromDate).toISOString().slice(0, 7))}.xlsx`;
+      const outputPath = path.join(__dirname, 'exports', fileName);
+      fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+      fs.writeFileSync(outputPath, buffer);
+      console.log(`[EXPORT_EARNINGS] Файл сохранён: ${outputPath}`);
+
+      // Отправляем файл
+      const monthLabel = monthStr || `${new Date(fromDate).toLocaleString('ru-RU', { month: 'long', year: 'numeric' })}`;
+      await bot.sendDocument(msg.chat.id, outputPath, {
+        caption: `📊 Отчёт по заработку за ${monthLabel}`
+      });
+
+      // Удаляем временный файл после отправки
+      try {
+        fs.unlinkSync(outputPath);
+        console.log(`[EXPORT_EARNINGS] Временный файл удалён: ${outputPath}`);
+      } catch (unlinkErr) {
+        console.warn(`[EXPORT_EARNINGS] Не удалось удалить файл: ${unlinkErr.message}`);
+      }
+    } catch (err) {
+      console.error('[EXPORT_EARNINGS] Ошибка создания Excel:', err);
+      await bot.sendMessage(msg.chat.id, `❌ Ошибка создания Excel: ${err.message}`);
+    }
   });
 
   // --- "/clear_product_stats" Команда для администратора: очистка статистики заказа ---

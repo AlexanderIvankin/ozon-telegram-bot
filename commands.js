@@ -247,7 +247,30 @@ module.exports = function registerCommands(
         return;
       }
 
-      // Проверяем, все ли товары заполнены
+      // --- Проверка статистики по БД ---
+      try {
+        const orderDetails = await ozon.getOrderDetails(orderId);
+        if (orderDetails && orderDetails.products) {
+          let missingStats = [];
+          for (const product of orderDetails.products) {
+            const offerId = product.offer_id;
+            if (!offerId) continue;
+            const stats = await db.getProductStats(offerId);
+            if (!stats) missingStats.push(offerId);
+          }
+          if (missingStats.length > 0) {
+            const missingList = missingStats.join(', ');
+            await bot.answerCallbackQuery(callbackQuery.id, { text: `❌ Отсутствует статистика для: ${missingList}` });
+            return;
+          }
+        }
+      } catch (err) {
+        console.error('Ошибка проверки статистики в callback:', err);
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Ошибка проверки статистики' });
+        return;
+      }
+
+      // Проверяем состояние pendingForms (если есть)
       const key = `${userId}_${orderId}`;
       const state = pendingForms.get(key);
       if (state && state.orderId === orderId && !state.allCompleted) {
@@ -286,8 +309,11 @@ module.exports = function registerCommands(
         await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Сотрудник не найден.' });
         return;
       }
-      try {
 
+      // Ответить на callback сразу, чтобы избежать ошибки "query is too old"
+      await bot.answerCallbackQuery(callbackQuery.id, { text: '⏳ Заказ завершается...' });
+
+      try {
         // Очищаем pendingForms и удаляем сообщения перед завершением
         const key = `${userId}_${orderId}`;
         const state = pendingForms.get(key);
@@ -326,7 +352,8 @@ module.exports = function registerCommands(
           console.warn('Не удалось удалить сообщение подтверждения:', err.message);
         }
 
-        await bot.answerCallbackQuery(callbackQuery.id, { text: '✅ Заказ завершён' });
+        // Дополнительное уведомление уже не нужно, так как ответили в начале
+        //        await bot.answerCallbackQuery(callbackQuery.id, { text: '✅ Заказ завершён' });
       } catch (err) {
         console.error('Ошибка при завершении заказа из callback:', err);
         await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Ошибка при завершении заказа' });
@@ -2514,10 +2541,31 @@ module.exports = function registerCommands(
       return bot.sendMessage(msg.chat.id, `❌ Заказ ${postingNumber} не найден среди ваших активных заказов.`);
     }
 
-    // Проверяем незавершённые опросы
+    // --- Проверяем наличие статистики для всех товаров в заказе ---
+    try {
+      const orderDetails = await ozon.getOrderDetails(postingNumber);
+      if (!orderDetails || !orderDetails.products) {
+        return bot.sendMessage(msg.chat.id, `❌ Не удалось получить детали заказа ${postingNumber}.`);
+      }
+      let missingStats = [];
+      for (const product of orderDetails.products) {
+        const offerId = product.offer_id;
+        if (!offerId) continue;
+        const stats = await db.getProductStats(offerId);
+        if (!stats) missingStats.push(offerId);
+      }
+      if (missingStats.length > 0) {
+        const missingList = missingStats.join(', ');
+        return bot.sendMessage(msg.chat.id, `❌ Для заказа ${postingNumber} отсутствует статистика для товаров: ${missingList}. Заполните статистику через /my_orders.`);
+      }
+    } catch (err) {
+      console.error('Ошибка проверки статистики:', err);
+      return bot.sendMessage(msg.chat.id, `❌ Ошибка проверки статистики: ${err.message}`);
+    }
+
+    // Проверяем незавершённые опросы (если состояние есть)
     const state = pendingForms.get(userId);
     if (state && state.orderId === postingNumber) {
-      // Проверяем, есть ли хотя бы один offer со статусом не 'completed'
       const hasIncomplete = Object.values(state.offers).some(o => o.status !== 'completed');
       if (hasIncomplete || !state.allCompleted) {
         return bot.sendMessage(msg.chat.id, `❌ Сначала заполните статистику для всех товаров в заказе ${postingNumber}. Используйте /my_orders, чтобы продолжить.`);

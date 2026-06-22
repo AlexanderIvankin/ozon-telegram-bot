@@ -8,7 +8,7 @@ let pendingFinishConfirmations = new Map(); // key: orderId, value: { originalCh
 let pendingEmployeeUpload = new Map(); // userId -> { step: 'waiting_file' }
 let pendingMaterialsUpload = new Map(); // userId -> { step: 'waiting_file' }
 let pendingUploadModel = new Map(); // userId -> { step: 'waiting_file' }
-let pendingForms = new Map(); // userId -> { orderId, offers: { offerId: { material, color, weight, status, messageId, waitingForWeight } }, allCompleted }
+let pendingForms = new Map(); // key: userId_orderId, value: { orderId, offers, allCompleted }
 let materialsData = null;
 
 // Загружаем справочники при старте
@@ -69,7 +69,8 @@ module.exports = function registerCommands(
 
   async function askMaterial(employeeId, offerId, orderId) {
     // Удаляем предыдущее сообщение шага, если оно было
-    const state = pendingForms.get(employeeId);
+    const key = `${employeeId}_${orderId}`;
+    const state = pendingForms.get(key);
     if (state && state.offers[offerId]) {
       const prevMsgId = state.offers[offerId].stepMessageId;
       if (prevMsgId) {
@@ -82,9 +83,9 @@ module.exports = function registerCommands(
     const keyboard = [];
     for (let i = 0; i < materialNames.length; i += 2) {
       const row = [];
-      row.push({ text: materialNames[i], callback_data: `mat_${offerId}_${materialNames[i]}` });
+      row.push({ text: materialNames[i], callback_data: `mat_${orderId}_${offerId}_${materialNames[i]}` });
       if (i + 1 < materialNames.length) {
-        row.push({ text: materialNames[i + 1], callback_data: `mat_${offerId}_${materialNames[i + 1]}` });
+        row.push({ text: materialNames[i + 1], callback_data: `mat_${orderId}_${offerId}_${materialNames[i + 1]}` });
       }
       keyboard.push(row);
     }
@@ -101,7 +102,8 @@ module.exports = function registerCommands(
   }
 
   async function askColor(employeeId, offerId, orderId) {
-    const state = pendingForms.get(employeeId);
+    const key = `${employeeId}_${orderId}`;
+    const state = pendingForms.get(key);
     if (state && state.offers[offerId]) {
       const prevMsgId = state.offers[offerId].stepMessageId;
       if (prevMsgId) {
@@ -114,9 +116,9 @@ module.exports = function registerCommands(
     const keyboard = [];
     for (let i = 0; i < colors.length; i += 2) {
       const row = [];
-      row.push({ text: colors[i], callback_data: `color_${offerId}_${colors[i]}` });
+      row.push({ text: colors[i], callback_data: `color_${orderId}_${offerId}_${colors[i]}` });
       if (i + 1 < colors.length) {
-        row.push({ text: colors[i + 1], callback_data: `color_${offerId}_${colors[i + 1]}` });
+        row.push({ text: colors[i + 1], callback_data: `color_${orderId}_${offerId}_${colors[i + 1]}` });
       }
       keyboard.push(row);
     }
@@ -132,7 +134,8 @@ module.exports = function registerCommands(
   }
 
   async function askWeight(employeeId, offerId, orderId) {
-    const state = pendingForms.get(employeeId);
+    const key = `${employeeId}_${orderId}`;
+    const state = pendingForms.get(key);
     if (state && state.offers[offerId]) {
       const prevMsgId = state.offers[offerId].stepMessageId;
       if (prevMsgId) {
@@ -201,7 +204,8 @@ module.exports = function registerCommands(
       }
 
       // Проверяем, все ли товары заполнены
-      const state = pendingForms.get(userId);
+      const key = `${userId}_${orderId}`;
+      const state = pendingForms.get(key);
       if (state && state.orderId === orderId && !state.allCompleted) {
         await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Сначала заполните статистику для всех товаров.' });
         return;
@@ -241,8 +245,9 @@ module.exports = function registerCommands(
       try {
 
         // Очищаем pendingForms и удаляем сообщения перед завершением
-        const state = pendingForms.get(userId);
-        if (state && state.orderId === orderId) {
+        const key = `${userId}_${orderId}`;
+        const state = pendingForms.get(key);
+        if (state) {
           for (const offerId of Object.keys(state.offers)) {
             try {
               await bot.deleteMessage(userId, state.offers[offerId].messageId);
@@ -253,7 +258,7 @@ module.exports = function registerCommands(
               }
             } catch (e) { }
           }
-          pendingForms.delete(userId);
+          pendingForms.delete(key);
         }
 
         // Вызываем завершение заказа
@@ -303,13 +308,15 @@ module.exports = function registerCommands(
     // --- Обработка заполнения материала ---
     if (data.startsWith('mat_')) {
       const parts = data.split('_');
-      const offerId = parts[1];
-      const material = parts.slice(2).join('_');
-      const state = pendingForms.get(userId);
+      const orderId = parts[1];
+      const offerId = parts[2];
+      const material = parts.slice(3).join('_');
+      const key = `${userId}_${orderId}`;
+      const state = pendingForms.get(key);
       if (state && state.offers[offerId]) {
         state.offers[offerId].material = material;
         state.offers[offerId].status = 'material_selected';
-        await askColor(userId, offerId, state.orderId);
+        await askColor(userId, offerId, orderId);
         await bot.answerCallbackQuery(callbackQuery.id);
       } else {
         await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Ошибка: состояние не найдено' });
@@ -320,13 +327,15 @@ module.exports = function registerCommands(
     // --- Обработка заполнения цвета ---
     if (data.startsWith('color_')) {
       const parts = data.split('_');
-      const offerId = parts[1];
-      const color = parts.slice(2).join('_');
-      const state = pendingForms.get(userId);
+      const orderId = parts[1];
+      const offerId = parts[2];
+      const color = parts.slice(3).join('_');
+      const key = `${userId}_${orderId}`;
+      const state = pendingForms.get(key);
       if (state && state.offers[offerId]) {
         state.offers[offerId].color = color;
         state.offers[offerId].status = 'color_selected';
-        await askWeight(userId, offerId, state.orderId);
+        await askWeight(userId, offerId, orderId);
         await bot.answerCallbackQuery(callbackQuery.id);
       } else {
         await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Ошибка: состояние не найдено' });
@@ -339,8 +348,9 @@ module.exports = function registerCommands(
       const parts = data.split('_'); // fill_stats_orderId_offerId
       const orderId = parts[2];
       const offerId = parts[3];
-      const state = pendingForms.get(userId);
-      if (!state || state.orderId !== orderId) {
+      const key = `${userId}_${orderId}`;
+      const state = pendingForms.get(key);
+      if (!state) {
         await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Ошибка: состояние не найдено.' });
         return;
       }
@@ -397,8 +407,9 @@ module.exports = function registerCommands(
       const parts = data.split('_');
       const orderId = parts[2];
       const offerId = parts[3];
-      const state = pendingForms.get(userId);
-      if (!state || state.orderId !== orderId) {
+      const key = `${userId}_${orderId}`;
+      const state = pendingForms.get(key);
+      if (!state) {
         await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Ошибка: состояние не найдено' });
         return;
       }
@@ -437,8 +448,9 @@ module.exports = function registerCommands(
       }
       try {
         // Очищаем pendingForms и удаляем сообщения перед завершением
-        const state = pendingForms.get(userId);
-        if (state && state.orderId === orderId) {
+        const key = `${userId}_${orderId}`;
+        const state = pendingForms.get(key);
+        if (state) {
           for (const offerId of Object.keys(state.offers)) {
             try {
               await bot.deleteMessage(userId, state.offers[offerId].messageId);
@@ -449,7 +461,7 @@ module.exports = function registerCommands(
               }
             } catch (e) { }
           }
-          pendingForms.delete(userId);
+          pendingForms.delete(key);
         }
 
         await db.cancelOrder(orderId, employee.id);
@@ -617,11 +629,12 @@ module.exports = function registerCommands(
       await db.db.run('DELETE FROM assignments WHERE status = "assigned"');
 
       // --- Очистка всех pendingForms и удаление сообщений ---
-      for (const [userId, state] of pendingForms) {
+      for (const [key, state] of pendingForms) {
+        const userId = key.split('_')[0];
         for (const offerId of Object.keys(state.offers)) {
           try {
             await bot.deleteMessage(userId, state.offers[offerId].messageId);
-          } catch (e) { /* игнорируем */ }
+          } catch (e) { }
         }
       }
       pendingForms.clear();
@@ -648,8 +661,9 @@ module.exports = function registerCommands(
         const employee = await db.getEmployeeById(assignment.employee_id);
         if (employee) {
           // Очищаем pendingForms и удаляем сообщения перед завершением
-          const state = pendingForms.get(userId);
-          if (state && state.orderId === orderId) {
+          const key = `${employee.tg_user_id}_${orderId}`;
+          const state = pendingForms.get(key);
+          if (state) {
             for (const offerId of Object.keys(state.offers)) {
               try {
                 await bot.deleteMessage(userId, state.offers[offerId].messageId);
@@ -660,7 +674,7 @@ module.exports = function registerCommands(
                 }
               } catch (e) { }
             }
-            pendingForms.delete(userId);
+            pendingForms.delete(key);
           }
         }
       }
@@ -721,7 +735,8 @@ module.exports = function registerCommands(
         }
 
         // Очищаем все pendingForms
-        for (const [userId, state] of pendingForms) {
+        for (const [key, state] of pendingForms) {
+          const userId = key.split('_')[0];
           for (const offerId of Object.keys(state.offers)) {
             try {
               await bot.deleteMessage(userId, state.offers[offerId].messageId);
@@ -1002,7 +1017,8 @@ module.exports = function registerCommands(
             waitingForWeight: false
           };
         }
-        pendingForms.set(employee.tg_user_id, {
+        const key = `${employee.tg_user_id}_${orderId}`;
+        pendingForms.set(key, {
           orderId: orderId,
           offers: offersState,
           allCompleted: false
@@ -1864,16 +1880,15 @@ module.exports = function registerCommands(
 
       // Очистка pendingForms для заказов, которых нет в актуальной очереди
       const activeOrderIds = new Set(pendingNewOrders.map(o => o.posting_number));
-      for (const [userId, state] of pendingForms) {
-        if (!activeOrderIds.has(state.orderId)) {
-          for (const offerId of Object.keys(state.offers)) {
-            try {
-              await bot.deleteMessage(userId, state.offers[offerId].messageId);
-            } catch (e) { }
-          }
-          pendingForms.delete(userId);
+      for (const [key, state] of pendingForms) {
+        const userId = key.split('_')[0];
+        for (const offerId of Object.keys(state.offers)) {
+          try {
+            await bot.deleteMessage(userId, state.offers[offerId].messageId);
+          } catch (e) { }
         }
       }
+      pendingForms.clear();
 
       // 3. Перезагружаем очередь из API
       await checkAndOfferNewOrders();
@@ -2269,17 +2284,20 @@ module.exports = function registerCommands(
     const keyboard = [];
     for (const o of orders) {
       const orderId = o.order_id;
-      // Ищем состояние для этого orderId (если есть)
+      // Ищем состояние в pendingForms
       let state = null;
-      for (const [uId, st] of pendingForms) {
-        if (st.orderId === orderId && uId === userId) {
+      for (const [key, st] of pendingForms) {
+        if (key === `${userId}_${orderId}`) {
           state = st;
           break;
         }
       }
+
       let statusText = '';
       let button = null;
+
       if (state) {
+        // Есть состояние для этого заказа
         const allCompleted = state.allCompleted;
         if (allCompleted) {
           statusText = '✅ Статистика заполнена';
@@ -2292,16 +2310,59 @@ module.exports = function registerCommands(
             const offerId = Object.keys(state.offers).find(key => state.offers[key] === firstIncomplete);
             button = { text: '📝 Заполнить статистику', callback_data: `fill_stats_${orderId}_${offerId}` };
           } else {
-            // Если нет незавершённых, но allCompleted false – баг, исправляем
+            // Баг – исправляем
             state.allCompleted = true;
             statusText = '✅ Статистика заполнена';
             button = { text: '✅ Завершить заказ', callback_data: `finish_order_${orderId}` };
           }
         }
       } else {
-        statusText = '✅ Можно завершить';
-        button = { text: '✅ Завершить заказ', callback_data: `finish_order_${orderId}` };
+        // Нет состояния – проверяем статистику в БД
+        const orderDetails = await ozon.getOrderDetails(orderId);
+        if (orderDetails && orderDetails.products) {
+          let allHaveStats = true;
+          const missingStats = [];
+          for (const product of orderDetails.products) {
+            const offerId = product.offer_id;
+            if (!offerId) continue;
+            const stats = await db.getProductStats(offerId);
+            if (!stats) {
+              allHaveStats = false;
+              missingStats.push(offerId);
+            }
+          }
+          if (allHaveStats) {
+            statusText = '✅ Статистика заполнена';
+            button = { text: '✅ Завершить заказ', callback_data: `finish_order_${orderId}` };
+          } else {
+            statusText = '⏳ Ожидает заполнения статистики';
+            // Создаём состояние для этого заказа
+            const offersState = {};
+            for (const offerId of missingStats) {
+              offersState[offerId] = {
+                material: null,
+                color: null,
+                weight: null,
+                status: 'not_started',
+                messageId: null,
+                waitingForWeight: false
+              };
+            }
+            pendingForms.set(`${userId}_${orderId}`, {
+              orderId: orderId,
+              offers: offersState,
+              allCompleted: false
+            });
+            const firstOffer = missingStats[0];
+            button = { text: '📝 Заполнить статистику', callback_data: `fill_stats_${orderId}_${firstOffer}` };
+          }
+        } else {
+          statusText = '⚠️ Не удалось проверить статистику';
+          // Всё равно даём кнопку завершения (на случай, если заказ уже не актуален)
+          button = { text: '✅ Завершить заказ', callback_data: `finish_order_${orderId}` };
+        }
       }
+
       reply += `• Заказ \`${orderId}\` — ${statusText}\n`;
       if (button) {
         keyboard.push([button]);
@@ -2506,10 +2567,26 @@ module.exports = function registerCommands(
     }
 
     const userId = msg.from.id.toString();
-    const state = pendingForms.get(userId);
+    let state = null;
+    let orderId = null;
+    let currentKey = null;
+    for (const [key, st] of pendingForms) {
+      if (key.startsWith(`${userId}_`)) {
+        // Проверим, есть ли waitingForWeight === true
+        for (const oid of Object.keys(st.offers)) {
+          if (st.offers[oid].waitingForWeight === true) {
+            state = st;
+            orderId = st.orderId;
+            currentKey = key;
+            break;
+          }
+        }
+        if (state) break;
+      }
+    }
 
     // Обработка заполнения веса пластика для заказа
-    if (state && state.waitingForWeight) {
+    if (state) {
       const weight = parseFloat(msg.text.trim().replace(',', '.'));
       if (isNaN(weight) || weight <= 0) {
         await bot.sendMessage(userId, '❌ Введите корректное положительное число (например, 12.5)');
@@ -2535,7 +2612,7 @@ module.exports = function registerCommands(
         state.allCompleted = allCompleted;
         if (allCompleted) {
           await sendFinishButton(userId, state.orderId);
-          pendingForms.delete(userId);
+          pendingForms.delete(currentKey);
         }
         // Удаляем сообщение с кнопкой
         try {
@@ -2573,7 +2650,7 @@ module.exports = function registerCommands(
       state.allCompleted = allCompleted;
       if (allCompleted) {
         await sendFinishButton(userId, state.orderId);
-        pendingForms.delete(userId);
+        pendingForms.delete(currentKey);
       } else {
         // Если остались незавершённые, предлагаем продолжить
         const nextIncomplete = Object.keys(state.offers).find(oid => state.offers[oid].status !== 'completed');

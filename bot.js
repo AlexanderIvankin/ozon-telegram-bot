@@ -236,6 +236,58 @@ async function cleanExpiredAssignments(activeOrderIds) {
     }
 }
 
+// Восстановление состояний опросов после перезапуска
+async function restorePendingForms() {
+    try {
+        // Получить все активные назначения
+        const assignments = await db.db.all('SELECT order_id, employee_id FROM assignments WHERE status = "assigned"');
+        for (const assign of assignments) {
+            const employee = await db.getEmployeeById(assign.employee_id);
+            if (!employee) continue;
+            const userId = employee.tg_user_id;
+            const orderId = assign.order_id;
+
+            // Проверить, есть ли уже состояние для этого пользователя и заказа
+            const existing = pendingForms.get(userId);
+            if (existing && existing.orderId === orderId) continue; // уже есть
+
+            const orderDetails = await ozon.getOrderDetails(orderId);
+            if (!orderDetails || !orderDetails.products) continue;
+
+            const missingStats = [];
+            for (const product of orderDetails.products) {
+                const offerId = product.offer_id;
+                if (!offerId) continue;
+                const stats = await db.getProductStats(offerId);
+                if (!stats) missingStats.push(offerId);
+            }
+            if (missingStats.length === 0) continue; // все есть
+
+            // Создаём состояние
+            const offersState = {};
+            for (const offerId of missingStats) {
+                offersState[offerId] = {
+                    material: null,
+                    color: null,
+                    weight: null,
+                    status: 'not_started',
+                    messageId: null,
+                    waitingForWeight: false
+                };
+            }
+            const key = `${userId}_${orderId}`;
+            pendingForms.set(key, {
+                orderId: orderId,
+                offers: offersState,
+                allCompleted: false
+            });
+            console.log(`[RESTORE] Восстановлено состояние для заказа ${orderId} пользователя ${userId}`);
+        }
+    } catch (err) {
+        console.error('Ошибка восстановления состояний:', err);
+    }
+}
+
 // Функция для отображения меню выбора для конкретного заказа
 async function showOrderMenu(order) {
     const debug = debugMode.isDebugMode();
@@ -430,6 +482,9 @@ process.on('SIGTERM', gracefulShutdown);
         deleteLastOrderMessages, updateModeratorActivity,
         startInactivityTimer, stopInactivityTimer
     );
-    setTimeout(() => checkAndOfferNewOrders(), 5000);
+    setTimeout(() => {
+        checkAndOfferNewOrders();
+        restorePendingForms();
+    }, 5000);
     console.log('Бот запущен...');
 })();

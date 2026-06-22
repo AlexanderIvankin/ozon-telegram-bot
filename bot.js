@@ -25,10 +25,11 @@ process.on('unhandledRejection', (reason, promise) => {
 async function setCommandsWithRetry(retries = 3, delay = 5000) {
     const commands = [
         { command: 'start', description: 'Запустить бота' },
-        { command: 'help', description: 'Помощь' },
+        { command: 'my_earnings', description: 'Мой заработок за месяц (указать YYYY-MM), по умолчанию текущий' },
         { command: 'my_orders', description: 'Мои активные заказы' },
         { command: 'finish_order', description: 'Завершить заказ (указать номер)' },
-        { command: 'cancel_order', description: 'Отменить заказ (указать номер)' }
+        { command: 'cancel_order', description: 'Отменить заказ (указать номер)' },
+        { command: 'help', description: 'Помощь' },
     ];
 
     for (let attempt = 1; attempt <= retries; attempt++) {

@@ -1224,6 +1224,8 @@ module.exports = function registerCommands(
       adminMessage += `/employee_stats <id_сотрудника> — статистика сотрудника (заказы, сумма)\n`;
       adminMessage += `/employee_orders <id_сотрудника> — показать активные заказы сотрудника\n\n`;
 
+      adminMessage += `/export_earnings [YYYY-MM] — экспорт заработка всех сотрудников за месяц (по умолчанию текущий)\n\n`;
+
       adminMessage += `/send_label <номер_заказа> [id_сотрудника] — отправить PDF‑этикетку заказа сотруднику (если ID не указан – себе)\n\n`;
 
       adminMessage += `/admin_assign_order <номер_заказа> [id_сотрудника] — назначить заказ сотруднику (если ID не указан – показать список сотрудников)\n\n`;
@@ -1264,7 +1266,7 @@ module.exports = function registerCommands(
 
       adminMessage += `/download_materials — скачать файл цен материала за грамм "materials.json"\n`;
       adminMessage += `/download_team_info — скачать файл сотрудников "team-info.xlsx"\n`;
-      adminMessage += `/download_product_stats — скачать файл статистики продуктов "product-stats.xlsx"\n`;
+      adminMessage += `/download_product_stats — скачать файл статистики продуктов "product-stats.xlsx" (с принудительной выгрузкой статистики из bot.db)\n`;
       adminMessage += `/download_db — скачать файл базы данных "bot.db"\n\n`;
 
       adminMessage += `/backup_db — создать бэкап базы данных "bot.db"\n\n`;
@@ -1286,6 +1288,7 @@ module.exports = function registerCommands(
       let msgText = `С возвращением, ${employee.name}!\n Новые заказы назначает Модератор.\n У вас активно заказов: ${activeCount}. \n\n`;
       msgText += `Доступные команды:\n`;
       msgText += `/my_orders — показать мои активные заказы\n`;
+      msgText += `/my_earnings [YYYY-MM] — показать мой заработок за месяц (по умолчанию текущий)\n`;
       msgText += `/finish_order <номер_заказа> — завершить заказ (получить этикетку)\n`;
       msgText += `/cancel_order <номер_заказа> — отменить заказ (если не можете выполнить)\n`;
       msgText += `/help — эта справка\n`;
@@ -2220,6 +2223,80 @@ module.exports = function registerCommands(
     await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'Markdown' });
   });
 
+  // --- "/export_earnings" Команда для администратора: экспорт заработка сотрудников за месяц ---
+  bot.onText(/\/export_earnings(?: (.+))?/, async (msg, match) => {
+    const userId = msg.from.id.toString();
+    if (!isAdmin(userId)) {
+      return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
+    }
+
+    let monthStr = match[1] || null;
+    let fromDate, toDate;
+    if (monthStr) {
+      if (!/^\d{4}-\d{2}$/.test(monthStr)) {
+        return bot.sendMessage(msg.chat.id, '❌ Неверный формат. Используйте YYYY-MM');
+      }
+      const [year, month] = monthStr.split('-').map(Number);
+      fromDate = new Date(year, month - 1, 1).getTime();
+      toDate = new Date(year, month, 1).getTime() - 1;
+    } else {
+      const now = new Date();
+      const year = now.getFullYear();
+      const month = now.getMonth();
+      fromDate = new Date(year, month, 1).getTime();
+      toDate = new Date(year, month + 1, 1).getTime() - 1;
+    }
+
+    // Получаем данные за период
+    const earningsData = await db.getAllEmployeeEarningsForPeriod(fromDate, toDate);
+    if (!earningsData.length) {
+      return bot.sendMessage(msg.chat.id, '📭 Нет данных о заработке за указанный период.');
+    }
+
+    // Группируем по сотруднику
+    const employeeMap = new Map();
+    for (const row of earningsData) {
+      const empId = row.id;
+      if (!employeeMap.has(empId)) {
+        employeeMap.set(empId, {
+          name: row.name,
+          totalAmount: 0,
+          orderCount: 0,
+        });
+      }
+      const emp = employeeMap.get(empId);
+      emp.totalAmount += row.amount;
+      emp.orderCount += 1;
+    }
+
+    // Формируем массив для Excel
+    const rows = [];
+    for (const [empId, emp] of employeeMap) {
+      rows.push({
+        'ID сотрудника': empId,
+        'Сотрудник': emp.name,
+        'Количество заказов': emp.orderCount,
+        'Сумма заработка (руб)': emp.totalAmount.toFixed(2),
+        'Средний чек (руб)': (emp.totalAmount / emp.orderCount).toFixed(2),
+      });
+    }
+
+    // Сортируем по сумме
+    rows.sort((a, b) => b['Сумма заработка (руб)'] - a['Сумма заработка (руб)']);
+
+    // Создаём Excel
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.json_to_sheet(rows);
+    XLSX.utils.book_append_sheet(wb, ws, 'Заработок');
+    const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+
+    const monthLabel = monthStr || `${new Date(fromDate).toLocaleString('ru-RU', { month: 'long', year: 'numeric' })}`;
+    await bot.sendDocument(msg.chat.id, buffer, {
+      filename: `earnings_${monthStr || (new Date(fromDate).toISOString().slice(0, 7))}.xlsx`,
+      caption: `📊 Отчёт по заработку за ${monthLabel}`,
+    });
+  });
+
   // --- "/clear_product_stats" Команда для администратора: очистка статистики заказа ---
   bot.onText(/\/clear_product_stats (\S+)/, async (msg, match) => {
     const userId = msg.from.id.toString();
@@ -2275,13 +2352,26 @@ module.exports = function registerCommands(
     await bot.sendDocument(msg.chat.id, filePath, { caption: '📄 Актуальный файл сотрудников.' });
   });
 
-  // --- "/download_product_stats" Команда для администратора: скачать файл product-stats.xlsx ---
+  // --- "/download_product_stats" Команда для администратора: скачать файл product-stats.xlsx (с принудительной выгрузкой статистики из bot.db) ---
   bot.onText(/\/download_product_stats/, async (msg) => {
     const userId = msg.from.id.toString();
-    if (!isAdmin(userId)) return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
-    const filePath = path.join(__dirname, 'exports', 'product-stats.xlsx');
-    if (!fs.existsSync(filePath)) return bot.sendMessage(msg.chat.id, '❌ Файл статистики пока не создан.');
-    await bot.sendDocument(msg.chat.id, filePath, { caption: '📊 Актуальная статистика по артикулам.' });
+    if (!isAdmin(userId)) {
+      return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
+    }
+    try {
+      await exportProductStats(); // пересоздаёт файл
+      const filePath = path.join(__dirname, 'exports', 'product-stats.xlsx');
+      if (!fs.existsSync(filePath)) {
+        return bot.sendMessage(msg.chat.id, '❌ Файл статистики не создан.');
+      }
+      await bot.sendDocument(msg.chat.id, filePath, {
+        caption: '📊 Актуальная полная выгрузка статистики по артикулам.',
+        filename: `product-stats_${Date.now()}.xlsx`
+      });
+    } catch (err) {
+      console.error('[EXPORT_PRODUCT_STATS] Ошибка:', err);
+      await bot.sendMessage(msg.chat.id, `❌ Ошибка: ${err.message}`);
+    }
   });
 
   // --- "/download_db" Команда для администратора: скачать файл bot.db ---
@@ -2627,6 +2717,54 @@ module.exports = function registerCommands(
     await bot.sendMessage(msg.chat.id, `⚠️ Вы уверены, что хотите отменить заказ ${postingNumber}?`, confirmKeyboard);
   });
 
+  // --- "/my_earnings" – просмотр заработка сотрудника за месяц ---
+  bot.onText(/\/my_earnings(?: (.+))?/, async (msg, match) => {
+    const userId = msg.from.id.toString();
+    const employee = await db.getEmployee(userId);
+    if (!employee) {
+      return bot.sendMessage(msg.chat.id, '❌ Вы не зарегистрированы как сотрудник.');
+    }
+
+    // Парсим месяц (если указан)
+    let monthStr = match[1] || null;
+    let fromDate, toDate;
+    if (monthStr) {
+      // Проверяем формат YYYY-MM
+      if (!/^\d{4}-\d{2}$/.test(monthStr)) {
+        return bot.sendMessage(msg.chat.id, '❌ Неверный формат. Используйте YYYY-MM (например, 2025-06)');
+      }
+      const [year, month] = monthStr.split('-').map(Number);
+      fromDate = new Date(year, month - 1, 1).getTime();
+      toDate = new Date(year, month, 1).getTime() - 1;
+    } else {
+      // Текущий месяц
+      const now = new Date();
+      const year = now.getFullYear();
+      const month = now.getMonth();
+      fromDate = new Date(year, month, 1).getTime();
+      toDate = new Date(year, month + 1, 1).getTime() - 1;
+    }
+
+    const earnings = await db.getEmployeeEarnings(employee.id, fromDate, toDate);
+    if (!earnings.length) {
+      return bot.sendMessage(msg.chat.id, `📭 Нет записей о заработке за указанный период.`);
+    }
+
+    let total = 0;
+    let orderCount = earnings.length;
+    for (const e of earnings) {
+      total += e.amount;
+    }
+
+    let monthDisplay = monthStr || `${new Date(fromDate).toLocaleString('ru-RU', { month: 'long', year: 'numeric' })}`;
+    const reply = `💰 *Ваш заработок за ${monthDisplay}*\n\n` +
+      `• Заказов: ${orderCount}\n` +
+      `• Сумма: ${total.toFixed(2)} руб.\n` +
+      `• Средний чек: ${(total / orderCount).toFixed(2)} руб.`;
+
+    await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'Markdown' });
+  });
+
   // ---------------------- СПРАВОЧНЫЕ КОМАНДЫ ----------------------
   bot.onText(/\/help/, async (msg) => {
     const userId = msg.from.id.toString();
@@ -2642,6 +2780,8 @@ module.exports = function registerCommands(
       helpText += `/employee_warehouses <id_сотрудника> — склады сотрудника\n`;
       helpText += `/employee_stats <id_сотрудника> — статистика сотрудника (заказы, сумма)\n`;
       helpText += `/employee_orders <id_сотрудника> — активные заказы сотрудника\n\n`;
+
+      helpText += `/export_earnings [YYYY-MM] — экспорт заработка всех сотрудников за месяц (по умолчанию текущий)\n\n`;
 
       helpText += `/send_label <номер_заказа> [id_сотрудника] — отправить PDF‑этикетку заказа сотруднику (если ID не указан – себе)\n\n`;
 
@@ -2683,7 +2823,7 @@ module.exports = function registerCommands(
 
       helpText += `/download_materials — скачать файл цен материала за грамм "materials.json"\n`;
       helpText += `/download_team_info — скачать файл сотрудников "team-info.xlsx"\n`;
-      helpText += `/download_product_stats — скачать файл статистики продуктов "product-stats.xlsx"\n`;
+      helpText += `/download_product_stats — скачать файл статистики продуктов "product-stats.xlsx" (с принудительной выгрузкой статистики из bot.db)\n`;
       helpText += `/download_db — скачать файл базы данных "bot.db"\n\n`;
 
       helpText += `/backup_db — создать бэкап базы данных "бот.db"\n\n`;
@@ -2700,6 +2840,7 @@ module.exports = function registerCommands(
     if (employee) {
       let helpText = `👋 Помощь сотрудника\n\n`;
       helpText += `/my_orders — показать мои активные заказы\n`;
+      helpText += `/my_earnings [YYYY-MM] — показать мой заработок за месяц (по умолчанию текущий)\n`;
       helpText += `/finish_order <номер_заказа> — завершить заказ (получить этикетку)\n`;
       helpText += `/cancel_order <номер_заказа> — отменить заказ (если не можете выполнить)\n`;
       helpText += `/start — перезапустить бота\n`;

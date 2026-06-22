@@ -80,6 +80,19 @@ async function initDB() {
         console.log('[DB] Добавлена колонка capacity в employees');
     }
 
+    // Таблица заработка сотрудников employee_earnings
+    await database.exec(`
+    CREATE TABLE IF NOT EXISTS employee_earnings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        employee_id INTEGER NOT NULL,
+        order_id TEXT NOT NULL,
+        amount REAL NOT NULL,
+        calculated_at INTEGER NOT NULL,
+        FOREIGN KEY (employee_id) REFERENCES employees(id)
+    )
+`);
+    await database.exec(`CREATE INDEX IF NOT EXISTS idx_employee_earnings_employee_id ON employee_earnings(employee_id);`);
+
     // Таблица статистики по товарам product_stats
     await database.exec(`
     CREATE TABLE IF NOT EXISTS product_stats (
@@ -235,6 +248,34 @@ async function getEmployeeActiveOrdersCount(employeeId) {
     return row ? row.count : 0;
 }
 
+async function saveEmployeeEarnings(employeeId, orderId, amount) {
+    await database.run(
+        `INSERT INTO employee_earnings (employee_id, order_id, amount, calculated_at)
+         VALUES (?, ?, ?, ?)`,
+        employeeId, orderId, amount, Date.now()
+    );
+}
+
+async function getEmployeeEarnings(employeeId, fromDate, toDate) {
+    // для будущего экспорта
+    return database.all(
+        `SELECT order_id, amount, calculated_at FROM employee_earnings
+         WHERE employee_id = ? AND calculated_at >= ? AND calculated_at <= ?
+         ORDER BY calculated_at`,
+        employeeId, fromDate, toDate
+    );
+}
+
+async function getAllEmployeeEarningsForPeriod(fromDate, toDate) {
+    return database.all(`
+        SELECT e.id, e.name, ee.order_id, ee.amount, ee.calculated_at
+        FROM employee_earnings ee
+        JOIN employees e ON ee.employee_id = e.id
+        WHERE ee.calculated_at >= ? AND ee.calculated_at <= ?
+        ORDER BY e.id, ee.calculated_at
+    `, fromDate, toDate);
+}
+
 /**
  * Синхронизирует список складов, полученный из API, с базой данных.
  * @param {Array} warehouses - Массив складов от Ozon API.
@@ -321,7 +362,12 @@ async function upsertProductStats(offerId, material, color, weight, employeeId) 
  * Получить все записи для экспорта
  */
 async function getAllProductStats() {
-    return database.all('SELECT * FROM product_stats ORDER BY offer_id');
+    return database.all(`
+        SELECT ps.offer_id, ps.material, ps.color, ps.weight_grams, ps.employee_id, e.name as employee_name, ps.updated_at
+        FROM product_stats ps
+        LEFT JOIN employees e ON ps.employee_id = e.id
+        ORDER BY ps.offer_id
+    `);
 }
 
 // Добавить модель (при заливке)
@@ -443,6 +489,9 @@ module.exports = {
     getAllEmployeesWithStats,
     getEmployeeActiveOrders,
     getEmployeeActiveOrdersCount,
+    saveEmployeeEarnings,
+    getEmployeeEarnings,
+    getAllEmployeeEarningsForPeriod,
     syncWarehouses,
     getAllWarehouses,
     getWarehouseNameById,

@@ -11,6 +11,8 @@ let pendingUploadModel = new Map(); // userId -> { step: 'waiting_file' }
 let pendingForms = new Map(); // key: userId_orderId, value: { orderId, offers, allCompleted }
 let materialsData = null;
 
+const MIN_EARNINGS = 250; // минимальный заработок за заказ
+
 // Загружаем справочники при старте
 function loadMaterials() {
   try {
@@ -45,26 +47,68 @@ module.exports = function registerCommands(
 ) {
 
   async function exportProductStats() {
-    try {
-      const stats = await db.getAllProductStats();
-      if (!stats.length) return;
-      const wb = XLSX.utils.book_new();
-      const ws = XLSX.utils.json_to_sheet(stats.map(s => ({
-        'Артикул': s.offer_id,
-        'Материал': s.material,
-        'Цвет': s.color,
-        'Вес (г)': s.weight_grams,
-        'Кто заполнил': s.employee_id,
-        'Дата': new Date(s.updated_at).toLocaleString()
-      })));
-      XLSX.utils.book_append_sheet(wb, ws, 'Статистика');
-      const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-      const outputPath = path.join(__dirname, 'exports', 'product-stats.xlsx');
-      fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-      fs.writeFileSync(outputPath, buffer);
-    } catch (err) {
-      console.error('[EXPORT] Ошибка создания Excel:', err);
+    const maxRetries = 3;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const stats = await db.getAllProductStats();
+        if (!stats.length) return;
+        const wb = XLSX.utils.book_new();
+        const ws = XLSX.utils.json_to_sheet(stats.map(s => ({
+          'Артикул': s.offer_id,
+          'Материал': s.material,
+          'Цвет': s.color,
+          'Вес (г)': s.weight_grams,
+          'Кто заполнил': s.employee_name || 'Неизвестно',
+          'Дата': new Date(s.updated_at).toLocaleString()
+        })));
+        XLSX.utils.book_append_sheet(wb, ws, 'Статистика');
+        const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+        const outputPath = path.join(__dirname, 'exports', 'product-stats.xlsx');
+        fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+        fs.writeFileSync(outputPath, buffer);
+        // небольшая задержка после записи
+        await new Promise(resolve => setTimeout(resolve, 100));
+        return; // успешно
+      } catch (err) {
+        console.error(`[EXPORT] Попытка ${attempt} ошибка:`, err);
+        if (attempt === maxRetries) {
+          console.error('[EXPORT] Не удалось сохранить статистику');
+        } else {
+          await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+        }
+      }
     }
+  }
+
+  async function calculateOrderEarnings(orderDetails, employeeId) {
+    const earningsDetails = [];
+    let totalEarnings = 0;
+    let allHaveStats = true;
+
+    for (const product of orderDetails.products) {
+      const offerId = product.offer_id;
+      if (!offerId) continue;
+      const stats = await db.getProductStats(offerId);
+      if (!stats) {
+        allHaveStats = false;
+        console.warn(`[EARN] Для товара ${offerId} нет статистики, пропускаем`);
+        continue;
+      }
+      const materialPrice = materialsData.materials[stats.material] || 0;
+      const weight = stats.weight_grams || 0;
+      let earnings = materialPrice * weight;
+      if (earnings < MIN_EARNINGS) earnings = MIN_EARNINGS;
+      totalEarnings += earnings;
+      earningsDetails.push({
+        offerId,
+        productName: product.name,
+        material: stats.material,
+        weight,
+        earnings
+      });
+    }
+
+    return { total: totalEarnings, details: earningsDetails, allHaveStats };
   }
 
   async function askMaterial(employeeId, offerId, orderId) {
@@ -366,8 +410,14 @@ module.exports = function registerCommands(
         await bot.answerCallbackQuery(callbackQuery.id, { text: '⚠️ Статистика для этого товара уже существует.' });
         // Удаляем сообщение шага, если есть
         if (offerState.stepMessageId) {
+          // Удаляем сообщение с запросом веса (stepMessageId)
           try { await bot.deleteMessage(userId, offerState.stepMessageId); } catch (e) { }
+          // Удаляем исходное сообщение с кнопкой "Заполнить статистику"
+          try { await bot.deleteMessage(userId, offerState.messageId); } catch (e) { }
+          // Удаляем сообщение пользователя с числом
+          try { await bot.deleteMessage(userId, msg.message_id); } catch (e) { }
         }
+
         delete state.offers[offerId];
         const allCompleted = Object.values(state.offers).every(o => o.status === 'completed');
         state.allCompleted = allCompleted;
@@ -785,10 +835,13 @@ module.exports = function registerCommands(
   // ---------------------- ОБЩАЯ ФУНКЦИЯ ДЛЯ ЗАВЕРШЕНИЯ ЗАКАЗА ----------------------
   async function finishOrder(chatId, postingNumber, employee) {
     try {
+      console.log(`[FINISH] Начинаем завершение заказа ${postingNumber}`);
       const orderAmount = await ozon.getOrderTotalAmount(postingNumber);
+      console.log(`[FINISH] Сумма заказа: ${orderAmount}`);
       await db.updateEmployeeStats(employee.id, orderAmount);
 
       // 1. Подтверждаем сборку (ship)
+      console.log(`[FINISH] Статистика обновлена`);
       const actResponse = await ozon.confirmPostingShip(postingNumber);
       console.log(`[FINISH] Ответ ship:`, JSON.stringify(actResponse, null, 2));
 
@@ -817,6 +870,8 @@ module.exports = function registerCommands(
       }
 
       await db.completeOrder(postingNumber);
+      console.log(`[FINISH] Заказ ${postingNumber} завершён в БД`);
+      await new Promise(resolve => setTimeout(resolve, 500));
 
       if (labelBuffer) {
         await bot.sendDocument(
@@ -827,6 +882,34 @@ module.exports = function registerCommands(
         );
       } else {
         await bot.sendMessage(chatId, `✅ Заказ ${postingNumber} подтверждён. Этикетку можно скачать в личном кабинете Ozon.`);
+      }
+
+      // --- Расчёт заработка ---
+      try {
+        // Получаем детали заказа (повторно, чтобы быть уверенным)
+        const orderDetails = await ozon.getOrderDetails(postingNumber);
+        if (orderDetails && orderDetails.products) {
+          const earnings = await calculateOrderEarnings(orderDetails, employee.id);
+          if (earnings.allHaveStats && earnings.total > 0) {
+            // Сохраняем в БД
+            await db.saveEmployeeEarnings(employee.id, postingNumber, earnings.total);
+            // Формируем сообщение
+            let msg = `💰 *Заработок за заказ ${postingNumber}*\n\n`;
+            for (const item of earnings.details) {
+              msg += `• ${item.productName} (${item.offerId})\n`;
+              msg += `  Материал: ${item.material}, Вес: ${item.weight} г, Заработок: ${item.earnings.toFixed(2)} руб.\n`;
+            }
+            msg += `\n*Итого: ${earnings.total.toFixed(2)} руб.*`;
+            // Отправляем сотруднику
+            await bot.sendMessage(employee.tg_user_id, msg, { parse_mode: 'Markdown' });
+            // Небольшая задержка
+            await new Promise(resolve => setTimeout(resolve, 200));
+          } else if (!earnings.allHaveStats) {
+            console.warn(`[FINISH] Не все товары имеют статистику для заказа ${postingNumber}`);
+          }
+        }
+      } catch (earnErr) {
+        console.error('Ошибка расчёта заработка:', earnErr);
       }
 
       // Уведомляем модератора
@@ -1052,7 +1135,7 @@ module.exports = function registerCommands(
 
       // --- Отправляем уведомление администратору (если передан chatId) ---
       if (adminChatId) {
-        await bot.sendMessage(adminChatId, `✅ Заказ ${orderId} назначен сотруднику ${employee.name} (ID: ${employee.id}).`);
+        await bot.sendMessage(adminChatId, `✅ Заказ ${orderId} назначен сотруднику ${employee.name} (ID сотрудника: ${employee.id}).`);
       }
 
       // Запускаем следующий заказ, если есть
@@ -2301,19 +2384,19 @@ module.exports = function registerCommands(
         const allCompleted = state.allCompleted;
         if (allCompleted) {
           statusText = '✅ Статистика заполнена';
-          button = { text: '✅ Завершить заказ', callback_data: `finish_order_${orderId}` };
+          button = { text: `✅ Завершить заказ ${orderId}`, callback_data: `finish_order_${orderId}` };
         } else {
           // Есть незавершённые
           statusText = '⏳ Ожидает заполнения статистики';
           const firstIncomplete = Object.values(state.offers).find(o => o.status !== 'completed');
           if (firstIncomplete) {
             const offerId = Object.keys(state.offers).find(key => state.offers[key] === firstIncomplete);
-            button = { text: '📝 Заполнить статистику', callback_data: `fill_stats_${orderId}_${offerId}` };
+            button = { text: `📝 Заполнить статистику для ${orderId} (${offerId})`, callback_data: `fill_stats_${orderId}_${offerId}` };
           } else {
             // Баг – исправляем
             state.allCompleted = true;
             statusText = '✅ Статистика заполнена';
-            button = { text: '✅ Завершить заказ', callback_data: `finish_order_${orderId}` };
+            button = { text: `✅ Завершить заказ ${orderId}`, callback_data: `finish_order_${orderId}` };
           }
         }
       } else {
@@ -2333,7 +2416,7 @@ module.exports = function registerCommands(
           }
           if (allHaveStats) {
             statusText = '✅ Статистика заполнена';
-            button = { text: '✅ Завершить заказ', callback_data: `finish_order_${orderId}` };
+            button = { text: `✅ Завершить заказ ${orderId}`, callback_data: `finish_order_${orderId}` };
           } else {
             statusText = '⏳ Ожидает заполнения статистики';
             // Создаём состояние для этого заказа
@@ -2354,12 +2437,12 @@ module.exports = function registerCommands(
               allCompleted: false
             });
             const firstOffer = missingStats[0];
-            button = { text: '📝 Заполнить статистику', callback_data: `fill_stats_${orderId}_${firstOffer}` };
+            button = { text: `📝 Заполнить статистику для ${orderId} (${offerId})`, callback_data: `fill_stats_${orderId}_${offerId}` };
           }
         } else {
           statusText = '⚠️ Не удалось проверить статистику';
           // Всё равно даём кнопку завершения (на случай, если заказ уже не актуален)
-          button = { text: '✅ Завершить заказ', callback_data: `finish_order_${orderId}` };
+          button = { text: `✅ Завершить заказ ${orderId}`, callback_data: `finish_order_${orderId}` };
         }
       }
 
@@ -2632,12 +2715,15 @@ module.exports = function registerCommands(
       offerState.status = 'completed';
       offerState.waitingForWeight = false;
 
+      // Удаляем сообщение с запросом веса (оно хранится в stepMessageId)
+      try {
+        await bot.deleteMessage(userId, offerState.stepMessageId);
+      } catch (e) { }
       // Удаляем исходное сообщение с кнопкой "Заполнить статистику"
       try {
         await bot.deleteMessage(userId, offerState.messageId);
       } catch (e) { }
-
-      // Удаляем сообщение с запросом веса (текущее сообщение)
+      // Удаляем сообщение пользователя с числом (текущее msg)
       try {
         await bot.deleteMessage(userId, msg.message_id);
       } catch (e) { }

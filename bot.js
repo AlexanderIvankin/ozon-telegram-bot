@@ -10,6 +10,17 @@ const debugMode = require('./debugMode');
 
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
+    // По возможности отправьте уведомление администратору
+    const moderatorId = process.env.MODERATOR_ID;
+    if (moderatorId) {
+        try {
+            bot.sendMessage(moderatorId, `⚠️ Критическая ошибка: ${reason}`);
+        } catch (e) { }
+    }
+});
+
 // --- Функция установки команд с повторами ---
 async function setCommandsWithRetry(retries = 3, delay = 5000) {
     const commands = [

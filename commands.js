@@ -1212,7 +1212,7 @@ module.exports = function registerCommands(
         adminMessage += `Для начала работы используйте команду /add_self.\n\n`;
       } else {
         const activeCount = await db.getEmployeeActiveOrdersCount(employee.id);
-        adminMessage += `Вы зарегистрированы как ${employee.name} (активных заказов: ${activeCount}, capacity: ${employee.capacity}).\n\n`;
+        adminMessage += `Вы зарегистрированы как ${employee.name}\nАктивных Заказов: ${activeCount}\n3D-принтеров: ${employee.capacity}\n\n`;
       }
       adminMessage += `🔧 Доступные административные команды:\n`;
       adminMessage += `/status_all — статус всех сотрудников\n`;
@@ -1334,7 +1334,7 @@ module.exports = function registerCommands(
     if (!employees.length) return bot.sendMessage(msg.chat.id, 'Нет сотрудников.');
     let reply = '👷 Статус сотрудников:\n\n';
     for (const emp of employees) {
-      reply += `• ${emp.name} — ID сотрудника: ${emp.id}\nАктивных Заказов: ${emp.active_count}\nВсего 3D-принтеров: ${emp.capacity}\n\n`;
+      reply += `• ${emp.name} — ID сотрудника: ${emp.id}\nАктивных Заказов: ${emp.active_count}\n3D-принтеров: ${emp.capacity}\n\n`;
     }
     await bot.sendMessage(msg.chat.id, reply);
   });

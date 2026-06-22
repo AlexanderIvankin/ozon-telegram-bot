@@ -23,12 +23,12 @@ function loadMaterials() {
     materialsData = {
       colors: ["Черный", "Белый", "Серый", "Прозрачный", "Красный", "Желтый", "Зеленый"],
       materials: {
-        "Pet-G": 0.05,
-        "ABS": 0.04,
-        "Нейлон Pa-6": 0.08,
-        "Нейлон Pa-12": 0.09,
-        "НейлонАрмир": 0.12,
-        "ASA": 0.06
+        "Pet-G": 2.5,
+        "ABS": 2.5,
+        "Нейлон Pa-6": 2.5,
+        "Нейлон Pa-12": 2.5,
+        "НейлонАрмир": 2.5,
+        "ASA": 2.5
       }
     };
   }
@@ -1048,6 +1048,7 @@ module.exports = function registerCommands(
       adminMessage += `/pause — приостановить авто-проверку очереди заказов\n`;
       adminMessage += `/resume — возобновить авто-проверку очереди заказов\n\n`;
 
+      adminMessage += `/download_materials — скачать файл цен материала за грамм "materials.json"\n`;
       adminMessage += `/download_team_info — скачать файл сотрудников "team-info.xlsx"\n`;
       adminMessage += `/download_product_stats — скачать файл статистики продуктов "product-stats.xlsx"\n`;
       adminMessage += `/download_db — скачать файл базы данных "bot.db"\n\n`;
@@ -2040,6 +2041,15 @@ module.exports = function registerCommands(
     bot.sendMessage(msg.chat.id, '▶️ Автоматическая проверка заказов возобновлена.');
   });
 
+  // --- "/download_materials" Команда для администратора: скачать файл materials.json ---
+  bot.onText(/\/download_team_info/, async (msg) => {
+    const userId = msg.from.id.toString();
+    if (!isAdmin(userId)) return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
+    const filePath = path.join(__dirname, 'materials.json');
+    if (!fs.existsSync(filePath)) return bot.sendMessage(msg.chat.id, '❌ Файл materials.json не найден.');
+    await bot.sendDocument(msg.chat.id, filePath, { caption: '🧾 Актуальный файл цен материалов за грамм.' });
+  });
+
   // --- "/download_team_info" Команда для администратора: скачать файл team-info.xlsx ---
   bot.onText(/\/download_team_info/, async (msg) => {
     const userId = msg.from.id.toString();
@@ -2365,6 +2375,7 @@ module.exports = function registerCommands(
       helpText += `/pause — приостановить авто-проверку очереди заказов\n`;
       helpText += `/resume — возобновить авто-проверку очереди заказов\n\n`;
 
+      helpText += `/download_materials — скачать файл цен материала за грамм "materials.json"\n`;
       helpText += `/download_team_info — скачать файл сотрудников "team-info.xlsx"\n`;
       helpText += `/download_product_stats — скачать файл статистики продуктов "product-stats.xlsx"\n`;
       helpText += `/download_db — скачать файл базы данных "bot.db"\n\n`;

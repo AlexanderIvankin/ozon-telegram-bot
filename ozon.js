@@ -15,6 +15,7 @@ const apiClient = axios.create({
         'Api-Key': API_KEY,
         'Content-Type': 'application/json',
     },
+    timeout: 30000, // Устанавливаем таймаут на запросы
 });
 
 // Флаг для тестов (MOCK-режим)
@@ -38,6 +39,41 @@ const mockOrders = [
 ];
 
 /**
+ * Универсальная функция для выполнения запросов с повторными попытками
+ * @param {Function} requestFn - асинхронная функция, которая выполняет запрос
+ * @param {Object} options - настройки
+ * @param {number} options.retries - количество попыток (по умолчанию 3)
+ * @param {number} options.delay - начальная задержка в мс (по умолчанию 1000)
+ * @param {string} options.context - контекст для логов
+ * @returns {Promise<any>} - результат запроса
+ */
+async function requestWithRetry(requestFn, options = {}) {
+    const { retries = 3, delay = 1000, context = 'API' } = options;
+    let attempt = 0;
+    while (attempt < retries) {
+        try {
+            return await requestFn();
+        } catch (error) {
+            attempt++;
+            const isRetryable = error.response
+                ? [429, 500, 502, 503, 504].includes(error.response.status)
+                : true; // сетевые ошибки тоже повторяем
+
+            if (isRetryable && attempt < retries) {
+                const backoff = delay * Math.pow(2, attempt - 1);
+                console.warn(`[${context}] Ошибка (попытка ${attempt}/${retries}):`, error.message);
+                console.log(`[${context}] Повтор через ${backoff} мс...`);
+                await new Promise(resolve => setTimeout(resolve, backoff));
+                continue;
+            }
+            // Если не повторяемая или закончились попытки – выбрасываем
+            console.error(`[${context}] Критическая ошибка:`, error.message);
+            throw error;
+        }
+    }
+}
+
+/**
  * Получает список складов продавца через API Ozon.
  * @returns {Promise<Array>} - Массив объектов складов.
  */
@@ -52,36 +88,27 @@ async function fetchWarehousesFromOzon() {
 
     try {
         if (debugMode.isDebugMode()) console.log('[Ozon] Запрос списка складов...');
-        // Для получения всех складов можно отправить пустой объект или limit: 100
-        const response = await apiClient.post('/v2/warehouse/list', {
-            limit: 100   // Запрашиваем до 100 складов за раз
-        });
-
-        // В реальном ответе данные находятся в поле warehouses
+        const response = await requestWithRetry(
+            () => apiClient.post('/v2/warehouse/list', { limit: 100 }),
+            { context: 'fetchWarehouses' }
+        );
         const warehousesRaw = response.data.warehouses || [];
-
-        // Приводим к единому формату (warehouse_id как строка)
         const warehouses = warehousesRaw.map(wh => ({
-            warehouse_id: String(wh.warehouse_id),          // преобразуем число в строку
+            warehouse_id: String(wh.warehouse_id),
             name: wh.name,
-            address: wh.address_info?.address || null,     // адрес может быть вложенным
+            address: wh.address_info?.address || null,
             is_rfbs: wh.is_rfbs || false
         }));
-
         if (debugMode.isDebugMode()) console.log(`[Ozon] Успешно получено ${warehouses.length} складов.`);
         return warehouses;
     } catch (error) {
-        console.error('[Ozon] Ошибка при получении списка складов:',
-            error.response?.data || error.message);
-        // Детальный вывод для диагностики
-        console.error('[Ozon] Детали ошибки:', JSON.stringify(error.response?.data, null, 2));
+        console.error('[Ozon] Ошибка при получении списка складов:', error.message);
         return [];
     }
 }
 
-// Получить список заказов FBS со статусом "awaiting_packaging" (ожидает упаковки)
-// Документация: метод /v4/posting/fbs/list
-async function fetchAwaitingOrders(warehouseId = null, limit = 100, retries = 3) {
+// Получить список заказов FBS со статусом "awaiting_packaging"
+async function fetchAwaitingOrders(warehouseId = null, limit = 100) {
     if (debugMode.isDebugMode()) console.log('[Ozon] Запрос списка заказов...');
     if (MOCK_MODE) {
         console.log('[Ozon MOCK] Возвращаем тестовые заказы');
@@ -91,76 +118,59 @@ async function fetchAwaitingOrders(warehouseId = null, limit = 100, retries = 3)
         return mockOrders;
     }
 
-    let attempt = 0;
-    while (attempt < retries) {
-        try {
-            const since = new Date();
-            since.setDate(since.getDate() - 90);
-            const to = new Date();
+    try {
+        const since = new Date();
+        since.setDate(since.getDate() - 90);
+        const to = new Date();
 
-            let allOrders = [];
-            let lastId = null;
-            let hasMore = true;
+        let allOrders = [];
+        let lastId = null;
+        let hasMore = true;
 
-            while (hasMore) {
-                const filter = {
-                    statuses: ['awaiting_packaging'],
-                    since: since.toISOString(),
-                    to: to.toISOString()
-                };
-
-                if (warehouseId) {
-                    filter.warehouse_id = [warehouseId];
-                }
-
-                const requestBody = {
-                    filter,
-                    limit,
-                    with: {
-                        analytics_data: true
-                    }
-                };
-
-                if (lastId) {
-                    requestBody.last_id = lastId;
-                }
-
-                const response = await apiClient.post('/v4/posting/fbs/list', requestBody);
-                const orders = response.data.postings || [];
-                allOrders = allOrders.concat(orders);
-
-                lastId = response.data.last_id;
-                hasMore = !!lastId && orders.length === limit;
+        while (hasMore) {
+            const filter = {
+                statuses: ['awaiting_packaging'],
+                since: since.toISOString(),
+                to: to.toISOString()
+            };
+            if (warehouseId) {
+                filter.warehouse_id = [warehouseId];
+            }
+            const requestBody = {
+                filter,
+                limit,
+                with: { analytics_data: true }
+            };
+            if (lastId) {
+                requestBody.last_id = lastId;
             }
 
-            if (debugMode.isDebugMode()) console.log(`[Ozon] Успешно получено ${allOrders.length} заказов.`);
-            return allOrders;
-
-        } catch (error) {
-            attempt++;
-            const isRetryable = error.response
-                ? [429, 500, 502, 503, 504].includes(error.response.status)
-                : true;
-
-            if (isRetryable && attempt < retries) {
-                const delay = Math.pow(2, attempt) * 1000; // 2, 4, 8 секунд
-                console.warn(`[Ozon] Ошибка при получении заказов (попытка ${attempt}/${retries}):`,
-                    error.response?.data || error.message);
-                console.log(`[Ozon] Повтор через ${delay} мс...`);
-                await new Promise(resolve => setTimeout(resolve, delay));
-                continue;
-            }
-
-            // Если ошибка не повторяемая или закончились попытки – выбрасываем
-            console.error('[Ozon] Критическая ошибка при получении заказов:', error.response?.data || error.message);
-            throw new Error(`Ошибка Ozon API при получении заказов: ${error.message}`);
+            const response = await requestWithRetry(
+                () => apiClient.post('/v4/posting/fbs/list', requestBody),
+                { context: 'fetchAwaitingOrders' }
+            );
+            const orders = response.data.postings || [];
+            allOrders = allOrders.concat(orders);
+            lastId = response.data.last_id;
+            hasMore = !!lastId && orders.length === limit;
         }
+
+        if (debugMode.isDebugMode()) console.log(`[Ozon] Успешно получено ${allOrders.length} заказов.`);
+        return allOrders;
+    } catch (error) {
+        console.error('[Ozon] Ошибка при получении заказов:', error.message);
+        throw new Error(`Ошибка Ozon API при получении заказов: ${error.message}`);
     }
 }
 
 async function fetchAwaitingOrdersById(orderId) {
-    const allOrders = await fetchAwaitingOrders();
-    return allOrders.find(order => order.posting_number === orderId);
+    try {
+        const allOrders = await fetchAwaitingOrders();
+        return allOrders.find(order => order.posting_number === orderId);
+    } catch (error) {
+        console.error(`[Ozon] Ошибка получения заказа ${orderId}:`, error.message);
+        return null;
+    }
 }
 
 // Получить детали заказа (состав, адрес и т.д.)
@@ -171,13 +181,14 @@ async function getOrderDetails(orderId) {
         return mock || { posting_number: orderId, products: [] };
     }
     try {
-        // Запрашиваем financial_data, но product_id приходит всегда
-        const response = await apiClient.post('/v3/posting/fbs/get', {
-            posting_number: orderId,
-            with: { financial_data: true }
-        });
+        const response = await requestWithRetry(
+            () => apiClient.post('/v3/posting/fbs/get', {
+                posting_number: orderId,
+                with: { financial_data: true }
+            }),
+            { context: `getOrderDetails_${orderId}` }
+        );
         if (debugMode.isDebugMode()) console.log(`[Ozon] Детали заказа ${orderId} получены`);
-        // Дополнительная проверка: есть ли product_id в товарах
         if (response.data.result && response.data.result.products) {
             for (const p of response.data.result.products) {
                 if (!p.product_id && p.product_id !== 0) {
@@ -187,8 +198,7 @@ async function getOrderDetails(orderId) {
         }
         return response.data.result;
     } catch (error) {
-        console.error(`[Ozon] Ошибка получения деталей заказа ${orderId}:`,
-            error.response?.data || error.message);
+        console.error(`[Ozon] Ошибка получения деталей заказа ${orderId}:`, error.message);
         return null;
     }
 }
@@ -197,9 +207,12 @@ async function getOrderDetails(orderId) {
 async function fetchProductsImages(skuList) {
     if (!skuList.length) return {};
     try {
-        const response = await apiClient.post('/v3/product/info/list', {
-            sku: skuList.map(s => String(s))
-        });
+        const response = await requestWithRetry(
+            () => apiClient.post('/v3/product/info/list', {
+                sku: skuList.map(s => String(s))
+            }),
+            { context: 'fetchProductsImages' }
+        );
         if (debugMode.isDebugMode()) {
             console.log('[DEBUG] Полный ответ от /v3/product/info/list:');
             console.log(JSON.stringify(response.data, null, 2));
@@ -221,7 +234,8 @@ async function downloadImage(url) {
     try {
         const response = await axios.get(url, {
             responseType: 'arraybuffer',
-            headers: { 'User-Agent': 'Mozilla/5.0' }
+            headers: { 'User-Agent': 'Mozilla/5.0' },
+            timeout: 15000 // отдельный таймаут для загрузки картинок
         });
         return Buffer.from(response.data, 'binary');
     } catch (err) {
@@ -234,83 +248,102 @@ async function downloadImage(url) {
 async function getProductIdsByOfferIds(offerIds) {
     if (!offerIds.length) return {};
     const uniqueOffers = [...new Set(offerIds)];
-    const response = await apiClient.post('/v3/product/info/list', {
-        offer_id: uniqueOffers
-    });
-    const items = response.data.items || [];
-    const mapping = {};
-    for (const item of items) {
-        if (item.offer_id && item.id) {
-            mapping[item.offer_id] = Number(item.id);
+    try {
+        const response = await requestWithRetry(
+            () => apiClient.post('/v3/product/info/list', { offer_id: uniqueOffers }),
+            { context: 'getProductIdsByOfferIds' }
+        );
+        const items = response.data.items || [];
+        const mapping = {};
+        for (const item of items) {
+            if (item.offer_id && item.id) {
+                mapping[item.offer_id] = Number(item.id);
+            }
         }
+        return mapping;
+    } catch (error) {
+        console.error('Ошибка получения product_id:', error.message);
+        return {};
     }
-    return mapping;
 }
 
 // Получить полную информацию о товарах по их offer_id
 async function getProductsFullInfo(offerIds) {
     if (!offerIds.length) return {};
     const uniqueOffers = [...new Set(offerIds)];
-    const response = await apiClient.post('/v3/product/info/list', {
-        offer_id: uniqueOffers
-    });
-    const items = response.data.items || [];
-    const productInfo = {};
-    for (const item of items) {
-        productInfo[item.offer_id] = {
-            product_id: Number(item.id),
-            offer_id: item.offer_id,
-            sku: item.sku,
-            name: item.name,
-            weight_gram: item.weight ? parseFloat(item.weight) : 0,      // если есть в ответе
-            dimensions: {                                               // если есть в ответе
-                length: item.dimensions?.length || 0,
-                width: item.dimensions?.width || 0,
-                height: item.dimensions?.height || 0
-            }
-        };
+    try {
+        const response = await requestWithRetry(
+            () => apiClient.post('/v3/product/info/list', { offer_id: uniqueOffers }),
+            { context: 'getProductsFullInfo' }
+        );
+        const items = response.data.items || [];
+        const productInfo = {};
+        for (const item of items) {
+            productInfo[item.offer_id] = {
+                product_id: Number(item.id),
+                offer_id: item.offer_id,
+                sku: item.sku,
+                name: item.name,
+                weight_gram: item.weight ? parseFloat(item.weight) : 0,
+                dimensions: {
+                    length: item.dimensions?.length || 0,
+                    width: item.dimensions?.width || 0,
+                    height: item.dimensions?.height || 0
+                }
+            };
+        }
+        return productInfo;
+    } catch (error) {
+        console.error('Ошибка получения полной информации о товарах:', error.message);
+        return {};
     }
-    return productInfo;
 }
 
 // (Альтернативно, можно передавать массив sku)
 async function getProductsFullInfoBySku(skuList) {
     if (!skuList.length) return {};
     const uniqueSkus = [...new Set(skuList)];
-    const response = await apiClient.post('/v3/product/info/list', {
-        sku: uniqueSkus.map(s => String(s))
-    });
-    const items = response.data.items || [];
-    const productInfo = {};
-    for (const item of items) {
-        productInfo[item.sku] = {
-            product_id: Number(item.id),
-            offer_id: item.offer_id,
-            sku: item.sku,
-            name: item.name,
-            weight_gram: item.weight ? parseFloat(item.weight) : 0,
-            dimensions: {
-                length: item.dimensions?.length || 0,
-                width: item.dimensions?.width || 0,
-                height: item.dimensions?.height || 0
-            }
-        };
+    try {
+        const response = await requestWithRetry(
+            () => apiClient.post('/v3/product/info/list', { sku: uniqueSkus.map(s => String(s)) }),
+            { context: 'getProductsFullInfoBySku' }
+        );
+        const items = response.data.items || [];
+        const productInfo = {};
+        for (const item of items) {
+            productInfo[item.sku] = {
+                product_id: Number(item.id),
+                offer_id: item.offer_id,
+                sku: item.sku,
+                name: item.name,
+                weight_gram: item.weight ? parseFloat(item.weight) : 0,
+                dimensions: {
+                    length: item.dimensions?.length || 0,
+                    width: item.dimensions?.width || 0,
+                    height: item.dimensions?.height || 0
+                }
+            };
+        }
+        return productInfo;
+    } catch (error) {
+        console.error('Ошибка получения информации по SKU:', error.message);
+        return {};
     }
-    return productInfo;
 }
 
-// Подтвердить сборку заказа (перевести в awaiting_deliver) (POST /v2/posting/fbs/awaiting-delivery)
+// Подтвердить сборку заказа (перевести в awaiting_deliver)
 async function awaitingDelivery(postingNumber) {
     if (debugMode.isDebugMode()) {
         console.log(`[DEBUG] Эмуляция awaiting-delivery для ${postingNumber}`);
         return { result: true };
     }
     try {
-        const response = await apiClient.post('/v2/posting/fbs/awaiting-delivery', {
-            posting_number: [postingNumber]
-        });
+        const response = await requestWithRetry(
+            () => apiClient.post('/v2/posting/fbs/awaiting-delivery', { posting_number: [postingNumber] }),
+            { context: 'awaitingDelivery' }
+        );
         console.log(`[SHIP] awaiting-delivery ответ:`, response.data);
-        return response.data; // { result: true/false }
+        return response.data;
     } catch (err) {
         console.error('Ошибка awaiting-delivery:', err.message);
         return { result: false };
@@ -331,44 +364,32 @@ async function confirmPostingShip(postingNumber) {
     }
     if (!details.products || !details.products.length) throw new Error('Нет состава заказа');
 
-    // Собираем все offer_id из заказа, чтобы получить полную информацию о товарах
     const offerIds = details.products.map(p => p.offer_id).filter(Boolean);
     const productsInfo = await getProductsFullInfo(offerIds);
     console.log(`[SHIP] Полная информация о товарах:`, productsInfo);
 
-    // Настройка: какой идентификатор использовать
-    const identifierType = process.env.SHIP_IDENTIFIER || 'product_id'; // product_id, offer_id, sku
+    const identifierType = process.env.SHIP_IDENTIFIER || 'product_id';
     console.log(`[SHIP] Используем идентификатор: ${identifierType}`);
 
     let totalWeight = 0;
     let maxLength = 0, maxWidth = 0, maxHeight = 0;
 
     const products = details.products.map(p => {
-        // Ищем информацию по offer_id (или по sku, если offer_id нет)
         let info = productsInfo[p.offer_id];
         if (!info && p.sku) {
-            // fallback: может быть, нужно запросить по sku, но для простоты оставляем
             info = { product_id: null, offer_id: null, sku: p.sku };
         }
         let identifier;
         switch (identifierType) {
-            case 'product_id':
-                identifier = info.product_id;
-                break;
-            case 'offer_id':
-                identifier = info.offer_id;
-                break;
-            case 'sku':
-                identifier = info.sku;
-                break;
-            default:
-                identifier = info.product_id;
+            case 'product_id': identifier = info.product_id; break;
+            case 'offer_id': identifier = info.offer_id; break;
+            case 'sku': identifier = info.sku; break;
+            default: identifier = info.product_id;
         }
         if (!identifier) {
             throw new Error(`Не удалось получить ${identifierType} для товара ${p.name || p.offer_id}`);
         }
 
-        // Используем вес и габариты из полученной информации, если есть
         const weightGram = info.weight_gram || (parseFloat(p.weight_max) * 1000) || parseFloat(p.dimensions?.weight) || 0;
         totalWeight += weightGram * p.quantity;
 
@@ -379,10 +400,7 @@ async function confirmPostingShip(postingNumber) {
         maxWidth = Math.max(maxWidth, width);
         maxHeight = Math.max(maxHeight, height);
 
-        return {
-            product_id: identifier,
-            quantity: p.quantity
-        };
+        return { product_id: identifier, quantity: p.quantity };
     });
 
     if (totalWeight === 0) totalWeight = 100;
@@ -402,37 +420,24 @@ async function confirmPostingShip(postingNumber) {
 
     console.log(`[SHIP] packages с упаковкой:`, JSON.stringify(packages, null, 2));
 
-    const response = await apiClient.post('/v4/posting/fbs/ship', {
-        packages,
-        posting_number: postingNumber,
-        with: { additional_data: true }
-    });
-    console.log(`[SHIP] Ответ:`, JSON.stringify(response.data, null, 2));
-    return response.data;
+    try {
+        const response = await requestWithRetry(
+            () => apiClient.post('/v4/posting/fbs/ship', {
+                packages,
+                posting_number: postingNumber,
+                with: { additional_data: true }
+            }),
+            { context: 'confirmPostingShip' }
+        );
+        console.log(`[SHIP] Ответ:`, JSON.stringify(response.data, null, 2));
+        return response.data;
+    } catch (error) {
+        console.error(`[SHIP] Ошибка подтверждения сборки:`, error.message);
+        throw error;
+    }
 }
 
-// Получить PDF этикетку (POST /v2/posting/fbs/package-label)
-// async function getPackageLabel(postingNumber) {
-//     if (debugMode.isDebugMode()) {
-//         console.log(`[DEBUG] Эмуляция получения этикетки для ${postingNumber}`);
-//         return Buffer.from('%PDF-1.4\n%EOF', 'binary');
-//     }
-
-//     try {
-//         const response = await apiClient.post('/v2/posting/fbs/package-label', {
-//             posting_number: [postingNumber]
-//         });
-//         if (response.data.file_content && response.data.content_type === 'application/pdf') {
-//             return Buffer.from(response.data.file_content, 'base64');
-//         }
-//         return null;
-//     } catch (err) {
-//         console.error('Ошибка этикетки:', err.response?.data || err.message);
-//         return null;
-//     }
-// }
-
-// Получить PDF этикетку (POST /v2/posting/fbs/act/get-pdf)
+// Получить PDF этикетку
 async function getPackageLabel(postingNumber, actId = null) {
     if (debugMode.isDebugMode()) {
         console.log(`[DEBUG] Эмуляция получения этикетки для ${postingNumber || actId}`);
@@ -440,16 +445,21 @@ async function getPackageLabel(postingNumber, actId = null) {
     }
     try {
         if (actId) {
-            const response = await apiClient.get('/v2/posting/fbs/act/get-pdf', {
-                params: { id: actId },
-                responseType: 'arraybuffer'
-            });
+            const response = await requestWithRetry(
+                () => apiClient.get('/v2/posting/fbs/act/get-pdf', {
+                    params: { id: actId },
+                    responseType: 'arraybuffer'
+                }),
+                { context: 'getPackageLabel_act' }
+            );
             return Buffer.from(response.data);
         } else if (postingNumber) {
-            const response = await apiClient.post('/v2/posting/fbs/package-label', {
-                posting_number: [postingNumber]
-            }, { responseType: 'arraybuffer' });
-            // Проверяем, что это PDF
+            const response = await requestWithRetry(
+                () => apiClient.post('/v2/posting/fbs/package-label', {
+                    posting_number: [postingNumber]
+                }, { responseType: 'arraybuffer' }),
+                { context: 'getPackageLabel_label' }
+            );
             const pdfHeader = Buffer.from('%PDF');
             if (response.data.slice(0, 4).compare(pdfHeader) === 0) {
                 return response.data;
@@ -460,7 +470,7 @@ async function getPackageLabel(postingNumber, actId = null) {
         }
         return null;
     } catch (err) {
-        console.error('[LABEL] Ошибка:', err.response?.data || err.message);
+        console.error('[LABEL] Ошибка:', err.message);
         return null;
     }
 }
@@ -478,6 +488,14 @@ async function getOrderTotalAmount(orderId) {
 }
 
 module.exports = {
-    fetchAwaitingOrders, fetchAwaitingOrdersById, getOrderDetails, fetchWarehousesFromOzon, fetchProductsImages, downloadImage, confirmPostingShip,
-    awaitingDelivery, getPackageLabel, getOrderTotalAmount
+    fetchAwaitingOrders,
+    fetchAwaitingOrdersById,
+    getOrderDetails,
+    fetchWarehousesFromOzon,
+    fetchProductsImages,
+    downloadImage,
+    confirmPostingShip,
+    awaitingDelivery,
+    getPackageLabel,
+    getOrderTotalAmount
 };

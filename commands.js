@@ -1332,9 +1332,9 @@ module.exports = function registerCommands(
     }
     const employees = await db.getAllEmployeesWithStats();
     if (!employees.length) return bot.sendMessage(msg.chat.id, 'Нет сотрудников.');
-    let reply = 'Статус сотрудников:\n';
+    let reply = '👷 Статус сотрудников:\n\n';
     for (const emp of employees) {
-      reply += `• ${emp.name} (ID сотрудника: ${emp.id}) — активных заказов: ${emp.active_count}, принтеры: ${emp.capacity}\n`;
+      reply += `• ${emp.name} — ID сотрудника: ${emp.id}\nАктивных Заказов: ${emp.active_count}\nВсего 3D-принтеров: ${emp.capacity}\n\n`;
     }
     await bot.sendMessage(msg.chat.id, reply);
   });

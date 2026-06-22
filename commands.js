@@ -1048,13 +1048,14 @@ module.exports = function registerCommands(
       adminMessage += `/pause — приостановить авто-проверку очереди заказов\n`;
       adminMessage += `/resume — возобновить авто-проверку очереди заказов\n\n`;
 
-      adminMessage += `/download_team_info — скачать файл сотрудников team-info.xlsx\n`;
-      adminMessage += `/download_product_stats — скачать файл статистики продуктов product-stats.xlsx\n\n`;
+      adminMessage += `/download_team_info — скачать файл сотрудников "team-info.xlsx"\n`;
+      adminMessage += `/download_product_stats — скачать файл статистики продуктов "product-stats.xlsx"\n`;
+      adminMessage += `/download_db — скачать файл базы данных "bot.db"\n\n`;
 
-      adminMessage += `/backup_db — создать бэкап базы данных (бот.db)\n\n`;
+      adminMessage += `/backup_db — создать бэкап базы данных "bot.db"\n\n`;
 
-      adminMessage += `/upload_employees — загрузить новый файл team-info.xlsx с сотрудниками (автоматически синхронизирует БД)\n`;
-      adminMessage += `/upload_materials — загрузить новый файл materials.json с ценами материалов\n\n`;
+      adminMessage += `/upload_employees — загрузить новый файл "team-info.xlsx" с сотрудниками (автоматически синхронизирует БД)\n`;
+      adminMessage += `/upload_materials — загрузить новый файл "materials.json" с ценами материалов\n\n`;
 
       adminMessage += `/full_reset_and_sync — сброс всех данных (сотрудники, склады, назначения, статистика), кроме 3D-моделей и синхронизация складов/сотрудников\n\n`;
 
@@ -2057,6 +2058,15 @@ module.exports = function registerCommands(
     await bot.sendDocument(msg.chat.id, filePath, { caption: '📊 Актуальная статистика по артикулам.' });
   });
 
+  // --- "/download_db" Команда для администратора: скачать файл bot.db ---
+  bot.onText(/\/download_db/, async (msg) => {
+    const userId = msg.from.id.toString();
+    if (!isAdmin(userId)) return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
+    const filePath = path.join(__dirname, 'exports', 'bot.db');
+    if (!fs.existsSync(filePath)) return bot.sendMessage(msg.chat.id, '❌ Файл базы данных bot.db не найден.');
+    await bot.sendDocument(msg.chat.id, filePath, { caption: '🗃️ Актуальный файл базы данных.' });
+  });
+
   // --- "/backup_db" Команда для администратора: создание бэкапа базы данных ---
   bot.onText(/\/backup_db/, async (msg) => {
     const userId = msg.from.id.toString();
@@ -2355,13 +2365,14 @@ module.exports = function registerCommands(
       helpText += `/pause — приостановить авто-проверку очереди заказов\n`;
       helpText += `/resume — возобновить авто-проверку очереди заказов\n\n`;
 
-      helpText += `/download_team_info — скачать файл сотрудников team-info.xlsx\n`;
-      helpText += `/download_product_stats — скачать файл статистики продуктов product-stats.xlsx\n\n`;
+      helpText += `/download_team_info — скачать файл сотрудников "team-info.xlsx"\n`;
+      helpText += `/download_product_stats — скачать файл статистики продуктов "product-stats.xlsx"\n`;
+      helpText += `/download_db — скачать файл базы данных "bot.db"\n\n`;
 
-      helpText += `/backup_db — создать бэкап базы данных (бот.db)\n\n`;
+      helpText += `/backup_db — создать бэкап базы данных "бот.db"\n\n`;
 
-      helpText += `/upload_employees — загрузить новый файл team-info.xlsx с сотрудниками (автоматически синхронизирует БД)\n`;
-      helpText += `/upload_materials — загрузить новый файл materials.json с ценами материалов\n\n`;
+      helpText += `/upload_employees — загрузить новый файл "team-info.xlsx" с сотрудниками (автоматически синхронизирует БД)\n`;
+      helpText += `/upload_materials — загрузить новый файл "materials.json" с ценами материалов\n\n`;
 
       helpText += `/full_reset_and_sync — сброс всех данных (сотрудники, склады, назначения, статистика), кроме 3D-моделей и синхронизация складов/сотрудников\n\n`;
 

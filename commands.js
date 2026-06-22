@@ -682,8 +682,11 @@ module.exports = function registerCommands(
       for (const [key, state] of pendingForms) {
         const userId = key.split('_')[0];
         for (const offerId of Object.keys(state.offers)) {
+          try { await bot.deleteMessage(userId, state.offers[offerId].messageId); } catch (e) { }
           try {
-            await bot.deleteMessage(userId, state.offers[offerId].messageId);
+            if (state.offers[offerId].stepMessageId) {
+              await bot.deleteMessage(userId, state.offers[offerId].stepMessageId);
+            }
           } catch (e) { }
         }
       }
@@ -788,8 +791,11 @@ module.exports = function registerCommands(
         for (const [key, state] of pendingForms) {
           const userId = key.split('_')[0];
           for (const offerId of Object.keys(state.offers)) {
+            try { await bot.deleteMessage(userId, state.offers[offerId].messageId); } catch (e) { }
             try {
-              await bot.deleteMessage(userId, state.offers[offerId].messageId);
+              if (state.offers[offerId].stepMessageId) {
+                await bot.deleteMessage(userId, state.offers[offerId].stepMessageId);
+              }
             } catch (e) { }
           }
         }
@@ -1966,8 +1972,11 @@ module.exports = function registerCommands(
       for (const [key, state] of pendingForms) {
         const userId = key.split('_')[0];
         for (const offerId of Object.keys(state.offers)) {
+          try { await bot.deleteMessage(userId, state.offers[offerId].messageId); } catch (e) { }
           try {
-            await bot.deleteMessage(userId, state.offers[offerId].messageId);
+            if (state.offers[offerId].stepMessageId) {
+              await bot.deleteMessage(userId, state.offers[offerId].stepMessageId);
+            }
           } catch (e) { }
         }
       }
@@ -2391,7 +2400,7 @@ module.exports = function registerCommands(
           const firstIncomplete = Object.values(state.offers).find(o => o.status !== 'completed');
           if (firstIncomplete) {
             const offerId = Object.keys(state.offers).find(key => state.offers[key] === firstIncomplete);
-            button = { text: `📝 Заполнить статистику для ${orderId} (${offerId})`, callback_data: `fill_stats_${orderId}_${offerId}` };
+            button = { text: `📝 Заполнить статистику ${orderId} (${offerId})`, callback_data: `fill_stats_${orderId}_${offerId}` };
           } else {
             // Баг – исправляем
             state.allCompleted = true;
@@ -2437,7 +2446,7 @@ module.exports = function registerCommands(
               allCompleted: false
             });
             const firstOffer = missingStats[0];
-            button = { text: `📝 Заполнить статистику для ${orderId} (${offerId})`, callback_data: `fill_stats_${orderId}_${offerId}` };
+            button = { text: `📝 Заполнить статистику ${orderId} (${firstOffer})`, callback_data: `fill_stats_${orderId}_${firstOffer}` };
           }
         } else {
           statusText = '⚠️ Не удалось проверить статистику';

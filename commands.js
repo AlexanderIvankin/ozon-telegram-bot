@@ -96,15 +96,19 @@ module.exports = function registerCommands(
       }
       const materialPrice = materialsData.materials[stats.material] || 0;
       const weight = stats.weight_grams || 0;
-      let earnings = materialPrice * weight;
-      if (earnings < MIN_EARNINGS) earnings = MIN_EARNINGS;
-      totalEarnings += earnings;
+      let earningsPerUnit = materialPrice * weight;
+      if (earningsPerUnit < MIN_EARNINGS) earningsPerUnit = MIN_EARNINGS;
+      const quantity = product.quantity || 1;
+      const totalForProduct = earningsPerUnit * quantity;
+      totalEarnings += totalForProduct;
       earningsDetails.push({
         offerId,
         productName: product.name,
         material: stats.material,
         weight,
-        earnings
+        quantity,
+        earningsPerUnit,
+        totalForProduct
       });
     }
 
@@ -930,7 +934,8 @@ module.exports = function registerCommands(
             let msg = `💰 *Заработок за заказ ${postingNumber}*\n\n`;
             for (const item of earnings.details) {
               msg += `• ${item.productName} (${item.offerId})\n`;
-              msg += `  Материал: ${item.material}, Вес: ${item.weight} г, Заработок: ${item.earnings.toFixed(2)} руб.\n`;
+              msg += `  Материал: ${item.material}, Вес: ${item.weight} г/шт, Кол-во: ${item.quantity} шт\n`;
+              msg += `  Заработок за единицу: ${item.earningsPerUnit.toFixed(2)} руб., Итого: ${item.totalForProduct.toFixed(2)} руб.\n`;
             }
             msg += `\n*Итого: ${earnings.total.toFixed(2)} руб.*`;
             // Отправляем сотруднику

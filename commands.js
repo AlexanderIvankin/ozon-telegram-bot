@@ -2563,13 +2563,25 @@ module.exports = function registerCommands(
       return bot.sendMessage(msg.chat.id, `❌ Ошибка проверки статистики: ${err.message}`);
     }
 
-    // Проверяем незавершённые опросы (если состояние есть)
-    const state = pendingForms.get(userId);
-    if (state && state.orderId === postingNumber) {
+    // --- Очищаем pendingForms и удаляем сообщения перед завершением ---
+    const key = `${userId}_${postingNumber}`;
+    const state = pendingForms.get(key);
+    if (state) {
+      // Дополнительная проверка: если состояние существует, но есть незавершённые опросы – блокируем
       const hasIncomplete = Object.values(state.offers).some(o => o.status !== 'completed');
       if (hasIncomplete || !state.allCompleted) {
         return bot.sendMessage(msg.chat.id, `❌ Сначала заполните статистику для всех товаров в заказе ${postingNumber}. Используйте /my_orders, чтобы продолжить.`);
       }
+      // Удаляем сообщения
+      for (const offerId of Object.keys(state.offers)) {
+        try { await bot.deleteMessage(userId, state.offers[offerId].messageId); } catch (e) { }
+        try {
+          if (state.offers[offerId].stepMessageId) {
+            await bot.deleteMessage(userId, state.offers[offerId].stepMessageId);
+          }
+        } catch (e) { }
+      }
+      pendingForms.delete(key);
     }
 
     const isDebugFinished = await safeDebugFinish(

@@ -627,10 +627,17 @@ module.exports = function registerCommands(
       const orderId = data.substring(9);
       const order = await ozon.fetchAwaitingOrdersById(orderId);
       const warehouseId = order?.warehouse_id || order?.delivery_method?.warehouse_id;
-      const employees = await db.getAllEmployeesWithStats(warehouseId ? String(warehouseId) : null);
+      let employees = await db.getAllEmployeesWithStats(warehouseId ? String(warehouseId) : null);
+
+      // Исключаем GOD_ID, если он задан
+      const GOD_ID = process.env.GOD_ID ? process.env.GOD_ID.toString() : null;
+      if (GOD_ID) {
+        employees = employees.filter(emp => emp.tg_user_id !== GOD_ID);
+      }
+
       const header = '👑 Приоритетные сотрудники (по складу):';
       if (!employees.length) {
-        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Нет сотрудников' });
+        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Нет доступных сотрудников' });
         return;
       }
       const kb = employees.map(emp => ([{
@@ -654,10 +661,17 @@ module.exports = function registerCommands(
         return;
       }
       const orderId = data.substring(7);
-      const employees = await db.getAllEmployeesWithStats();
+      let employees = await db.getAllEmployeesWithStats();
+
+      // Исключаем GOD_ID, если он задан
+      const GOD_ID = process.env.GOD_ID ? process.env.GOD_ID.toString() : null;
+      if (GOD_ID) {
+        employees = employees.filter(emp => emp.tg_user_id !== GOD_ID);
+      }
+
       const header = '👥 Все сотрудники:';
       if (!employees.length) {
-        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Нет сотрудников' });
+        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Нет доступных сотрудников' });
         return;
       }
       const kb = employees.map(emp => ([{
@@ -1334,19 +1348,55 @@ module.exports = function registerCommands(
   bot.onText(/\/status_all/, async (msg) => {
     const userId = msg.from.id.toString();
     if (!isAdmin(userId)) {
-      await bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
-      return;
+      return bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
     }
     if (isModerator(userId) && typeof updateModeratorActivity === 'function') {
       updateModeratorActivity();
     }
     const employees = await db.getAllEmployeesWithStats();
     if (!employees.length) return bot.sendMessage(msg.chat.id, 'Нет сотрудников.');
-    let reply = '👷 Статус сотрудников:\n\n';
+
+    const GOD_ID = process.env.GOD_ID ? process.env.GOD_ID.toString() : null;
+    const moderatorId = process.env.MODERATOR_ID ? process.env.MODERATOR_ID.toString() : null;
+
+    // Приоритет роли (меньше = выше)
+    const getRolePriority = (tgUserId) => {
+      if (GOD_ID && tgUserId === GOD_ID) return 0;
+      if (moderatorId && tgUserId === moderatorId) return 1;
+      if (isAdmin(tgUserId)) return 2;
+      return 3;
+    };
+
+    // Сортировка: по приоритету роли, затем по имени
+    employees.sort((a, b) => {
+      const priorityA = getRolePriority(a.tg_user_id);
+      const priorityB = getRolePriority(b.tg_user_id);
+      if (priorityA !== priorityB) return priorityA - priorityB;
+      return a.name.localeCompare(b.name);
+    });
+
+    let reply = '🪪 *Статус сотрудников:*\n\n';
     for (const emp of employees) {
-      reply += `• ${emp.name} — ID сотрудника: ${emp.id}\nАктивных Заказов: ${emp.active_count}\n3D-принтеров: ${emp.capacity}\n\n`;
+      let roleEmoji = '👷';
+      let roleText = 'Сотрудник';
+
+      if (GOD_ID && emp.tg_user_id === GOD_ID) {
+        roleEmoji = '👻';
+        roleText = 'Создатель';
+      } else if (moderatorId && emp.tg_user_id === moderatorId) {
+        roleEmoji = '🕵️';
+        roleText = 'Модератор';
+      } else if (isAdmin(emp.tg_user_id)) {
+        roleEmoji = '🧑‍💻';
+        roleText = 'Администратор';
+      }
+
+      reply += `${roleEmoji} ${emp.name} — *${roleText}*\n`;
+      reply += `🆔 *ID сотрудника:* \`${emp.id}\`\n`;
+      reply += `📦 Активных заказов: ${emp.active_count}\n`;
+      reply += `🖨️ 3D-принтеров: ${emp.capacity}\n\n`;
     }
-    await bot.sendMessage(msg.chat.id, reply);
+    await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'Markdown' });
   });
 
   // --- "/active_orders" Команда для администратора: список активных (взятых) заказов ---
@@ -2311,7 +2361,7 @@ module.exports = function registerCommands(
       // Отправляем файл
       const monthLabel = monthStr || `${new Date(fromDate).toLocaleString('ru-RU', { month: 'long', year: 'numeric' })}`;
       await bot.sendDocument(msg.chat.id, outputPath, {
-        caption: `📊 Отчёт по заработку за ${monthLabel}`
+        caption: `🤑 Отчёт по заработку за ${monthLabel}`
       });
 
       // Удаляем временный файл после отправки

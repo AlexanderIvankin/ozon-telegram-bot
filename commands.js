@@ -41,29 +41,6 @@ function loadMaterials() {
 }
 loadMaterials();
 
-// Вспомогательная функция безопасного удаления сообщения
-async function safeDeleteMessage(chatId, messageId) {
-  if (!chatId || !messageId) return;
-  try {
-    await bot.deleteMessage(chatId, messageId);
-  } catch (e) {
-    // Игнорируем ошибки (сообщение могло быть уже удалено)
-  }
-}
-
-// Деактивирует клавиатуру у сообщения (убирает кнопки)
-async function disableKeyboard(chatId, messageId) {
-  if (!chatId || !messageId) return;
-  try {
-    await bot.editMessageReplyMarkup(
-      { chat_id: chatId, message_id: messageId },
-      { reply_markup: { inline_keyboard: [] } }
-    );
-  } catch (e) {
-    // Игнорируем ошибки
-  }
-}
-
 module.exports = function registerCommands(
   bot, db, ozon, bwipjs, scheduler, debugMode,
   isAuthorizedUser, isModerator, isAdmin,
@@ -72,6 +49,29 @@ module.exports = function registerCommands(
   deleteLastOrderMessages, updateModeratorActivity,
   startInactivityTimer, stopInactivityTimer
 ) {
+
+  // Вспомогательная функция безопасного удаления сообщения
+  async function safeDeleteMessage(chatId, messageId) {
+    if (!chatId || !messageId) return;
+    try {
+      await bot.deleteMessage(chatId, messageId);
+    } catch (e) {
+      // Игнорируем ошибки (сообщение могло быть уже удалено)
+    }
+  }
+
+  // Деактивирует клавиатуру у сообщения (убирает кнопки)
+  async function disableKeyboard(chatId, messageId) {
+    if (!chatId || !messageId) return;
+    try {
+      await bot.editMessageReplyMarkup(
+        { chat_id: chatId, message_id: messageId },
+        { reply_markup: { inline_keyboard: [] } }
+      );
+    } catch (e) {
+      // Игнорируем ошибки
+    }
+  }
 
   async function exportProductStats() {
     const maxRetries = 3;

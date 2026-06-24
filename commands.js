@@ -9,6 +9,7 @@ let pendingEmployeeUpload = new Map(); // userId -> { step: 'waiting_file' }
 let pendingMaterialsUpload = new Map(); // userId -> { step: 'waiting_file' }
 let pendingUploadModel = new Map(); // userId -> { step: 'waiting_file' }
 let pendingForms = new Map(); // key: userId_orderId, value: { orderId, offers, allCompleted }
+let pendingStatsFill = new Map(); // userId -> { offerId, step, data: { material, color, weight } }
 let materialsData = null;
 
 const MIN_EARNINGS = 250; // минимальный заработок за заказ
@@ -876,9 +877,27 @@ module.exports = function registerCommands(
       }
       return;
     }
+
+    // Отмена полного сброса статистики
     if (data === 'cancel_full_reset_sync') {
       await bot.deleteMessage(msg.chat.id, msg.message_id);
       await bot.answerCallbackQuery(callbackQuery.id, { text: 'Отменено' });
+      return;
+    }
+
+    // Отмена заполнения статистики
+    if (data === 'cancel_stats_fill') {
+      const userId = callbackQuery.from.id.toString();
+      if (pendingStatsFill.has(userId)) {
+        pendingStatsFill.delete(userId);
+        await bot.editMessageText('❌ Процесс заполнения статистики отменён.', {
+          chat_id: msg.chat.id,
+          message_id: msg.message_id
+        });
+        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Отменено' });
+      } else {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Нет активного процесса' });
+      }
       return;
     }
   });
@@ -1248,6 +1267,9 @@ module.exports = function registerCommands(
       adminMessage += `/employee_stats <id_сотрудника> — статистика сотрудника (заказы, сумма)\n`;
       adminMessage += `/employee_orders <id_сотрудника> — показать активные заказы сотрудника\n\n`;
 
+      adminMessage += `/admin_fill_stats <offer_id> — заполнить/обновить статистику товара (материал, цвет, вес)\n`;
+      adminMessage += `/clear_product_stats <offer_id> — удалить статистику для продукта\n\n`;
+
       adminMessage += `/export_earnings [YYYY-MM] — экспорт заработка всех сотрудников за месяц (по умолчанию текущий)\n\n`;
 
       adminMessage += `/send_label <номер_заказа> [id_сотрудника] — отправить PDF‑этикетку заказа сотруднику (если ID не указан – себе)\n\n`;
@@ -1257,8 +1279,6 @@ module.exports = function registerCommands(
       adminMessage += `/admin_cancel_order <номер_заказа> — снять заказ с сотрудника\n\n`;
 
       adminMessage += `/clear_assignments — сброс ВСЕХ назначений на заказы\n\n`;
-
-      adminMessage += `/clear_product_stats <offer_id> — удалить статистику для продукта\n\n`;
 
       adminMessage += `📁 3D-модели:
 
@@ -2377,6 +2397,38 @@ module.exports = function registerCommands(
     }
   });
 
+  // --- "/admin_fill_stats" Команда для администратора: заполнить/обновить статистику товара (3 шага) ---
+  bot.onText(/\/admin_fill_stats (\S+)/, async (msg, match) => {
+    const userId = msg.from.id.toString();
+    if (!isAdmin(userId)) {
+      return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
+    }
+
+    const offerId = match[1].trim();
+    if (pendingStatsFill.has(userId)) {
+      return bot.sendMessage(msg.chat.id, '⚠️ У вас уже активен процесс заполнения. Завершите его или отмените.');
+    }
+
+    pendingStatsFill.set(userId, {
+      offerId,
+      step: 1,
+      data: {}
+    });
+
+    const cancelKeyboard = {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '❌ Отмена заполнения', callback_data: 'cancel_stats_fill' }]
+        ]
+      }
+    };
+
+    await bot.sendMessage(msg.chat.id,
+      `📝 *Шаг 1 из 3:* Введите *материал* для offer_id \`${offerId}\`.\n\n_Можно отменить процесс в любой момент кнопкой ниже._`,
+      { parse_mode: 'Markdown', ...cancelKeyboard }
+    );
+  });
+
   // --- "/clear_product_stats" Команда для администратора: очистка статистики заказа ---
   bot.onText(/\/clear_product_stats (\S+)/, async (msg, match) => {
     const userId = msg.from.id.toString();
@@ -2861,6 +2913,9 @@ module.exports = function registerCommands(
       helpText += `/employee_stats <id_сотрудника> — статистика сотрудника (заказы, сумма)\n`;
       helpText += `/employee_orders <id_сотрудника> — активные заказы сотрудника\n\n`;
 
+      helpText += `/admin_fill_stats <offer_id> — заполнить/обновить статистику товара (материал, цвет, вес)\n`;
+      helpText += `/clear_product_stats <offer_id> — удалить статистику для продукта\n\n`;
+
       helpText += `/export_earnings [YYYY-MM] — экспорт заработка всех сотрудников за месяц (по умолчанию текущий)\n\n`;
 
       helpText += `/send_label <номер_заказа> [id_сотрудника] — отправить PDF‑этикетку заказа сотруднику (если ID не указан – себе)\n\n`;
@@ -2870,8 +2925,6 @@ module.exports = function registerCommands(
       helpText += `/admin_cancel_order <номер_заказа> — снять заказ с сотрудника\n\n`;
 
       helpText += `/clear_assignments — сброс ВСЕХ назначений на заказы\n\n`;
-
-      helpText += `/clear_product_stats <offer_id> — удалить статистику для продукта\n\n`;
 
       helpText += `📁 3D-модели:
 
@@ -3039,6 +3092,71 @@ module.exports = function registerCommands(
           // Можно предложить заполнить следующий, но лучше через /my_orders
           await bot.sendMessage(userId, `Остались товары без статистики. Используйте /my_orders, чтобы продолжить.`);
         }
+      }
+      return;
+    }
+
+    // --- Администраторское заполнение статистики (через /admin_fill_stats) ---
+    const adminState = pendingStatsFill.get(userId);
+    if (adminState) {
+      const value = text.trim();
+      if (!value) {
+        await bot.sendMessage(userId, '❌ Введите непустое значение.');
+        return;
+      }
+
+      const step = adminState.step;
+      // Сохраняем введённое значение
+      if (step === 1) adminState.data.material = value;
+      else if (step === 2) adminState.data.color = value;
+      else if (step === 3) {
+        const weight = parseFloat(value.replace(',', '.'));
+        if (isNaN(weight) || weight <= 0) {
+          await bot.sendMessage(userId, '❌ Введите корректное положительное число для веса (например, 12.5)');
+          return;
+        }
+        adminState.data.weight = weight;
+      }
+
+      adminState.step++;
+
+      if (adminState.step <= 3) {
+        // Переход к следующему шагу
+        const fieldName = adminState.step === 2 ? 'цвет' : 'вес (в граммах)';
+        const cancelKeyboard = {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '❌ Отмена заполнения', callback_data: 'cancel_stats_fill' }]
+            ]
+          }
+        };
+        await bot.sendMessage(userId,
+          `📝 *Шаг ${adminState.step} из 3:* Введите *${fieldName}* для offer_id \`${adminState.offerId}\`.`,
+          { parse_mode: 'Markdown', ...cancelKeyboard }
+        );
+      } else {
+        // Все шаги завершены – сохраняем в БД
+        try {
+          const employee = await db.getEmployee(userId);
+          await db.upsertProductStats(
+            adminState.offerId,
+            adminState.data.material,
+            adminState.data.color,
+            adminState.data.weight,
+            employee ? employee.id : null
+          );
+          // Экспорт в файл (обновляем статистику)
+          await exportProductStats();
+          await bot.sendMessage(userId,
+            `✅ Статистика для offer_id \`${adminState.offerId}\` успешно сохранена/обновлена.\n` +
+            `Материал: ${adminState.data.material}\nЦвет: ${adminState.data.color}\nВес: ${adminState.data.weight} г`
+          );
+        } catch (err) {
+          console.error('[ADMIN_FILL_STATS] Ошибка сохранения:', err);
+          await bot.sendMessage(userId, `❌ Ошибка сохранения: ${err.message}`);
+        }
+        // Удаляем состояние
+        pendingStatsFill.delete(userId);
       }
       return;
     }

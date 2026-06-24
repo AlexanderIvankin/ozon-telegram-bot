@@ -4,12 +4,15 @@ const XLSX = require('xlsx');
 const axios = require('axios');
 const { syncEmployeesFromExcel } = require('./syncEmployees');
 
+// Локальные хранилища для состояний
 let pendingFinishConfirmations = new Map(); // key: orderId, value: { originalChatId, originalMessageId }
 let pendingEmployeeUpload = new Map(); // userId -> { step: 'waiting_file' }
 let pendingMaterialsUpload = new Map(); // userId -> { step: 'waiting_file' }
 let pendingUploadModel = new Map(); // userId -> { step: 'waiting_file' }
 let pendingForms = new Map(); // key: userId_orderId, value: { orderId, offers, allCompleted }
 let pendingStatsFill = new Map(); // userId -> { offerId, step, data: { material, color, weight } }
+let pendingModelAdd = new Map();    // для /add_model
+let pendingFileId = new Map();      // для /get_file_id
 let materialsData = null;
 
 const MIN_EARNINGS = 250; // минимальный заработок за заказ
@@ -37,6 +40,29 @@ function loadMaterials() {
   }
 }
 loadMaterials();
+
+// Вспомогательная функция безопасного удаления сообщения
+async function safeDeleteMessage(chatId, messageId) {
+  if (!chatId || !messageId) return;
+  try {
+    await bot.deleteMessage(chatId, messageId);
+  } catch (e) {
+    // Игнорируем ошибки (сообщение могло быть уже удалено)
+  }
+}
+
+// Деактивирует клавиатуру у сообщения (убирает кнопки)
+async function disableKeyboard(chatId, messageId) {
+  if (!chatId || !messageId) return;
+  try {
+    await bot.editMessageReplyMarkup(
+      { chat_id: chatId, message_id: messageId },
+      { reply_markup: { inline_keyboard: [] } }
+    );
+  } catch (e) {
+    // Игнорируем ошибки
+  }
+}
 
 module.exports = function registerCommands(
   bot, db, ozon, bwipjs, scheduler, debugMode,
@@ -118,6 +144,15 @@ module.exports = function registerCommands(
 
   // --- Вспомогательные функции для административного заполнения статистики (без Markdown) ---
   async function askAdminMaterial(userId, offerId) {
+    const state = pendingStatsFill.get(userId);
+    if (state) {
+      // Удаляем предыдущее сообщение
+      if (state.lastMessageId) {
+        try { await bot.deleteMessage(userId, state.lastMessageId); } catch (e) { }
+        state.lastMessageId = null;
+      }
+    }
+
     const materialNames = Object.keys(materialsData.materials);
     const keyboard = [];
     for (let i = 0; i < materialNames.length; i += 2) {
@@ -130,13 +165,22 @@ module.exports = function registerCommands(
     }
     keyboard.push([{ text: '❌ Отмена заполнения', callback_data: 'admin_cancel_stats' }]);
 
-    await bot.sendMessage(userId,
-      `📝 Выберите материал для артикула ${offerId}:`,
+    const sentMsg = await bot.sendMessage(userId,
+      `🪵 Выберите материал для артикула ${offerId}:`,
       { reply_markup: { inline_keyboard: keyboard } }
     );
+    if (state) state.lastMessageId = sentMsg.message_id;
   }
 
   async function askAdminColor(userId, offerId) {
+    const state = pendingStatsFill.get(userId);
+    if (state) {
+      if (state.lastMessageId) {
+        try { await bot.deleteMessage(userId, state.lastMessageId); } catch (e) { }
+        state.lastMessageId = null;
+      }
+    }
+
     const colors = materialsData.colors;
     const keyboard = [];
     for (let i = 0; i < colors.length; i += 2) {
@@ -149,22 +193,32 @@ module.exports = function registerCommands(
     }
     keyboard.push([{ text: '❌ Отмена заполнения', callback_data: 'admin_cancel_stats' }]);
 
-    await bot.sendMessage(userId,
+    const sentMsg = await bot.sendMessage(userId,
       `🎨 Выберите цвет для артикула ${offerId}:`,
       { reply_markup: { inline_keyboard: keyboard } }
     );
+    if (state) state.lastMessageId = sentMsg.message_id;
   }
 
   async function askAdminWeight(userId, offerId) {
+    const state = pendingStatsFill.get(userId);
+    if (state) {
+      if (state.lastMessageId) {
+        try { await bot.deleteMessage(userId, state.lastMessageId); } catch (e) { }
+        state.lastMessageId = null;
+      }
+    }
+
     const keyboard = {
       inline_keyboard: [
         [{ text: '❌ Отмена заполнения', callback_data: 'admin_cancel_stats' }]
       ]
     };
-    await bot.sendMessage(userId,
+    const sentMsg = await bot.sendMessage(userId,
       `⚖️ Введите вес в граммах (только число) для артикула ${offerId}:`,
       { reply_markup: keyboard }
     );
+    if (state) state.lastMessageId = sentMsg.message_id;
   }
 
   async function askMaterial(employeeId, offerId, orderId) {
@@ -172,6 +226,11 @@ module.exports = function registerCommands(
     const key = `${employeeId}_${orderId}`;
     const state = pendingForms.get(key);
     if (state && state.offers[offerId]) {
+      // Деактивируем кнопку у исходного сообщения
+      if (state.offers[offerId].messageId) {
+        await disableKeyboard(employeeId, state.offers[offerId].messageId);
+      }
+      // Удаляем предыдущее сообщение шага
       const prevMsgId = state.offers[offerId].stepMessageId;
       if (prevMsgId) {
         try { await bot.deleteMessage(employeeId, prevMsgId); } catch (e) { }
@@ -191,7 +250,7 @@ module.exports = function registerCommands(
     }
     keyboard.push([{ text: '🔄 Сбросить', callback_data: `reset_stats_${orderId}_${offerId}` }]);
 
-    const sentMsg = await bot.sendMessage(employeeId, `Выберите материал для товара ${offerId}:`, {
+    const sentMsg = await bot.sendMessage(employeeId, `🪵 Выберите материал для товара ${offerId}:`, {
       reply_markup: { inline_keyboard: keyboard }
     });
 
@@ -205,6 +264,7 @@ module.exports = function registerCommands(
     const key = `${employeeId}_${orderId}`;
     const state = pendingForms.get(key);
     if (state && state.offers[offerId]) {
+      // Удаляем предыдущее сообщение шага
       const prevMsgId = state.offers[offerId].stepMessageId;
       if (prevMsgId) {
         try { await bot.deleteMessage(employeeId, prevMsgId); } catch (e) { }
@@ -224,7 +284,7 @@ module.exports = function registerCommands(
     }
     keyboard.push([{ text: '🔄 Сбросить', callback_data: `reset_stats_${orderId}_${offerId}` }]);
 
-    const sentMsg = await bot.sendMessage(employeeId, `Выберите цвет пластика для товара ${offerId}:`, {
+    const sentMsg = await bot.sendMessage(employeeId, `🎨 Выберите цвет пластика для товара ${offerId}:`, {
       reply_markup: { inline_keyboard: keyboard }
     });
 
@@ -237,6 +297,7 @@ module.exports = function registerCommands(
     const key = `${employeeId}_${orderId}`;
     const state = pendingForms.get(key);
     if (state && state.offers[offerId]) {
+      // Удаляем предыдущее сообщение шага
       const prevMsgId = state.offers[offerId].stepMessageId;
       if (prevMsgId) {
         try { await bot.deleteMessage(employeeId, prevMsgId); } catch (e) { }
@@ -249,7 +310,7 @@ module.exports = function registerCommands(
         [{ text: '🔄 Сбросить', callback_data: `reset_stats_${orderId}_${offerId}` }]
       ]
     };
-    const sentMsg = await bot.sendMessage(employeeId, `Введите вес пластика в граммах (только число) для товара ${offerId}:`, {
+    const sentMsg = await bot.sendMessage(employeeId, `⚖️ Введите вес пластика в граммах (только число) для товара ${offerId}:`, {
       reply_markup: keyboard
     });
 
@@ -519,6 +580,8 @@ module.exports = function registerCommands(
 
       // Начинаем или продолжаем опрос
       if (offerState.status === 'not_started') {
+        // Деактивируем кнопку у исходного сообщения
+        await disableKeyboard(userId, offerState.messageId);
         await askMaterial(userId, offerId, orderId);
         await bot.answerCallbackQuery(callbackQuery.id);
       } else if (offerState.status === 'material_selected') {
@@ -629,7 +692,7 @@ module.exports = function registerCommands(
     // Кнопка "Нет" (отклонение отмены заказа)
     if (data.startsWith('cancel_cancel_')) {
       await bot.answerCallbackQuery(callbackQuery.id, { text: 'Отмена отклонена' });
-      await bot.deleteMessage(msg.chat.id, msg.message_id);
+      await safeDeleteMessage(msg.chat.id, msg.message_id);
       return;
     }
 
@@ -665,7 +728,7 @@ module.exports = function registerCommands(
         currentOrderProcessing = null;
       }
       await bot.answerCallbackQuery(callbackQuery.id, { text: 'Заказ пропущен' });
-      await bot.deleteMessage(msg.chat.id, msg.message_id);
+      await safeDeleteMessage(msg.chat.id, msg.message_id);
       if (typeof processNextOrder === 'function') processNextOrder();
       return;
     }
@@ -752,7 +815,7 @@ module.exports = function registerCommands(
       try {
         await assignOrder(orderId, employeeId, msg.chat.id);
         await bot.answerCallbackQuery(callbackQuery.id, { text: 'Заказ назначен' });
-        await bot.deleteMessage(msg.chat.id, msg.message_id);
+        await safeDeleteMessage(msg.chat.id, msg.message_id);
       } catch (err) {
         await bot.answerCallbackQuery(callbackQuery.id, { text: err.message });
       }
@@ -762,7 +825,7 @@ module.exports = function registerCommands(
     // 5. Кнопка "Назад"
     if (data.startsWith('back_')) {
       const orderId = data.substring(5);
-      await bot.deleteMessage(msg.chat.id, msg.message_id);
+      await safeDeleteMessage(msg.chat.id, msg.message_id);
       await bot.answerCallbackQuery(callbackQuery.id);
       const order = await ozon.fetchAwaitingOrdersById(orderId);
       if (order && typeof showOrderMenu === 'function') {
@@ -797,7 +860,7 @@ module.exports = function registerCommands(
       return;
     }
     if (data === 'cancel_clear_all') {
-      await bot.deleteMessage(msg.chat.id, msg.message_id);
+      await safeDeleteMessage(msg.chat.id, msg.message_id);
       await bot.answerCallbackQuery(callbackQuery.id, { text: 'Сброс отменён' });
       return;
     }
@@ -860,7 +923,7 @@ module.exports = function registerCommands(
     // 8. Кнопка "Нет" для снятия заказа администратором
     if (data.startsWith('admin_cancel_abort_')) {
       await bot.answerCallbackQuery(callbackQuery.id, { text: 'Снятие заказа отменено' });
-      await bot.deleteMessage(msg.chat.id, msg.message_id);
+      await safeDeleteMessage(msg.chat.id, msg.message_id);
       return;
     }
 
@@ -931,7 +994,7 @@ module.exports = function registerCommands(
 
     // Отмена полного сброса статистики
     if (data === 'cancel_full_reset_sync') {
-      await bot.deleteMessage(msg.chat.id, msg.message_id);
+      await safeDeleteMessage(msg.chat.id, msg.message_id);
       await bot.answerCallbackQuery(callbackQuery.id, { text: 'Отменено' });
       return;
     }
@@ -983,12 +1046,20 @@ module.exports = function registerCommands(
     // --- Администратор: отмена заполнения (из кнопки) ---
     if (data === 'admin_cancel_stats') {
       const userId = callbackQuery.from.id.toString();
-      if (pendingStatsFill.has(userId)) {
+      const state = pendingStatsFill.get(userId);
+      if (state) {
+        if (state.lastMessageId) {
+          try { await bot.deleteMessage(userId, state.lastMessageId); } catch (e) { }
+        }
         pendingStatsFill.delete(userId);
-        await bot.editMessageText('❌ Процесс заполнения статистики отменён.', {
-          chat_id: msg.chat.id,
-          message_id: msg.message_id
-        });
+        try {
+          await bot.editMessageText('❌ Процесс заполнения статистики отменён.', {
+            chat_id: msg.chat.id,
+            message_id: msg.message_id
+          });
+        } catch (e) {
+          // Сообщение могло быть уже удалено
+        }
         await bot.answerCallbackQuery(callbackQuery.id, { text: 'Отменено' });
       } else {
         await bot.answerCallbackQuery(callbackQuery.id, { text: 'Нет активного процесса' });
@@ -1815,6 +1886,9 @@ module.exports = function registerCommands(
     if (!isAdmin(userId)) {
       return bot.sendMessage(msg.chat.id, '⛔ Только администратор может смотреть список моделей.');
     }
+    if (isModerator(userId) && typeof updateModeratorActivity === 'function') {
+      updateModeratorActivity();
+    }
     const offerId = match[1];
     const models = await db.getAllProductModels(offerId);
     if (!models.length) {
@@ -1833,8 +1907,8 @@ module.exports = function registerCommands(
     if (!isAdmin(userId)) {
       return bot.sendMessage(msg.chat.id, '⛔ Только администратор может отменить заливку модели.');
     }
-    if (global.pendingModelAdd && global.pendingModelAdd.has(userId)) {
-      global.pendingModelAdd.delete(userId);
+    if (pendingModelAdd && pendingModelAdd.has(userId)) {
+      pendingModelAdd.delete(userId);
       bot.sendMessage(msg.chat.id, 'Операция добавления модели отменена.');
     } else {
       bot.sendMessage(msg.chat.id, 'Нет активной операции.');
@@ -1851,8 +1925,8 @@ module.exports = function registerCommands(
     // Ожидаем, что следующим сообщением администратор отправит файл
     bot.sendMessage(msg.chat.id, `Отправьте файл модели для offer_id ${offerId} (до 50 МБ).`);
     // Сохраняем состояние: ожидаем файл для этого offer_id
-    if (!global.pendingModelAdd) global.pendingModelAdd = new Map();
-    global.pendingModelAdd.set(userId, { offerId, step: 'waiting_file' });
+    if (!pendingModelAdd) pendingModelAdd = new Map();
+    pendingModelAdd.set(userId, { offerId, step: 'waiting_file' });
   });
 
   // --- "/bind_model" Команда для администратора: привязка существующего файла из канала к offer_id ---
@@ -1884,8 +1958,8 @@ module.exports = function registerCommands(
     }
     bot.sendMessage(msg.chat.id, '📤 Перешлите файл из канала моделей (или отправьте его).');
     // Сохраняем состояние ожидания
-    if (!global.pendingFileId) global.pendingFileId = new Map();
-    global.pendingFileId.set(userId, { step: 'waiting_file' });
+    if (!pendingFileId) pendingFileId = new Map();
+    pendingFileId.set(userId, { step: 'waiting_file' });
   });
 
   // --- "/cancel_bind" Команда для администратора: отменить привязку файла ---
@@ -1894,8 +1968,8 @@ module.exports = function registerCommands(
     if (!isAdmin(userId)) {
       return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
     }
-    if (global.pendingFileId && global.pendingFileId.has(userId)) {
-      global.pendingFileId.delete(userId);
+    if (pendingFileId && pendingFileId.has(userId)) {
+      pendingFileId.delete(userId);
       bot.sendMessage(msg.chat.id, 'Операция получения file_id отменена.');
     } else {
       bot.sendMessage(msg.chat.id, 'Нет активной операции.');
@@ -2037,8 +2111,8 @@ module.exports = function registerCommands(
     }
 
     // Приоритет 2: /add_model
-    if (global.pendingModelAdd && global.pendingModelAdd.has(userId)) {
-      const pending = global.pendingModelAdd.get(userId);
+    if (pendingModelAdd && pendingModelAdd.has(userId)) {
+      const pending = pendingModelAdd.get(userId);
       if (pending.step !== 'waiting_file') return;
 
       const file = msg.document;
@@ -2062,13 +2136,13 @@ module.exports = function registerCommands(
         console.error('Ошибка добавления модели:', err);
         await bot.sendMessage(msg.chat.id, `❌ Ошибка добавления модели: ${err.message}`);
       }
-      global.pendingModelAdd.delete(userId);
+      pendingModelAdd.delete(userId);
       return;
     }
 
     // Приоритет 3: /get_file_id
-    if (global.pendingFileId && global.pendingFileId.has(userId)) {
-      const pending = global.pendingFileId.get(userId);
+    if (pendingFileId && pendingFileId.has(userId)) {
+      const pending = pendingFileId.get(userId);
       if (pending.step === 'waiting_file') {
         const file = msg.document;
         const fileId = file.file_id;
@@ -2076,7 +2150,7 @@ module.exports = function registerCommands(
         const fileSize = file.file_size;
         await bot.sendMessage(msg.chat.id,
           `✅ file_id: \`${fileId}\`\nИмя: ${fileName}\nРазмер: ${(fileSize / 1024 / 1024).toFixed(2)} МБ\n\nИспользуйте /bind_model <offer_id> ${fileId} "${fileName}"`);
-        global.pendingFileId.delete(userId);
+        pendingFileId.delete(userId);
       }
       return;
     }
@@ -2500,16 +2574,21 @@ module.exports = function registerCommands(
       return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
     }
 
+    if (isModerator(userId) && typeof updateModeratorActivity === 'function') {
+      updateModeratorActivity();
+    }
+
     const offerId = match[1].trim();
     if (pendingStatsFill.has(userId)) {
-      return bot.sendMessage(msg.chat.id, '⚠️ У вас уже активен процесс заполнения. Завершите его или отмените командой /cancel_fill_stats.');
+      return bot.sendMessage(msg.chat.id, `⚠️ У вас уже активен процесс заполнения.\nЗавершите его или отмените командой /cancel_fill_stats.`);
     }
 
     // Сохраняем состояние
     pendingStatsFill.set(userId, {
       offerId,
       step: 1,
-      data: {}
+      data: {},
+      lastMessageId: null
     });
 
     // Переходим к выбору материала
@@ -3224,6 +3303,10 @@ module.exports = function registerCommands(
           employee ? employee.id : null
         );
         await exportProductStats();
+        // Удаляем последнее сообщение (запрос веса)
+        if (adminState.lastMessageId) {
+          try { await bot.deleteMessage(userId, adminState.lastMessageId); } catch (e) { }
+        }
         await bot.sendMessage(userId,
           `✅ Статистика для offer_id \`${adminState.offerId}\` успешно сохранена/обновлена.\n` +
           `Материал: ${adminState.data.material}\nЦвет: ${adminState.data.color}\nВес: ${weight} г`

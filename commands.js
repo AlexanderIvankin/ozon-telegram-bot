@@ -2423,13 +2423,20 @@ module.exports = function registerCommands(
       }
     };
 
-    await bot.sendMessage(msg.chat.id,
-      `📝 *Шаг 1 из 3:* Введите *материал* для offer_id \`${offerId}\`.\n\n_Можно отменить процесс в любой момент кнопкой ниже или командой /cancel_fill_stats._`,
-      {
-        parse_mode: 'Markdown',
-        reply_markup: cancelKeyboard.reply_markup
-      }
-    );
+    try {
+      await bot.sendMessage(msg.chat.id,
+        `📝 Шаг 1 из 3: Введите материал для offer_id ${offerId}.
+
+Можно отменить процесс в любой момент кнопкой ниже или командой /cancel_fill_stats.`,
+        {
+          reply_markup: cancelKeyboard.reply_markup
+        }
+      );
+      console.log(`[ADMIN_FILL_STATS] Сообщение с запросом материала для ${offerId} отправлено.`);
+    } catch (err) {
+      console.error('[ADMIN_FILL_STATS] Ошибка отправки:', err);
+      await bot.sendMessage(msg.chat.id, `❌ Ошибка: ${err.message}`);
+    }
   });
 
   // --- "/cancel_fill_stats" Команда для администратора: отменить активный процесс заполнения статистики ---

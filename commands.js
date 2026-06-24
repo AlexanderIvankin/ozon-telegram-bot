@@ -948,28 +948,6 @@ module.exports = function registerCommands(
         return;
       }
       if (state.offerId !== offerId) {
-        await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Неверный offer_id' });
-        return;
-      }
-      state.data.material = material;
-      state.step = 2; // переходим к цвету
-      await askAdminColor(userId, offerId);
-      await bot.answerCallbackQuery(callbackQuery.id);
-      return;
-    }
-
-    // --- Администратор: выбор материала ---
-    if (data.startsWith('admin_mat_')) {
-      const parts = data.split('_');
-      const offerId = parts[2];
-      const material = parts.slice(3).join('_');
-      const userId = callbackQuery.from.id.toString();
-      const state = pendingStatsFill.get(userId);
-      if (!state) {
-        await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Состояние не найдено' });
-        return;
-      }
-      if (state.offerId !== offerId) {
         await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Неверный артикул' });
         return;
       }

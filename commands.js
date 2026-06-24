@@ -116,6 +116,57 @@ module.exports = function registerCommands(
     return { total: totalEarnings, details: earningsDetails, allHaveStats };
   }
 
+  // --- Вспомогательные функции для административного заполнения статистики (без Markdown) ---
+  async function askAdminMaterial(userId, offerId) {
+    const materialNames = Object.keys(materialsData.materials);
+    const keyboard = [];
+    for (let i = 0; i < materialNames.length; i += 2) {
+      const row = [];
+      row.push({ text: materialNames[i], callback_data: `admin_mat_${offerId}_${materialNames[i]}` });
+      if (i + 1 < materialNames.length) {
+        row.push({ text: materialNames[i + 1], callback_data: `admin_mat_${offerId}_${materialNames[i + 1]}` });
+      }
+      keyboard.push(row);
+    }
+    keyboard.push([{ text: '❌ Отмена заполнения', callback_data: 'admin_cancel_stats' }]);
+
+    await bot.sendMessage(userId,
+      `📝 Выберите материал для артикула ${offerId}:`,
+      { reply_markup: { inline_keyboard: keyboard } }
+    );
+  }
+
+  async function askAdminColor(userId, offerId) {
+    const colors = materialsData.colors;
+    const keyboard = [];
+    for (let i = 0; i < colors.length; i += 2) {
+      const row = [];
+      row.push({ text: colors[i], callback_data: `admin_color_${offerId}_${colors[i]}` });
+      if (i + 1 < colors.length) {
+        row.push({ text: colors[i + 1], callback_data: `admin_color_${offerId}_${colors[i + 1]}` });
+      }
+      keyboard.push(row);
+    }
+    keyboard.push([{ text: '❌ Отмена заполнения', callback_data: 'admin_cancel_stats' }]);
+
+    await bot.sendMessage(userId,
+      `🎨 Выберите цвет для артикула ${offerId}:`,
+      { reply_markup: { inline_keyboard: keyboard } }
+    );
+  }
+
+  async function askAdminWeight(userId, offerId) {
+    const keyboard = {
+      inline_keyboard: [
+        [{ text: '❌ Отмена заполнения', callback_data: 'admin_cancel_stats' }]
+      ]
+    };
+    await bot.sendMessage(userId,
+      `⚖️ Введите вес в граммах (только число) для артикула ${offerId}:`,
+      { reply_markup: keyboard }
+    );
+  }
+
   async function askMaterial(employeeId, offerId, orderId) {
     // Удаляем предыдущее сообщение шага, если оно было
     const key = `${employeeId}_${orderId}`;
@@ -885,8 +936,74 @@ module.exports = function registerCommands(
       return;
     }
 
-    // Отмена заполнения статистики
-    if (data === 'cancel_stats_fill') {
+    // --- Администратор: выбор материала ---
+    if (data.startsWith('admin_mat_')) {
+      const parts = data.split('_');
+      const offerId = parts[2];
+      const material = parts.slice(3).join('_');
+      const userId = callbackQuery.from.id.toString();
+      const state = pendingStatsFill.get(userId);
+      if (!state) {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Состояние не найдено' });
+        return;
+      }
+      if (state.offerId !== offerId) {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Неверный offer_id' });
+        return;
+      }
+      state.data.material = material;
+      state.step = 2; // переходим к цвету
+      await askAdminColor(userId, offerId);
+      await bot.answerCallbackQuery(callbackQuery.id);
+      return;
+    }
+
+    // --- Администратор: выбор материала ---
+    if (data.startsWith('admin_mat_')) {
+      const parts = data.split('_');
+      const offerId = parts[2];
+      const material = parts.slice(3).join('_');
+      const userId = callbackQuery.from.id.toString();
+      const state = pendingStatsFill.get(userId);
+      if (!state) {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Состояние не найдено' });
+        return;
+      }
+      if (state.offerId !== offerId) {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Неверный артикул' });
+        return;
+      }
+      state.data.material = material;
+      state.step = 2;
+      await askAdminColor(userId, offerId);
+      await bot.answerCallbackQuery(callbackQuery.id);
+      return;
+    }
+
+    // --- Администратор: выбор цвета ---
+    if (data.startsWith('admin_color_')) {
+      const parts = data.split('_');
+      const offerId = parts[2];
+      const color = parts.slice(3).join('_');
+      const userId = callbackQuery.from.id.toString();
+      const state = pendingStatsFill.get(userId);
+      if (!state) {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Состояние не найдено' });
+        return;
+      }
+      if (state.offerId !== offerId) {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Неверный артикул' });
+        return;
+      }
+      state.data.color = color;
+      state.step = 3;
+      await askAdminWeight(userId, offerId);
+      await bot.answerCallbackQuery(callbackQuery.id);
+      return;
+    }
+
+    // --- Администратор: отмена заполнения (из кнопки) ---
+    if (data === 'admin_cancel_stats') {
       const userId = callbackQuery.from.id.toString();
       if (pendingStatsFill.has(userId)) {
         pendingStatsFill.delete(userId);
@@ -1268,6 +1385,7 @@ module.exports = function registerCommands(
       adminMessage += `/employee_orders <id_сотрудника> — показать активные заказы сотрудника\n\n`;
 
       adminMessage += `/admin_fill_stats <offer_id> — заполнить/обновить статистику товара (материал, цвет, вес)\n`;
+      adminMessage += `/cancel_fill_stats — отменить активный процесс заполнения статистики\n`;
       adminMessage += `/clear_product_stats <offer_id> — удалить статистику для продукта\n\n`;
 
       adminMessage += `/export_earnings [YYYY-MM] — экспорт заработка всех сотрудников за месяц (по умолчанию текущий)\n\n`;
@@ -2409,34 +2527,15 @@ module.exports = function registerCommands(
       return bot.sendMessage(msg.chat.id, '⚠️ У вас уже активен процесс заполнения. Завершите его или отмените командой /cancel_fill_stats.');
     }
 
+    // Сохраняем состояние
     pendingStatsFill.set(userId, {
       offerId,
       step: 1,
       data: {}
     });
 
-    const cancelKeyboard = {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: '❌ Отмена заполнения', callback_data: 'cancel_stats_fill' }]
-        ]
-      }
-    };
-
-    try {
-      await bot.sendMessage(msg.chat.id,
-        `📝 Шаг 1 из 3: Введите материал для offer_id ${offerId}.
-
-Можно отменить процесс в любой момент кнопкой ниже или командой /cancel_fill_stats.`,
-        {
-          reply_markup: cancelKeyboard.reply_markup
-        }
-      );
-      console.log(`[ADMIN_FILL_STATS] Сообщение с запросом материала для ${offerId} отправлено.`);
-    } catch (err) {
-      console.error('[ADMIN_FILL_STATS] Ошибка отправки:', err);
-      await bot.sendMessage(msg.chat.id, `❌ Ошибка: ${err.message}`);
-    }
+    // Переходим к выбору материала
+    await askAdminMaterial(userId, offerId);
   });
 
   // --- "/cancel_fill_stats" Команда для администратора: отменить активный процесс заполнения статистики ---
@@ -2935,6 +3034,7 @@ module.exports = function registerCommands(
       helpText += `/employee_orders <id_сотрудника> — активные заказы сотрудника\n\n`;
 
       helpText += `/admin_fill_stats <offer_id> — заполнить/обновить статистику товара (материал, цвет, вес)\n`;
+      helpText += `/cancel_fill_stats — отменить активный процесс заполнения статистики\n`;
       helpText += `/clear_product_stats <offer_id> — удалить статистику для продукта\n\n`;
 
       helpText += `/export_earnings [YYYY-MM] — экспорт заработка всех сотрудников за месяц (по умолчанию текущий)\n\n`;
@@ -3120,64 +3220,41 @@ module.exports = function registerCommands(
     // --- Администраторское заполнение статистики (через /admin_fill_stats) ---
     const adminState = pendingStatsFill.get(userId);
     if (adminState) {
-      const value = text.trim();
-      if (!value) {
-        await bot.sendMessage(userId, '❌ Введите непустое значение.');
+      // Если шаг не равен 3 (ожидание веса) – игнорируем (пользователь должен нажимать кнопки)
+      if (adminState.step !== 3) {
+        // Если пользователь вводит текст, когда не ожидается – напоминаем
+        await bot.sendMessage(userId, '❌ Сейчас ожидается выбор из списка. Используйте кнопки.');
         return;
       }
 
-      const step = adminState.step;
-      // Сохраняем введённое значение
-      if (step === 1) adminState.data.material = value;
-      else if (step === 2) adminState.data.color = value;
-      else if (step === 3) {
-        const weight = parseFloat(value.replace(',', '.'));
-        if (isNaN(weight) || weight <= 0) {
-          await bot.sendMessage(userId, '❌ Введите корректное положительное число для веса (например, 12.5)');
-          return;
-        }
-        adminState.data.weight = weight;
+      // Шаг 3: ввод веса
+      const value = text.trim().replace(',', '.');
+      const weight = parseFloat(value);
+      if (isNaN(weight) || weight <= 0) {
+        await bot.sendMessage(userId, '❌ Введите корректное положительное число (например, 12.5)');
+        return;
       }
 
-      adminState.step++;
-
-      if (adminState.step <= 3) {
-        // Переход к следующему шагу
-        const fieldName = adminState.step === 2 ? 'цвет' : 'вес (в граммах)';
-        const cancelKeyboard = {
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: '❌ Отмена заполнения', callback_data: 'cancel_stats_fill' }]
-            ]
-          }
-        };
-        await bot.sendMessage(userId,
-          `📝 *Шаг ${adminState.step} из 3:* Введите *${fieldName}* для offer_id \`${adminState.offerId}\`.`,
-          { parse_mode: 'Markdown', ...cancelKeyboard }
+      // Сохраняем
+      try {
+        const employee = await db.getEmployee(userId);
+        await db.upsertProductStats(
+          adminState.offerId,
+          adminState.data.material,
+          adminState.data.color,
+          weight,
+          employee ? employee.id : null
         );
-      } else {
-        // Все шаги завершены – сохраняем в БД
-        try {
-          const employee = await db.getEmployee(userId);
-          await db.upsertProductStats(
-            adminState.offerId,
-            adminState.data.material,
-            adminState.data.color,
-            adminState.data.weight,
-            employee ? employee.id : null
-          );
-          // Экспорт в файл (обновляем статистику)
-          await exportProductStats();
-          await bot.sendMessage(userId,
-            `✅ Статистика для offer_id \`${adminState.offerId}\` успешно сохранена/обновлена.\n` +
-            `Материал: ${adminState.data.material}\nЦвет: ${adminState.data.color}\nВес: ${adminState.data.weight} г`
-          );
-        } catch (err) {
-          console.error('[ADMIN_FILL_STATS] Ошибка сохранения:', err);
-          await bot.sendMessage(userId, `❌ Ошибка сохранения: ${err.message}`);
-        }
+        await exportProductStats();
+        await bot.sendMessage(userId,
+          `✅ Статистика для offer_id \`${adminState.offerId}\` успешно сохранена/обновлена.\n` +
+          `Материал: ${adminState.data.material}\nЦвет: ${adminState.data.color}\nВес: ${weight} г`
+        );
         // Удаляем состояние
         pendingStatsFill.delete(userId);
+      } catch (err) {
+        console.error('[ADMIN_FILL_STATS] Ошибка сохранения:', err);
+        await bot.sendMessage(userId, `❌ Ошибка сохранения: ${err.message}`);
       }
       return;
     }

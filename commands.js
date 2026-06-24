@@ -2406,7 +2406,7 @@ module.exports = function registerCommands(
 
     const offerId = match[1].trim();
     if (pendingStatsFill.has(userId)) {
-      return bot.sendMessage(msg.chat.id, '⚠️ У вас уже активен процесс заполнения. Завершите его или отмените.');
+      return bot.sendMessage(msg.chat.id, '⚠️ У вас уже активен процесс заполнения. Завершите его или отмените командой /cancel_fill_stats.');
     }
 
     pendingStatsFill.set(userId, {
@@ -2424,9 +2424,23 @@ module.exports = function registerCommands(
     };
 
     await bot.sendMessage(msg.chat.id,
-      `📝 *Шаг 1 из 3:* Введите *материал* для offer_id \`${offerId}\`.\n\n_Можно отменить процесс в любой момент кнопкой ниже._`,
-      { parse_mode: 'Markdown', ...cancelKeyboard }
+      `📝 *Шаг 1 из 3:* Введите *материал* для offer_id \`${offerId}\`.\n\n_Можно отменить процесс в любой момент кнопкой ниже или командой /cancel_fill_stats._`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: cancelKeyboard.reply_markup
+      }
     );
+  });
+
+  // --- "/cancel_fill_stats" Команда для администратора: отменить активный процесс заполнения статистики ---
+  bot.onText(/\/cancel_fill_stats/, async (msg) => {
+    const userId = msg.from.id.toString();
+    if (pendingStatsFill.has(userId)) {
+      pendingStatsFill.delete(userId);
+      await bot.sendMessage(msg.chat.id, '❌ Процесс заполнения статистики отменён.');
+    } else {
+      await bot.sendMessage(msg.chat.id, 'ℹ️ Нет активного процесса заполнения.');
+    }
   });
 
   // --- "/clear_product_stats" Команда для администратора: очистка статистики заказа ---

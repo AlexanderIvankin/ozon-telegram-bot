@@ -30,8 +30,8 @@ async function initDB() {
     }
 
     // Проверяем и добавляем колонку earnings_factor, если отсутствует
-    const tableInfo = await database.all("PRAGMA table_info(employees)");
-    const hasEarningsFactor = tableInfo.some(col => col.name === 'earnings_factor');
+    const factorTableInfo = await database.all("PRAGMA table_info(employees)");
+    const hasEarningsFactor = factorTableInfo.some(col => col.name === 'earnings_factor');
     if (!hasEarningsFactor) {
         await database.run('ALTER TABLE employees ADD COLUMN earnings_factor REAL DEFAULT 1.0');
         console.log('[DB] Добавлена колонка earnings_factor в employees');
@@ -89,8 +89,8 @@ async function initDB() {
     }
 
     // Проверяем и добавляем колонку capacity, если отсутствует
-    const tableInfo = await database.all("PRAGMA table_info(employees)");
-    const hasCapacity = tableInfo.some(col => col.name === 'capacity');
+    const capacityTableInfo = await database.all("PRAGMA table_info(employees)");
+    const hasCapacity = capacityTableInfo.some(col => col.name === 'capacity');
     if (!hasCapacity) {
         await database.run('ALTER TABLE employees ADD COLUMN capacity INTEGER DEFAULT 1');
         console.log('[DB] Добавлена колонка capacity в employees');

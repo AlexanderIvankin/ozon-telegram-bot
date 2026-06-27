@@ -930,17 +930,26 @@ function registerCommands(
       return;
     }
 
-    // 9. Сброс всех данных (кроме моделей) и синхронизация — подтверждение
+    // 9. Сброс всех данных (кроме моделей и сотрудников) и синхронизация — подтверждение
     if (data === 'confirm_full_reset_sync') {
       try {
         const dbConn = db.db;
         await dbConn.run('BEGIN TRANSACTION');
+
+        // 1. Очищаем назначения, связи со складами, статистику заказов
         await dbConn.run('DELETE FROM assignments');
         await dbConn.run('DELETE FROM employee_warehouses');
         await dbConn.run('DELETE FROM employee_stats');
-        await dbConn.run('DELETE FROM employees');
+
+        // 2. Удаляем все склады (будут пересозданы)
         await dbConn.run('DELETE FROM warehouses');
-        await dbConn.run("DELETE FROM sqlite_sequence WHERE name IN ('employees', 'assignments', 'employee_warehouses', 'employee_stats', 'warehouses')");
+
+        // 3. Сбрасываем автоинкремент для таблиц, кроме employees
+        await dbConn.run("DELETE FROM sqlite_sequence WHERE name IN ('assignments', 'employee_warehouses', 'employee_stats', 'warehouses')");
+
+        // 4. НЕ удаляем сотрудников, а помечаем всех как уволенных
+        await dbConn.run('UPDATE employees SET is_fired = 1');
+
         await dbConn.run('COMMIT');
 
         // Очищаем глобальные состояния
@@ -968,7 +977,7 @@ function registerCommands(
         const warehouses = await ozon.fetchWarehousesFromOzon();
         if (warehouses.length) await db.syncWarehouses(warehouses);
 
-        // Синхронизация сотрудников
+        // Синхронизация сотрудников (восстановит активных, уволенные останутся помеченными)
         await syncEmployeesFromExcel(db);
 
         // Перезагрузка очереди заказов
@@ -978,7 +987,7 @@ function registerCommands(
           await processNextOrder();
         }
 
-        await bot.editMessageText('✅ Полный сброс и синхронизация выполнены. Очередь заказов обновлена.', {
+        await bot.editMessageText('✅ Полный сброс (кроме сотрудников и их заработка) и синхронизация выполнены. Очередь заказов обновлена.', {
           chat_id: msg.chat.id,
           message_id: msg.message_id
         });

@@ -452,7 +452,7 @@ process.on('SIGTERM', gracefulShutdown);
     );
     setTimeout(() => {
         checkAndOfferNewOrders();
-        restorePendingForms();
+        restorePendingForms(db, ozon);
     }, 5000);
     console.log('Бот запущен...');
 })();

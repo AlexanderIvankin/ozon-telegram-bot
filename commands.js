@@ -3362,7 +3362,7 @@ function registerCommands(
 };
 
 // ---------------------- ВОССТАНОВЛЕНИЕ СОСТОЯНИЙ ПОСЛЕ ПЕРЕЗАПУСКА ----------------------
-async function restorePendingForms() {
+async function restorePendingForms(db, ozon) {
   try {
     const assignments = await db.db.all('SELECT order_id, employee_id FROM assignments WHERE status = "assigned"');
     for (const assign of assignments) {
@@ -3410,7 +3410,7 @@ async function restorePendingForms() {
   }
 }
 
-// Теперь экспортируем объект с функциями
+// Экспорт registerCommands и restorePendingForms
 module.exports = {
   registerCommands,
   restorePendingForms

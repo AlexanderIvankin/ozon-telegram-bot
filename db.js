@@ -21,6 +21,22 @@ async function initDB() {
     )
 `);
 
+    // Проверяем и добавляем колонку is_fired, если отсутствует
+    const employeeTableInfo = await database.all("PRAGMA table_info(employees)");
+    const hasIsFired = employeeTableInfo.some(col => col.name === 'is_fired');
+    if (!hasIsFired) {
+        await database.run('ALTER TABLE employees ADD COLUMN is_fired INTEGER DEFAULT 0');
+        console.log('[DB] Добавлена колонка is_fired в employees');
+    }
+
+    // Проверяем и добавляем колонку earnings_factor, если отсутствует
+    const tableInfo = await database.all("PRAGMA table_info(employees)");
+    const hasEarningsFactor = tableInfo.some(col => col.name === 'earnings_factor');
+    if (!hasEarningsFactor) {
+        await database.run('ALTER TABLE employees ADD COLUMN earnings_factor REAL DEFAULT 1.0');
+        console.log('[DB] Добавлена колонка earnings_factor в employees');
+    }
+
     // Таблица назначенных заказов
     await database.exec(`
     CREATE TABLE IF NOT EXISTS assignments (
@@ -214,20 +230,28 @@ async function completeOrder(orderId) {
 }
 
 // Получить всех сотрудников со статистикой активных заказов (опицональный фильтр по приоритетным warehouse_id)
-async function getAllEmployeesWithStats(warehouseId = null) {
+async function getAllEmployeesWithStats(warehouseId = null, includeFired = false) {
     let sql = `
-        SELECT e.id, e.tg_user_id, e.name, e.capacity,
+        SELECT e.id, e.tg_user_id, e.name, e.capacity, e.earnings_factor, e.is_fired,
                (SELECT COUNT(*) FROM assignments a WHERE a.employee_id = e.id AND a.status = 'assigned') as active_count
         FROM employees e
     `;
     const params = [];
+    if (!includeFired) {
+        sql += ` WHERE e.is_fired = 0`;
+    }
     if (warehouseId) {
-        sql += ` INNER JOIN employee_warehouses ew ON e.id = ew.employee_id WHERE ew.warehouse_id = ?`;
+        // Если уже есть WHERE, добавляем AND, иначе WHERE
+        if (!includeFired) {
+            sql += ` AND`;
+        } else {
+            sql += ` WHERE`;
+        }
+        sql += ` EXISTS (SELECT 1 FROM employee_warehouses ew WHERE ew.employee_id = e.id AND ew.warehouse_id = ?)`;
         params.push(warehouseId);
     }
-    sql += ` ORDER BY e.name`;
+    sql += ` ORDER BY e.id`; // сортировка по ID, но основная сортировка будет в commands.js
     const rows = await database.all(sql, params);
-    // Добавим поле warehouse для совместимости (можно вернуть список складов, но не обязательно)
     return rows;
 }
 

@@ -308,7 +308,6 @@ async function showOrderMenu(order) {
 
     let warehouseDisplay = order.analytics_data?.warehouse || (order.warehouse_id ? `ID: ${order.warehouse_id}` : 'не указан');
 
-    // --- Время создания заказа ---
     let createdAtDisplay = '';
     if (details.in_process_at) {
         const date = new Date(details.in_process_at);
@@ -341,10 +340,19 @@ async function showOrderMenu(order) {
             let weightDisplay = weightVal > 0 ? `${weightVal.toFixed(0)} г` : '—';
             let dimsDisplay = `📏 ${length} × ${width} × ${height}, ⚖️ ${weightDisplay}`;
 
+            let statsDisplay = '';
+            if (p.offer_id) {
+                const stats = await db.getProductStats(p.offer_id);
+                if (stats) {
+                    statsDisplay = `   Материал: ${stats.material}\n   Цвет: ${stats.color}\n`;
+                }
+            }
+
             productsInfo += `• ${p.name} — ${p.quantity} шт.\n`;
             productsInfo += `   Артикул: ${articleDisplay}\n`;
             productsInfo += `   Цена: ${priceDisplay}\n`;
             productsInfo += `   Размеры: ${dimsDisplay}\n`;
+            if (statsDisplay) productsInfo += statsDisplay;
 
             totalAmount += price * p.quantity;
             if (p.sku) skuList.push(p.sku);

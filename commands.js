@@ -42,7 +42,7 @@ function loadMaterials() {
 }
 loadMaterials();
 
-module.exports = function registerCommands(
+function registerCommands(
   bot, db, ozon, bwipjs, scheduler, debugMode,
   isAuthorizedUser, isModerator, isAdmin,
   showOrderMenu, checkAndOfferNewOrders, processNextOrder,
@@ -3359,4 +3359,59 @@ module.exports = function registerCommands(
       return;
     }
   });
+};
+
+// ---------------------- ВОССТАНОВЛЕНИЕ СОСТОЯНИЙ ПОСЛЕ ПЕРЕЗАПУСКА ----------------------
+async function restorePendingForms() {
+  try {
+    const assignments = await db.db.all('SELECT order_id, employee_id FROM assignments WHERE status = "assigned"');
+    for (const assign of assignments) {
+      const employee = await db.getEmployeeById(assign.employee_id);
+      if (!employee) continue;
+      const userId = employee.tg_user_id;
+      const orderId = assign.order_id;
+
+      const existing = pendingForms.get(userId);
+      if (existing && existing.orderId === orderId) continue;
+
+      const orderDetails = await ozon.getOrderDetails(orderId);
+      if (!orderDetails || !orderDetails.products) continue;
+
+      const missingStats = [];
+      for (const product of orderDetails.products) {
+        const offerId = product.offer_id;
+        if (!offerId) continue;
+        const stats = await db.getProductStats(offerId);
+        if (!stats) missingStats.push(offerId);
+      }
+      if (missingStats.length === 0) continue;
+
+      const offersState = {};
+      for (const offerId of missingStats) {
+        offersState[offerId] = {
+          material: null,
+          color: null,
+          weight: null,
+          status: 'not_started',
+          messageId: null,
+          waitingForWeight: false
+        };
+      }
+      const key = `${userId}_${orderId}`;
+      pendingForms.set(key, {
+        orderId: orderId,
+        offers: offersState,
+        allCompleted: false
+      });
+      console.log(`[RESTORE] Восстановлено состояние для заказа ${orderId} пользователя ${userId}`);
+    }
+  } catch (err) {
+    console.error('Ошибка восстановления состояний:', err);
+  }
+}
+
+// Теперь экспортируем объект с функциями
+module.exports = {
+  registerCommands,
+  restorePendingForms
 };

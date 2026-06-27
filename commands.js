@@ -3367,7 +3367,7 @@ async function restorePendingForms(db, ozon) {
     const assignments = await db.db.all('SELECT order_id, employee_id FROM assignments WHERE status = "assigned"');
     for (const assign of assignments) {
       const employee = await db.getEmployeeById(assign.employee_id);
-      if (!employee) continue;
+      if (!employee || employee.is_fired) continue;
       const userId = employee.tg_user_id;
       const orderId = assign.order_id;
 

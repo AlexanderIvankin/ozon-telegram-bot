@@ -940,7 +940,34 @@ function registerCommands(
       return;
     }
 
-    // 9. Сброс всех данных (кроме моделей и сотрудников) и синхронизация — подтверждение
+    // 9. Обработка подтверждения сброса заработка
+    if (data === 'confirm_clear_earnings') {
+      try {
+        await db.db.run('DELETE FROM employee_earnings');
+        await bot.editMessageText('✅ Все записи о заработке сотрудников удалены.', {
+          chat_id: msg.chat.id,
+          message_id: msg.message_id
+        });
+        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Сброс выполнен' });
+      } catch (err) {
+        console.error('[CLEAR_EARNINGS] Ошибка:', err);
+        await bot.editMessageText(`❌ Ошибка: ${err.message}`, {
+          chat_id: msg.chat.id,
+          message_id: msg.message_id
+        });
+        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Ошибка' });
+      }
+      return;
+    }
+
+    // 10. Обработка отмены сброса заработка
+    if (data === 'cancel_clear_earnings') {
+      await bot.deleteMessage(msg.chat.id, msg.message_id);
+      await bot.answerCallbackQuery(callbackQuery.id, { text: 'Отменено' });
+      return;
+    }
+
+    // 11. Сброс всех данных (кроме моделей и сотрудников) и синхронизация — подтверждение
     if (data === 'confirm_full_reset_sync') {
       try {
         const dbConn = db.db;
@@ -1168,20 +1195,24 @@ function registerCommands(
       try {
         const orderDetails = await ozon.getOrderDetails(postingNumber);
         if (orderDetails && orderDetails.products) {
-          const earnings = await calculateOrderEarnings(orderDetails, employee);
-          if (earnings.allHaveStats && earnings.total > 0) {
-            await db.saveEmployeeEarnings(employee.id, postingNumber, earnings.total);
-            let msg = `💰 *Заработок за заказ ${postingNumber}*\n\n`;
-            for (const item of earnings.details) {
-              msg += `• ${item.productName} (${item.offerId})\n`;
-              msg += `  Материал: ${item.material}, Вес: ${item.weight} г/шт, Кол-во: ${item.quantity} шт\n`;
-              msg += `  Заработок за единицу: ${item.earningsPerUnit.toFixed(2)} руб., Итого: ${item.totalForProduct.toFixed(2)} руб.\n`;
+          // Проверяем, не было ли уже начисления для этого заказа
+          const existingEarnings = await db.db.get('SELECT id FROM employee_earnings WHERE order_id = ?', postingNumber);
+          if (!existingEarnings) {
+            const earnings = await calculateOrderEarnings(orderDetails, employee);
+            if (earnings.allHaveStats && earnings.total > 0) {
+              await db.saveEmployeeEarnings(employee.id, postingNumber, earnings.total);
+              let msg = `💰 *Заработок за заказ ${postingNumber}*\n\n`;
+              for (const item of earnings.details) {
+                msg += `• ${item.productName} (${item.offerId})\n`;
+                msg += `  Материал: ${item.material}, Вес: ${item.weight} г/шт, Кол-во: ${item.quantity} шт\n`;
+                msg += `  Заработок за единицу: ${item.earningsPerUnit.toFixed(2)} руб., Итого: ${item.totalForProduct.toFixed(2)} руб.\n`;
+              }
+              msg += `\n*Итого: ${earnings.total.toFixed(2)} руб.*`;
+              await bot.sendMessage(employee.tg_user_id, msg, { parse_mode: 'Markdown' });
+              await new Promise(resolve => setTimeout(resolve, 200));
+            } else if (!earnings.allHaveStats) {
+              console.warn(`[FINISH] Не все товары имеют статистику для заказа ${postingNumber}`);
             }
-            msg += `\n*Итого: ${earnings.total.toFixed(2)} руб.*`;
-            await bot.sendMessage(employee.tg_user_id, msg, { parse_mode: 'Markdown' });
-            await new Promise(resolve => setTimeout(resolve, 200));
-          } else if (!earnings.allHaveStats) {
-            console.warn(`[FINISH] Не все товары имеют статистику для заказа ${postingNumber}`);
           }
         }
       } catch (earnErr) {
@@ -1479,13 +1510,14 @@ function registerCommands(
       adminMessage += `/employee_stats <id_сотрудника> — статистика сотрудника (заказы, сумма)\n`;
       adminMessage += `/employee_orders <id_сотрудника> — показать активные заказы сотрудника\n\n`;
 
+      adminMessage += `/send_label <номер_заказа> [id_сотрудника] — отправить PDF‑этикетку заказа сотруднику (если ID не указан – себе)\n\n`;
+
       adminMessage += `/admin_fill_stats <offer_id> — заполнить/обновить статистику товара (материал, цвет, вес)\n`;
       adminMessage += `/cancel_fill_stats — отменить активный процесс заполнения статистики\n`;
       adminMessage += `/clear_product_stats <offer_id> — удалить статистику для продукта\n\n`;
 
-      adminMessage += `/export_earnings [YYYY-MM] — экспорт заработка всех сотрудников за месяц (по умолчанию текущий)\n\n`;
-
-      adminMessage += `/send_label <номер_заказа> [id_сотрудника] — отправить PDF‑этикетку заказа сотруднику (если ID не указан – себе)\n\n`;
+      adminMessage += `/export_earnings [YYYY-MM] — экспорт заработка всех сотрудников за месяц (по умолчанию текущий)\n`;
+      adminMessage += `/clear_earnings — удалить все записи о заработке сотрудников (с подтверждением)\n\n`;
 
       adminMessage += `/admin_assign_order <номер_заказа> [id_сотрудника] — назначить заказ сотруднику (если ID не указан – показать список сотрудников)\n\n`;
 
@@ -1531,7 +1563,7 @@ function registerCommands(
       adminMessage += `/upload_employees — загрузить новый файл "team-info.xlsx" с сотрудниками (автоматически синхронизирует БД)\n`;
       adminMessage += `/upload_materials — загрузить новый файл "materials.json" с ценами материалов\n\n`;
 
-      adminMessage += `/full_reset_and_sync — сброс всех данных (сотрудники, склады, назначения, статистика), кроме 3D-моделей и статистики товаров, синхронизация складов/сотрудников\n\n`;
+      adminMessage += `/full_reset_and_sync — сброс всех данных (сотрудники, склады, назначения), кроме 3D-моделей, статистики товаров и заработка сотрудников, синхронизация складов/сотрудников\n\n`;
 
       if (debugMode.isDebugMode()) adminMessage += `/debug_clear — сбросить отладочные назначения\n`;
 
@@ -2624,6 +2656,27 @@ function registerCommands(
     }
   });
 
+  // --- "/clear_earnings" — сброс таблицы заработка сотрудников (с подтверждением) ---
+  bot.onText(/\/clear_earnings/, async (msg) => {
+    const userId = msg.from.id.toString();
+    if (!isAdmin(userId)) return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
+
+    const keyboard = {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: '⚠️ ДА, удалить все записи заработка', callback_data: 'confirm_clear_earnings' },
+            { text: '❌ Отмена', callback_data: 'cancel_clear_earnings' }
+          ]
+        ]
+      }
+    };
+    await bot.sendMessage(msg.chat.id,
+      '⚠️ Вы уверены?\n\nБудут удалены ВСЕ записи о заработке сотрудников.\nЭто действие необратимо!',
+      keyboard
+    );
+  });
+
   // --- "/admin_fill_stats" Команда для администратора: заполнить/обновить статистику товара (3 шага) ---
   bot.onText(/\/admin_fill_stats (\S+)/, async (msg, match) => {
     const userId = msg.from.id.toString();
@@ -3155,13 +3208,14 @@ function registerCommands(
       helpText += `/employee_stats <id_сотрудника> — статистика сотрудника (заказы, сумма)\n`;
       helpText += `/employee_orders <id_сотрудника> — активные заказы сотрудника\n\n`;
 
+      helpText += `/send_label <номер_заказа> [id_сотрудника] — отправить PDF‑этикетку заказа сотруднику (если ID не указан – себе)\n\n`;
+
       helpText += `/admin_fill_stats <offer_id> — заполнить/обновить статистику товара (материал, цвет, вес)\n`;
       helpText += `/cancel_fill_stats — отменить активный процесс заполнения статистики\n`;
       helpText += `/clear_product_stats <offer_id> — удалить статистику для продукта\n\n`;
 
-      helpText += `/export_earnings [YYYY-MM] — экспорт заработка всех сотрудников за месяц (по умолчанию текущий)\n\n`;
-
-      helpText += `/send_label <номер_заказа> [id_сотрудника] — отправить PDF‑этикетку заказа сотруднику (если ID не указан – себе)\n\n`;
+      helpText += `/export_earnings [YYYY-MM] — экспорт заработка всех сотрудников за месяц (по умолчанию текущий)\n`;
+      helpText += `/clear_earnings — удалить все записи о заработке сотрудников (с подтверждением)\n\n`;
 
       helpText += `/admin_assign_order <номер_заказа> [id_сотрудника] — назначить заказ сотруднику (если ID не указан – показать список сотрудников)\n\n`;
 
@@ -3207,7 +3261,7 @@ function registerCommands(
       helpText += `/upload_employees — загрузить новый файл "team-info.xlsx" с сотрудниками (автоматически синхронизирует БД)\n`;
       helpText += `/upload_materials — загрузить новый файл "materials.json" с ценами материалов\n\n`;
 
-      helpText += `/full_reset_and_sync — сброс всех данных (сотрудники, склады, назначения, статистика), кроме 3D-моделей и статистики товаров, синхронизация складов/сотрудников\n\n`;
+      helpText += `/full_reset_and_sync — сброс всех данных (сотрудники, склады, назначения), кроме 3D-моделей, статистики товаров и заработка сотрудников, синхронизация складов/сотрудников\n\n`;
 
       if (debugMode.isDebugMode()) helpText += `/debug_clear — сброс отладочных данных\n`;
       await bot.sendMessage(msg.chat.id, helpText);

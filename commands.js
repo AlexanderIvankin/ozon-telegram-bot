@@ -43,6 +43,19 @@ function loadMaterials() {
 }
 loadMaterials();
 
+// Форматирует текущую дату для имени файла: YYYY-MM-DD_HH-MM-SS (локальное время)
+function formatLocalTimestamp(date = new Date()) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}_${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(date.getSeconds())}`;
+}
+
+// Форматирует timestamp (число мс) в DD.MM.YYYY (локальное время)
+function formatDateDDMMYYYY(timestamp) {
+  const date = new Date(timestamp);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${pad(date.getDate())}.${pad(date.getMonth() + 1)}.${date.getFullYear()}`;
+}
+
 function registerCommands(
   bot, db, ozon, bwipjs, scheduler, debugMode,
   isAuthorizedUser, isModerator, isAdmin,
@@ -88,7 +101,7 @@ function registerCommands(
           'Цвет': s.color,
           'Вес (г)': s.weight_grams,
           'Кто заполнил': s.employee_name || 'Неизвестно',
-          'Дата': new Date(s.updated_at).toLocaleString()
+          'Дата': formatDateDDMMYYYY(s.updated_at)
         })));
         XLSX.utils.book_append_sheet(wb, ws, 'Статистика');
         const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
@@ -2845,12 +2858,7 @@ function registerCommands(
     }
 
     const now = new Date();
-    const timestamp = now.getFullYear() + '-' +
-      String(now.getMonth() + 1).padStart(2, '0') + '-' +
-      String(now.getDate()).padStart(2, '0') + '_' +
-      String(now.getHours()).padStart(2, '0') + '-' +
-      String(now.getMinutes()).padStart(2, '0') + '-' +
-      String(now.getSeconds()).padStart(2, '0');
+    const timestamp = formatLocalTimestamp(now);
 
     const backupPath = path.join(backupDir, `bot_${timestamp}.db`);
 

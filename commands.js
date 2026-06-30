@@ -442,24 +442,7 @@ function registerCommands(
       await bot.answerCallbackQuery(callbackQuery.id, { text: '⏳ Заказ завершается...' });
 
       try {
-        // Очищаем pendingForms и удаляем сообщения перед завершением
-        const key = `${userId}_${orderId}`;
-        const state = pendingForms.get(key);
-        if (state) {
-          for (const offerId of Object.keys(state.offers)) {
-            try {
-              await bot.deleteMessage(userId, state.offers[offerId].messageId);
-            } catch (e) { }
-            try {
-              if (state.offers[offerId].stepMessageId) {
-                await bot.deleteMessage(userId, state.offers[offerId].stepMessageId);
-              }
-            } catch (e) { }
-          }
-          pendingForms.delete(key);
-        }
-
-        // Вызываем завершение заказа
+        // Вызываем завершение заказа (с очисткой pendingForms)
         await finishOrder(callbackQuery.message.chat.id, orderId, employee);
 
         // Удаляем исходное сообщение (штрихкод), если оно сохранено
@@ -1087,6 +1070,7 @@ function registerCommands(
 
   // ---------------------- ОБЩАЯ ФУНКЦИЯ ДЛЯ ЗАВЕРШЕНИЯ ЗАКАЗА ----------------------
   async function finishOrder(chatId, postingNumber, employee) {
+    console.log(`[FINISH] === Начало завершения заказа ${postingNumber} сотрудником ${employee.name} (ID ${employee.id}) ===`);
     try {
       // Проверяем, что заказ ещё активен
       const assignment = await db.db.get(
@@ -1094,6 +1078,7 @@ function registerCommands(
         postingNumber
       );
       if (!assignment) {
+        console.log(`[FINISH] Заказ ${postingNumber} уже завершён или не найден`);
         await bot.sendMessage(chatId, `⚠️ Заказ ${postingNumber} уже завершён или не найден.`);
         return;
       }
@@ -1161,7 +1146,7 @@ function registerCommands(
       }
 
       // ========== ТРАНЗАКЦИЯ БД ==========
-      const dbConn = db.db; // получаем соединение
+      const dbConn = db.db;
       await dbConn.run('BEGIN TRANSACTION');
 
       try {
@@ -1224,19 +1209,30 @@ function registerCommands(
         await bot.sendMessage(moderatorId, `📦 Сотрудник ${employee.name} завершил заказ ${postingNumber}.`);
       }
 
+      console.log(`[FINISH] Заказ ${postingNumber} успешно завершён, вызываем очистку состояний`);
+      await clearOrderState(postingNumber, employee.tg_user_id);
+      console.log(`[FINISH] === Завершено завершение заказа ${postingNumber} ===`);
+
     } catch (err) {
-      console.error('Ошибка завершения заказа:', err);
+      console.error(`[FINISH] Ошибка при завершении заказа ${postingNumber}:`, err);
       await bot.sendMessage(chatId, `❌ Не удалось подтвердить сборку заказа ${postingNumber}: ${err.message}`);
       // Если ошибка произошла после подтверждения сборки, но до транзакции, заказ может быть уже в статусе awaiting_deliver,
       // но статус в нашей БД останется assigned. Это допустимо, так как мы не обновили БД.
       // Пользователь может повторить попытку, и тогда сработает проверка дубля заработка.
+      // Всё равно пытаемся очистить состояние, если оно есть
+      try {
+        await clearOrderState(postingNumber, employee.tg_user_id);
+      } catch (clearErr) {
+        console.error(`[FINISH] Ошибка при очистке состояний после ошибки:`, clearErr);
+      }
     }
-
-    await clearOrderState(postingNumber, employee.tg_user_id);
   }
+
 
   // ---------------------- ОБЩАЯ ФУНКЦИЯ ДЛЯ НАЗНАЧЕНИЯ ЗАКАЗА ----------------------
   async function assignOrder(orderId, employeeId, adminChatId) {
+    console.log(`[ASSIGN] === Начало назначения заказа ${orderId} сотруднику ${employeeId} ===`);
+
     try {
       const employee = await db.getEmployeeById(employeeId);
       if (!employee) throw new Error(`Сотрудник с ID ${employeeId} не найден.`);
@@ -1465,6 +1461,8 @@ function registerCommands(
         currentOrderProcessing = null;
       }
 
+      console.log(`[ASSIGN] Заказ ${orderId} успешно назначен сотруднику ${employee.name} (ID ${employee.id})`);
+
       // --- Отправляем уведомление администратору (если передан chatId) ---
       if (adminChatId) {
         await bot.sendMessage(adminChatId, `✅ Заказ ${orderId} назначен сотруднику ${employee.name} (ID сотрудника: ${employee.id}).`);
@@ -1475,9 +1473,10 @@ function registerCommands(
         await safeProcessNextOrder();
       }
 
+      console.log(`[ASSIGN] === Назначение завершено ===`);
       return { success: true, employee };
     } catch (err) {
-      console.error('[ASSIGN] Ошибка:', err);
+      console.error(`[ASSIGN] Ошибка назначения заказа ${orderId}:`, err);
       if (adminChatId) {
         await bot.sendMessage(adminChatId, `❌ Ошибка назначения: ${err.message}`);
       }
@@ -2341,7 +2340,7 @@ function registerCommands(
     }
 
     try {
-      // 1. Удаляем сообщения модератора
+      // 1. Удаляем старое сообщение и фото
       if (typeof deleteLastOrderMessages === 'function') {
         await deleteLastOrderMessages();
       }
@@ -2369,6 +2368,7 @@ function registerCommands(
         }
       }
 
+      console.log(`[RELOAD] Найдено неактивных состояний для удаления: ${keysToRemove.length}`);
       for (const key of keysToRemove) {
         const state = pendingForms.get(key);
         if (state) {
@@ -3459,17 +3459,20 @@ function registerCommands(
 };
 
 // ---------------------- ВОССТАНОВЛЕНИЕ СОСТОЯНИЙ ПОСЛЕ ПЕРЕЗАПУСКА ----------------------
-async function restorePendingForms(db, ozon) {
+async function restorePendingForms(db, ozon, bot) {
+  console.log('[RESTORE] Начало восстановления состояний после перезапуска');
+
   try {
     const assignments = await db.db.all('SELECT order_id, employee_id FROM assignments WHERE status = "assigned"');
+    console.log(`[RESTORE] Найдено активных назначений: ${assignments.length}`);
     for (const assign of assignments) {
       const employee = await db.getEmployeeById(assign.employee_id);
       if (!employee || employee.is_fired) continue;
       const userId = employee.tg_user_id;
       const orderId = assign.order_id;
 
-      const existing = pendingForms.get(userId);
-      if (existing && existing.orderId === orderId) continue;
+      const key = `${userId}_${orderId}`;
+      if (pendingForms.has(key)) continue; // уже есть состояние
 
       const orderDetails = await ozon.getOrderDetails(orderId);
       if (!orderDetails || !orderDetails.products) continue;
@@ -3481,26 +3484,47 @@ async function restorePendingForms(db, ozon) {
         const stats = await db.getProductStats(offerId);
         if (!stats) missingStats.push(offerId);
       }
-      if (missingStats.length === 0) continue;
 
-      const offersState = {};
-      for (const offerId of missingStats) {
-        offersState[offerId] = {
-          material: null,
-          color: null,
-          weight: null,
-          status: 'not_started',
-          messageId: null,
-          waitingForWeight: false
+      if (missingStats.length === 0) {
+        console.log(`[RESTORE] Заказ ${orderId} пользователя ${userId} – статистика заполнена, отправляем кнопку`);
+        // ВСЕ статистики заполнены – отправляем кнопку завершения
+        // Создаём состояние с allCompleted: true (пустой offers)
+        pendingForms.set(key, {
+          orderId: orderId,
+          offers: {},
+          allCompleted: true
+        });
+        // Отправляем кнопку
+        const finishKeyboard = {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '✅ Завершить заказ', callback_data: `finish_order_${orderId}` }]
+            ]
+          }
         };
+        await bot.sendMessage(userId, `✅ Все данные для заказа ${orderId} заполнены. Теперь вы можете завершить заказ.`, finishKeyboard);
+        console.log(`[RESTORE] Восстановлено состояние (заполнено) для заказа ${orderId} пользователя ${userId}`);
+      } else {
+        console.log(`[RESTORE] Заказ ${orderId} пользователя ${userId} – недостает статистики для: ${missingStats.join(', ')}`);
+        // Есть недостающие статистики – создаём состояние для опроса (как раньше)
+        const offersState = {};
+        for (const offerId of missingStats) {
+          offersState[offerId] = {
+            material: null,
+            color: null,
+            weight: null,
+            status: 'not_started',
+            messageId: null,
+            waitingForWeight: false
+          };
+        }
+        pendingForms.set(key, {
+          orderId: orderId,
+          offers: offersState,
+          allCompleted: false
+        });
       }
-      const key = `${userId}_${orderId}`;
-      pendingForms.set(key, {
-        orderId: orderId,
-        offers: offersState,
-        allCompleted: false
-      });
-      console.log(`[RESTORE] Восстановлено состояние для заказа ${orderId} пользователя ${userId}`);
+      console.log('[RESTORE] Восстановление завершено');
     }
   } catch (err) {
     console.error('Ошибка восстановления состояний:', err);
@@ -3509,44 +3533,58 @@ async function restorePendingForms(db, ozon) {
 
 // ---------------------- ЦЕНТРАЛИЗОВАННАЯ ОЧИСТКА СОСТОЯНИЙ ЗАКАЗА ----------------------
 async function clearOrderState(orderId, userId = null) {
+  console.log(`[CLEAR] Начало очистки заказа ${orderId}${userId ? ` для пользователя ${userId}` : ''}`);
+
   // 1. Очищаем pendingForms
   if (userId) {
     const key = `${userId}_${orderId}`;
     if (pendingForms.has(key)) {
+      console.log(`[CLEAR] Удаляем состояние для ${key}`);
       const state = pendingForms.get(key);
       for (const offerId of Object.keys(state.offers)) {
-        try { await bot.deleteMessage(userId, state.offers[offerId].messageId); } catch (e) { }
-        try { if (state.offers[offerId].stepMessageId) await bot.deleteMessage(userId, state.offers[offerId].stepMessageId); } catch (e) { }
+        try { await bot.deleteMessage(userId, state.offers[offerId].messageId); } catch (e) { /* ignore */ }
+        try { if (state.offers[offerId].stepMessageId) await bot.deleteMessage(userId, state.offers[offerId].stepMessageId); } catch (e) { /* ignore */ }
       }
       pendingForms.delete(key);
+    } else {
+      console.log(`[CLEAR] Состояние для ${key} не найдено`);
     }
   } else {
+    // удаляем все записи для этого orderId
+    let found = false;
     for (const [key, state] of pendingForms) {
       if (state.orderId === orderId) {
+        console.log(`[CLEAR] Удаляем состояние для ${key}`);
         const uid = key.split('_')[0];
         for (const offerId of Object.keys(state.offers)) {
-          try { await bot.deleteMessage(uid, state.offers[offerId].messageId); } catch (e) { }
-          try { if (state.offers[offerId].stepMessageId) await bot.deleteMessage(uid, state.offers[offerId].stepMessageId); } catch (e) { }
+          try { await bot.deleteMessage(uid, state.offers[offerId].messageId); } catch (e) { /* ignore */ }
+          try { if (state.offers[offerId].stepMessageId) await bot.deleteMessage(uid, state.offers[offerId].stepMessageId); } catch (e) { /* ignore */ }
         }
         pendingForms.delete(key);
+        found = true;
         break;
       }
     }
+    if (!found) console.log(`[CLEAR] Состояние для orderId ${orderId} не найдено`);
   }
 
   // 2. Очищаем pendingFinishConfirmations
   if (pendingFinishConfirmations.has(orderId)) {
+    console.log(`[CLEAR] Удаляем pendingFinishConfirmations для ${orderId}`);
     const original = pendingFinishConfirmations.get(orderId);
     if (original) {
-      try { await bot.deleteMessage(original.originalChatId, original.originalMessageId); } catch (e) { }
+      try { await bot.deleteMessage(original.originalChatId, original.originalMessageId); } catch (e) { /* ignore */ }
     }
     pendingFinishConfirmations.delete(orderId);
   }
 
   // 3. Очищаем finishingOrders
   if (finishingOrders.has(orderId)) {
+    console.log(`[CLEAR] Удаляем finishingOrders для ${orderId}`);
     finishingOrders.delete(orderId);
   }
+
+  console.log(`[CLEAR] Завершена очистка заказа ${orderId}`);
 }
 
 // Экспорт registerCommands и restorePendingForms

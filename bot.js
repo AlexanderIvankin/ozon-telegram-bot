@@ -484,7 +484,7 @@ process.on('SIGTERM', gracefulShutdown);
     );
     setTimeout(() => {
         checkAndOfferNewOrders();
-        restorePendingForms(db, ozon);
+        restorePendingForms(db, ozon, bot);
     }, 5000);
     console.log('Бот запущен...');
 })();

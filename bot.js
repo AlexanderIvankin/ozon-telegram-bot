@@ -251,7 +251,7 @@ async function cleanExpiredAssignments(activeOrderIds) {
             // Отменяем назначение (обновляем статус в БД) - БЕЗ увеличения счётчика
             await db.autoCancelOrder(orderId, assignment.employee_id);
 
-            clearOrderState(orderId, assignment.tg_user_id);
+            await clearOrderState(orderId, assignment.tg_user_id);
 
             // Если заказ был в очереди — удаляем
             const idx = pendingNewOrders.findIndex(o => o.posting_number === orderId);

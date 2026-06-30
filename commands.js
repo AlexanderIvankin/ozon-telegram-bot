@@ -19,6 +19,50 @@ let materialsData = null;
 
 const MIN_EARNINGS = 250; // минимальный заработок за заказ
 
+const TIMEZONE = process.env.TIMEZONE || 'Europe/Moscow'; // можно переопределить через .env
+
+/**
+ * Форматирует дату для имени файла: YYYY-MM-DD_HH-MM-SS в указанном часовом поясе
+ */
+function formatLocalTimestamp(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+    timeZone: TIMEZONE
+  }).formatToParts(date);
+
+  const getPart = (type) => parts.find(p => p.type === type)?.value || '00';
+  const year = getPart('year');
+  const month = getPart('month');
+  const day = getPart('day');
+  const hour = getPart('hour');
+  const minute = getPart('minute');
+  const second = getPart('second');
+  return `${year}-${month}-${day}_${hour}-${minute}-${second}`;
+}
+
+/**
+ * Форматирует timestamp (число мс) в DD.MM.YYYY в указанном часовом поясе
+ */
+function formatDateDDMMYYYY(timestamp) {
+  const date = new Date(timestamp);
+  const parts = new Intl.DateTimeFormat('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    timeZone: TIMEZONE
+  }).formatToParts(date);
+  const day = parts.find(p => p.type === 'day')?.value || '??';
+  const month = parts.find(p => p.type === 'month')?.value || '??';
+  const year = parts.find(p => p.type === 'year')?.value || '????';
+  return `${day}.${month}.${year}`;
+}
+
 // Загружаем справочники при старте
 function loadMaterials() {
   try {
@@ -42,19 +86,6 @@ function loadMaterials() {
   }
 }
 loadMaterials();
-
-// Форматирует текущую дату для имени файла: YYYY-MM-DD_HH-MM-SS (локальное время)
-function formatLocalTimestamp(date = new Date()) {
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}_${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(date.getSeconds())}`;
-}
-
-// Форматирует timestamp (число мс) в DD.MM.YYYY (локальное время)
-function formatDateDDMMYYYY(timestamp) {
-  const date = new Date(timestamp);
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${pad(date.getDate())}.${pad(date.getMonth() + 1)}.${date.getFullYear()}`;
-}
 
 function registerCommands(
   bot, db, ozon, bwipjs, scheduler, debugMode,
@@ -2857,9 +2888,7 @@ function registerCommands(
       return bot.sendMessage(msg.chat.id, '❌ Файл базы данных не найден.');
     }
 
-    const now = new Date();
-    const timestamp = formatLocalTimestamp(now);
-
+    const timestamp = formatLocalTimestamp();
     const backupPath = path.join(backupDir, `bot_${timestamp}.db`);
 
     try {

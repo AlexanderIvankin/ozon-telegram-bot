@@ -657,23 +657,7 @@ function registerCommands(
       }
       try {
         // Очищаем pendingForms и удаляем сообщения перед завершением
-        clearOrderState(orderId, userId);
-
-        const key = `${userId}_${orderId}`;
-        const state = pendingForms.get(key);
-        if (state) {
-          for (const offerId of Object.keys(state.offers)) {
-            try {
-              await bot.deleteMessage(userId, state.offers[offerId].messageId);
-            } catch (e) { }
-            try {
-              if (state.offers[offerId].stepMessageId) {
-                await bot.deleteMessage(userId, state.offers[offerId].stepMessageId);
-              }
-            } catch (e) { }
-          }
-          pendingForms.delete(key);
-        }
+        await clearOrderState(orderId, userId);
 
         await db.cancelOrder(orderId, employee.id);
         if (currentOrderProcessing && currentOrderProcessing.order.posting_number === orderId) {
@@ -854,15 +838,16 @@ function registerCommands(
       await db.db.run('DELETE FROM assignments WHERE status = "assigned"');
 
       // Очистка всех состояний всех заказов
-      for (const [key, state] of pendingForms) {
-        clearOrderState(state.orderId);
+      const orderIds = Array.from(pendingForms.values()).map(state => state.orderId);
+      for (const orderId of orderIds) {
+        await clearOrderState(orderId);
       }
       // Дополнительно очищаем pendingFinishConfirmations и finishingOrders
       for (const orderId of pendingFinishConfirmations.keys()) {
-        clearOrderState(orderId);
+        await clearOrderState(orderId);
       }
       for (const orderId of finishingOrders.keys()) {
-        clearOrderState(orderId);
+        await clearOrderState(orderId);
       }
 
       await bot.editMessageText('✅ Все активные назначения сброшены.', {
@@ -886,7 +871,7 @@ function registerCommands(
       if (assignment) {
         const employee = await db.getEmployeeById(assignment.employee_id);
         // Очищаем pendingForms и удаляем сообщения перед завершением
-        clearOrderState(orderId, employee.tg_user_id);
+        await clearOrderState(orderId, employee.tg_user_id);
       }
       // Удаляем назначение
       await db.db.run('DELETE FROM assignments WHERE order_id = ? AND status = "assigned"', orderId);
@@ -980,19 +965,18 @@ function registerCommands(
           await deleteLastOrderMessages();
         }
 
-        // Очищаем все pendingForms
-        for (const [key, state] of pendingForms) {
-          const userId = key.split('_')[0];
-          for (const offerId of Object.keys(state.offers)) {
-            try { await bot.deleteMessage(userId, state.offers[offerId].messageId); } catch (e) { }
-            try {
-              if (state.offers[offerId].stepMessageId) {
-                await bot.deleteMessage(userId, state.offers[offerId].stepMessageId);
-              }
-            } catch (e) { }
-          }
+        // Очистка всех состояний всех заказов
+        const orderIds = Array.from(pendingForms.values()).map(state => state.orderId);
+        for (const orderId of orderIds) {
+          await clearOrderState(orderId);
         }
-        pendingForms.clear();
+        // Дополнительно очищаем pendingFinishConfirmations и finishingOrders
+        for (const orderId of pendingFinishConfirmations.keys()) {
+          await clearOrderState(orderId);
+        }
+        for (const orderId of finishingOrders.keys()) {
+          await clearOrderState(orderId);
+        }
 
         // Синхронизация складов
         const warehouses = await ozon.fetchWarehousesFromOzon();
@@ -1248,7 +1232,7 @@ function registerCommands(
       // Пользователь может повторить попытку, и тогда сработает проверка дубля заработка.
     }
 
-    clearOrderState(postingNumber, employee.tg_user_id);
+    await clearOrderState(postingNumber, employee.tg_user_id);
   }
 
   // ---------------------- ОБЩАЯ ФУНКЦИЯ ДЛЯ НАЗНАЧЕНИЯ ЗАКАЗА ----------------------
@@ -1272,7 +1256,7 @@ function registerCommands(
       }
 
       // Удаляем старые состояния, если заказ был ранее в очереди (например, повторное назначение)
-      clearOrderState(orderId);
+      await clearOrderState(orderId);
 
       // Назначаем в БД
       await db.assignOrderToEmployee(orderId, employeeId);
@@ -2357,44 +2341,53 @@ function registerCommands(
     }
 
     try {
-      // 1. Удаляем старое сообщение и фото
+      // 1. Удаляем сообщения модератора
       if (typeof deleteLastOrderMessages === 'function') {
         await deleteLastOrderMessages();
       }
-      // 2. Сбрасываем состояние (очищаем массив, не пересоздавая)
-      pendingNewOrders.length = 0;
+
+      // 2. Сбрасываем текущий обрабатываемый заказ и очередь (но не pendingForms)
       currentOrderProcessing = null;
+      pendingNewOrders.length = 0;
 
-      // Очистка pendingForms для заказов, которых нет в актуальной очереди
-      const activeOrderIds = new Set(pendingNewOrders.map(o => o.posting_number));
-      for (const [key, state] of pendingForms) {
-        const userId = key.split('_')[0];
-        for (const offerId of Object.keys(state.offers)) {
-          try { await bot.deleteMessage(userId, state.offers[offerId].messageId); } catch (e) { }
-          try {
-            if (state.offers[offerId].stepMessageId) {
-              await bot.deleteMessage(userId, state.offers[offerId].stepMessageId);
-            }
-          } catch (e) { }
-        }
-      }
-      pendingForms.clear();
-
-      // 3. Перезагружаем очередь из API
+      // 3. Обновляем очередь заказов из API (заполняет pendingNewOrders)
       await safeCheckAndOfferNewOrders();
 
-      // 4. Если после обновления есть заказы – отправляем первый
+      // 4. Получаем все активные назначения из БД
+      const activeAssignments = await db.db.all('SELECT order_id FROM assignments WHERE status = "assigned"');
+      const activeOrderIds = new Set(activeAssignments.map(a => a.order_id));
+
+      // 5. Добавляем заказы из обновлённой очереди
+      const pendingOrderIds = new Set(pendingNewOrders.map(o => o.posting_number));
+
+      // 6. Удаляем состояния только для заказов, которые не являются активными
+      const keysToRemove = [];
+      for (const [key, state] of pendingForms) {
+        const orderId = state.orderId;
+        if (!activeOrderIds.has(orderId) && !pendingOrderIds.has(orderId)) {
+          keysToRemove.push(key);
+        }
+      }
+
+      for (const key of keysToRemove) {
+        const state = pendingForms.get(key);
+        if (state) {
+          const uid = key.split('_')[0];
+          await clearOrderState(state.orderId, uid);
+        }
+      }
+
+      // 7. Если есть заказы в очереди – отправляем первый
       if (pendingNewOrders.length) {
-        // Убедимся, что нет активного заказа
         currentOrderProcessing = null;
         await safeProcessNextOrder();
-        bot.sendMessage(msg.chat.id, `✅ Перезагрузка выполнена. Отправлен первый заказ. Осталось: ${pendingNewOrders.length}`);
+        await bot.sendMessage(msg.chat.id, `✅ Перезагрузка выполнена. Отправлен первый заказ. Осталось: ${pendingNewOrders.length}`);
       } else {
-        bot.sendMessage(msg.chat.id, '✅ Перезагрузка выполнена. Новых заказов нет.');
+        await bot.sendMessage(msg.chat.id, '✅ Перезагрузка выполнена. Новых заказов нет.');
       }
     } catch (err) {
       console.error('[RELOAD_QUEUE] Ошибка:', err);
-      bot.sendMessage(msg.chat.id, `❌ Ошибка при перезагрузке: ${err.message}`);
+      await bot.sendMessage(msg.chat.id, `❌ Ошибка при перезагрузке: ${err.message}`);
     }
   });
 
@@ -3515,27 +3508,25 @@ async function restorePendingForms(db, ozon) {
 }
 
 // ---------------------- ЦЕНТРАЛИЗОВАННАЯ ОЧИСТКА СОСТОЯНИЙ ЗАКАЗА ----------------------
-function clearOrderState(orderId, userId = null) {
+async function clearOrderState(orderId, userId = null) {
   // 1. Очищаем pendingForms
   if (userId) {
     const key = `${userId}_${orderId}`;
     if (pendingForms.has(key)) {
       const state = pendingForms.get(key);
-      // Удаляем сообщения для этого заказа (если они ещё есть)
       for (const offerId of Object.keys(state.offers)) {
-        try { bot.deleteMessage(userId, state.offers[offerId].messageId); } catch (e) { }
-        try { if (state.offers[offerId].stepMessageId) bot.deleteMessage(userId, state.offers[offerId].stepMessageId); } catch (e) { }
+        try { await bot.deleteMessage(userId, state.offers[offerId].messageId); } catch (e) { }
+        try { if (state.offers[offerId].stepMessageId) await bot.deleteMessage(userId, state.offers[offerId].stepMessageId); } catch (e) { }
       }
       pendingForms.delete(key);
     }
   } else {
-    // Если userId не передан, удаляем все записи для этого orderId (используется при сбросе всех)
     for (const [key, state] of pendingForms) {
       if (state.orderId === orderId) {
         const uid = key.split('_')[0];
         for (const offerId of Object.keys(state.offers)) {
-          try { bot.deleteMessage(uid, state.offers[offerId].messageId); } catch (e) { }
-          try { if (state.offers[offerId].stepMessageId) bot.deleteMessage(uid, state.offers[offerId].stepMessageId); } catch (e) { }
+          try { await bot.deleteMessage(uid, state.offers[offerId].messageId); } catch (e) { }
+          try { if (state.offers[offerId].stepMessageId) await bot.deleteMessage(uid, state.offers[offerId].stepMessageId); } catch (e) { }
         }
         pendingForms.delete(key);
         break;
@@ -3547,12 +3538,12 @@ function clearOrderState(orderId, userId = null) {
   if (pendingFinishConfirmations.has(orderId)) {
     const original = pendingFinishConfirmations.get(orderId);
     if (original) {
-      try { bot.deleteMessage(original.originalChatId, original.originalMessageId); } catch (e) { }
+      try { await bot.deleteMessage(original.originalChatId, original.originalMessageId); } catch (e) { }
     }
     pendingFinishConfirmations.delete(orderId);
   }
 
-  // 3. Очищаем finishingOrders (блокировка завершения)
+  // 3. Очищаем finishingOrders
   if (finishingOrders.has(orderId)) {
     finishingOrders.delete(orderId);
   }

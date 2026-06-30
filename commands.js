@@ -855,8 +855,7 @@ function registerCommands(
 
       // Очистка всех состояний всех заказов
       for (const [key, state] of pendingForms) {
-        const orderId = state.orderId;
-        clearOrderState(orderId);
+        clearOrderState(state.orderId);
       }
       // Дополнительно очищаем pendingFinishConfirmations и finishingOrders
       for (const orderId of pendingFinishConfirmations.keys()) {
@@ -865,20 +864,6 @@ function registerCommands(
       for (const orderId of finishingOrders.keys()) {
         clearOrderState(orderId);
       }
-
-      // --- Очистка всех pendingForms и удаление сообщений ---
-      for (const [key, state] of pendingForms) {
-        const userId = key.split('_')[0];
-        for (const offerId of Object.keys(state.offers)) {
-          try { await bot.deleteMessage(userId, state.offers[offerId].messageId); } catch (e) { }
-          try {
-            if (state.offers[offerId].stepMessageId) {
-              await bot.deleteMessage(userId, state.offers[offerId].stepMessageId);
-            }
-          } catch (e) { }
-        }
-      }
-      pendingForms.clear();
 
       await bot.editMessageText('✅ Все активные назначения сброшены.', {
         chat_id: msg.chat.id,
@@ -900,25 +885,8 @@ function registerCommands(
       const assignment = await db.db.get('SELECT employee_id FROM assignments WHERE order_id = ? AND status = "assigned"', orderId);
       if (assignment) {
         const employee = await db.getEmployeeById(assignment.employee_id);
+        // Очищаем pendingForms и удаляем сообщения перед завершением
         clearOrderState(orderId, employee.tg_user_id);
-        if (employee) {
-          // Очищаем pendingForms и удаляем сообщения перед завершением
-          const key = `${employee.tg_user_id}_${orderId}`;
-          const state = pendingForms.get(key);
-          if (state) {
-            for (const offerId of Object.keys(state.offers)) {
-              try {
-                await bot.deleteMessage(userId, state.offers[offerId].messageId);
-              } catch (e) { }
-              try {
-                if (state.offers[offerId].stepMessageId) {
-                  await bot.deleteMessage(userId, state.offers[offerId].stepMessageId);
-                }
-              } catch (e) { }
-            }
-            pendingForms.delete(key);
-          }
-        }
       }
       // Удаляем назначение
       await db.db.run('DELETE FROM assignments WHERE order_id = ? AND status = "assigned"', orderId);

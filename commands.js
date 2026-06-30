@@ -46,7 +46,7 @@ loadMaterials();
 function registerCommands(
   bot, db, ozon, bwipjs, scheduler, debugMode,
   isAuthorizedUser, isModerator, isAdmin,
-  showOrderMenu, checkAndOfferNewOrders, processNextOrder,
+  showOrderMenu, safeCheckAndOfferNewOrders, safeProcessNextOrder,
   pendingNewOrders, currentOrderProcessing,
   deleteLastOrderMessages, updateModeratorActivity,
   startInactivityTimer, stopInactivityTimer
@@ -657,6 +657,8 @@ function registerCommands(
       }
       try {
         // Очищаем pendingForms и удаляем сообщения перед завершением
+        clearOrderState(orderId, userId);
+
         const key = `${userId}_${orderId}`;
         const state = pendingForms.get(key);
         if (state) {
@@ -690,10 +692,10 @@ function registerCommands(
           await bot.sendMessage(moderatorId, `📦 Сотрудник ${employee.name} отменил заказ ${orderId}. Заказ возвращён в очередь.`);
         }
 
-        await checkAndOfferNewOrders();
+        await safeCheckAndOfferNewOrders();
         if (!currentOrderProcessing && pendingNewOrders.length) {
           console.log(`[CONFIRM_CANCEL] Отправляем следующий заказ, осталось: ${pendingNewOrders.length}`);
-          await processNextOrder();
+          await safeProcessNextOrder();
         }
       } catch (err) {
         console.error(`[CONFIRM_CANCEL] Ошибка:`, err.message);
@@ -742,7 +744,7 @@ function registerCommands(
       }
       await bot.answerCallbackQuery(callbackQuery.id, { text: 'Заказ пропущен' });
       await safeDeleteMessage(msg.chat.id, msg.message_id);
-      if (typeof processNextOrder === 'function') processNextOrder();
+      if (typeof safeProcessNextOrder === 'function') safeProcessNextOrder();
       return;
     }
 
@@ -851,6 +853,19 @@ function registerCommands(
     if (data === 'confirm_clear_all') {
       await db.db.run('DELETE FROM assignments WHERE status = "assigned"');
 
+      // Очистка всех состояний всех заказов
+      for (const [key, state] of pendingForms) {
+        const orderId = state.orderId;
+        clearOrderState(orderId);
+      }
+      // Дополнительно очищаем pendingFinishConfirmations и finishingOrders
+      for (const orderId of pendingFinishConfirmations.keys()) {
+        clearOrderState(orderId);
+      }
+      for (const orderId of finishingOrders.keys()) {
+        clearOrderState(orderId);
+      }
+
       // --- Очистка всех pendingForms и удаление сообщений ---
       for (const [key, state] of pendingForms) {
         const userId = key.split('_')[0];
@@ -885,6 +900,7 @@ function registerCommands(
       const assignment = await db.db.get('SELECT employee_id FROM assignments WHERE order_id = ? AND status = "assigned"', orderId);
       if (assignment) {
         const employee = await db.getEmployeeById(assignment.employee_id);
+        clearOrderState(orderId, employee.tg_user_id);
         if (employee) {
           // Очищаем pendingForms и удаляем сообщения перед завершением
           const key = `${employee.tg_user_id}_${orderId}`;
@@ -924,11 +940,11 @@ function registerCommands(
       await bot.answerCallbackQuery(callbackQuery.id, { text: 'Заказ снят' });
 
       // Принудительно обновляем очередь заказов из API
-      await checkAndOfferNewOrders();
+      await safeCheckAndOfferNewOrders();
 
       // Если после обновления нет активного заказа, но есть новые – отправляем следующий
       if (!currentOrderProcessing && pendingNewOrders.length) {
-        await processNextOrder();
+        await safeProcessNextOrder();
       }
       return;
     }
@@ -1018,10 +1034,10 @@ function registerCommands(
         await syncEmployeesFromExcel(db);
 
         // Перезагрузка очереди заказов
-        await checkAndOfferNewOrders();
+        await safeCheckAndOfferNewOrders();
         if (pendingNewOrders.length) {
           currentOrderProcessing = null;
-          await processNextOrder();
+          await safeProcessNextOrder();
         }
 
         await bot.editMessageText('✅ Полный сброс (кроме сотрудников и их заработка) и синхронизация выполнены. Очередь заказов обновлена.', {
@@ -1121,28 +1137,46 @@ function registerCommands(
   async function finishOrder(chatId, postingNumber, employee) {
     try {
       // Проверяем, что заказ ещё активен
-      const assignment = await db.db.get('SELECT status FROM assignments WHERE order_id = ? AND status = "assigned"', postingNumber);
+      const assignment = await db.db.get(
+        'SELECT status FROM assignments WHERE order_id = ? AND status = "assigned"',
+        postingNumber
+      );
       if (!assignment) {
         await bot.sendMessage(chatId, `⚠️ Заказ ${postingNumber} уже завершён или не найден.`);
         return;
       }
 
       console.log(`[FINISH] Начинаем завершение заказа ${postingNumber}`);
+
+      // 1. Получаем сумму заказа для статистики
       const orderAmount = await ozon.getOrderTotalAmount(postingNumber);
       console.log(`[FINISH] Сумма заказа: ${orderAmount}`);
-      await db.updateEmployeeStats(employee.id, orderAmount);
 
+      // 2. Рассчитываем заработок ДО транзакции (чтобы не держать блокировку БД)
+      let earningsData = null;
+      try {
+        const orderDetails = await ozon.getOrderDetails(postingNumber);
+        if (orderDetails && orderDetails.products) {
+          const earnings = await calculateOrderEarnings(orderDetails, employee);
+          if (earnings.allHaveStats && earnings.total > 0) {
+            earningsData = earnings;
+          } else if (!earnings.allHaveStats) {
+            console.warn(`[FINISH] Не все товары имеют статистику для заказа ${postingNumber}`);
+          }
+        }
+      } catch (earnErr) {
+        console.error('Ошибка расчёта заработка:', earnErr);
+        // Продолжаем выполнение, заработок не будет сохранён
+      }
+
+      // 3. Внешние API-вызовы (подтверждение сборки, получение этикетки) – до транзакции
       let actId = null;
       let labelBuffer = null;
       let isAlreadyConfirmed = false;
 
-      // 1. Подтверждаем сборку (ship)
-      console.log(`[FINISH] Статистика обновлена`);
       try {
         const actResponse = await ozon.confirmPostingShip(postingNumber);
         console.log(`[FINISH] Ответ ship:`, JSON.stringify(actResponse, null, 2));
-
-        // Пытаемся извлечь actId
         actId = actResponse?.result?.id || actResponse?.id;
         if (!actId && actResponse?.additional_data) {
           for (const item of actResponse.additional_data) {
@@ -1154,21 +1188,19 @@ function registerCommands(
         }
         console.log(`[FINISH] Получен actId: ${actId}`);
       } catch (shipError) {
-        // Если заказ уже не в awaiting_packaging, считаем, что он уже подтверждён
         if (shipError.message && shipError.message.includes('не в статусе awaiting_packaging')) {
           console.warn(`[FINISH] Заказ ${postingNumber} уже подтверждён (статус не awaiting_packaging)`);
           isAlreadyConfirmed = true;
         } else {
-          throw shipError; // другие ошибки пробрасываем
+          throw shipError;
         }
       }
 
-      // 2. Ждём 15 секунд только если заказ только что подтверждён (не уже подтверждён)
       if (!isAlreadyConfirmed) {
         await new Promise(resolve => setTimeout(resolve, 15000));
       }
 
-      // 3. Получаем этикетку
+      // Получаем этикетку
       if (actId) {
         labelBuffer = await ozon.getPackageLabel(null, actId);
       }
@@ -1176,10 +1208,41 @@ function registerCommands(
         labelBuffer = await ozon.getPackageLabel(postingNumber);
       }
 
-      await db.completeOrder(postingNumber);
-      console.log(`[FINISH] Заказ ${postingNumber} завершён в БД`);
-      await new Promise(resolve => setTimeout(resolve, 500));
+      // ========== ТРАНЗАКЦИЯ БД ==========
+      const dbConn = db.db; // получаем соединение
+      await dbConn.run('BEGIN TRANSACTION');
 
+      try {
+        // 1. Обновляем статистику сотрудника (total_orders, total_amount)
+        await db.updateEmployeeStats(employee.id, orderAmount);
+
+        // 2. Сохраняем заработок, но только если его ещё нет (защита от дублей)
+        if (earningsData) {
+          const existingEarnings = await dbConn.get(
+            'SELECT id FROM employee_earnings WHERE order_id = ?',
+            postingNumber
+          );
+          if (!existingEarnings) {
+            await db.saveEmployeeEarnings(employee.id, postingNumber, earningsData.total);
+            console.log(`[FINISH] Заработок сохранён: ${earningsData.total}`);
+          } else {
+            console.log(`[FINISH] Заработок для заказа ${postingNumber} уже существует, пропускаем`);
+          }
+        }
+
+        // 3. Завершаем заказ (обновляем статус в assignments)
+        await db.completeOrder(postingNumber);
+
+        await dbConn.run('COMMIT');
+        console.log(`[FINISH] Транзакция успешно закоммичена для заказа ${postingNumber}`);
+      } catch (txError) {
+        await dbConn.run('ROLLBACK');
+        console.error(`[FINISH] Ошибка в транзакции для заказа ${postingNumber}:`, txError);
+        throw txError; // пробрасываем, чтобы обработать в catch внешнего блока
+      }
+      // ===================================
+
+      // 4. Отправляем этикетку (после успешной транзакции)
       if (labelBuffer) {
         await bot.sendDocument(
           chatId,
@@ -1191,43 +1254,33 @@ function registerCommands(
         await bot.sendMessage(chatId, `✅ Заказ ${postingNumber} подтверждён. Этикетку можно скачать в личном кабинете Ozon.`);
       }
 
-      // --- Расчёт заработка ---
-      try {
-        const orderDetails = await ozon.getOrderDetails(postingNumber);
-        if (orderDetails && orderDetails.products) {
-          // Проверяем, не было ли уже начисления для этого заказа
-          const existingEarnings = await db.db.get('SELECT id FROM employee_earnings WHERE order_id = ?', postingNumber);
-          if (!existingEarnings) {
-            const earnings = await calculateOrderEarnings(orderDetails, employee);
-            if (earnings.allHaveStats && earnings.total > 0) {
-              await db.saveEmployeeEarnings(employee.id, postingNumber, earnings.total);
-              let msg = `💰 *Заработок за заказ ${postingNumber}*\n\n`;
-              for (const item of earnings.details) {
-                msg += `• ${item.productName} (${item.offerId})\n`;
-                msg += `  Материал: ${item.material}, Вес: ${item.weight} г/шт, Кол-во: ${item.quantity} шт\n`;
-                msg += `  Заработок за единицу: ${item.earningsPerUnit.toFixed(2)} руб., Итого: ${item.totalForProduct.toFixed(2)} руб.\n`;
-              }
-              msg += `\n*Итого: ${earnings.total.toFixed(2)} руб.*`;
-              await bot.sendMessage(employee.tg_user_id, msg, { parse_mode: 'Markdown' });
-              await new Promise(resolve => setTimeout(resolve, 200));
-            } else if (!earnings.allHaveStats) {
-              console.warn(`[FINISH] Не все товары имеют статистику для заказа ${postingNumber}`);
-            }
-          }
+      // 5. Отправляем детализацию заработка сотруднику (если есть)
+      if (earningsData && earningsData.details && earningsData.details.length) {
+        let msg = `💰 *Заработок за заказ ${postingNumber}*\n\n`;
+        for (const item of earningsData.details) {
+          msg += `• ${item.productName} (${item.offerId})\n`;
+          msg += `  Материал: ${item.material}, Вес: ${item.weight} г/шт, Кол-во: ${item.quantity} шт\n`;
+          msg += `  Заработок за единицу: ${item.earningsPerUnit.toFixed(2)} руб., Итого: ${item.totalForProduct.toFixed(2)} руб.\n`;
         }
-      } catch (earnErr) {
-        console.error('Ошибка расчёта заработка:', earnErr);
+        msg += `\n*Итого: ${earningsData.total.toFixed(2)} руб.*`;
+        await bot.sendMessage(employee.tg_user_id, msg, { parse_mode: 'Markdown' });
       }
 
-      // Уведомляем модератора
+      // 6. Уведомляем модератора
       const moderatorId = process.env.MODERATOR_ID;
       if (moderatorId) {
         await bot.sendMessage(moderatorId, `📦 Сотрудник ${employee.name} завершил заказ ${postingNumber}.`);
       }
+
     } catch (err) {
       console.error('Ошибка завершения заказа:', err);
       await bot.sendMessage(chatId, `❌ Не удалось подтвердить сборку заказа ${postingNumber}: ${err.message}`);
+      // Если ошибка произошла после подтверждения сборки, но до транзакции, заказ может быть уже в статусе awaiting_deliver,
+      // но статус в нашей БД останется assigned. Это допустимо, так как мы не обновили БД.
+      // Пользователь может повторить попытку, и тогда сработает проверка дубля заработка.
     }
+
+    clearOrderState(postingNumber, employee.tg_user_id);
   }
 
   // ---------------------- ОБЩАЯ ФУНКЦИЯ ДЛЯ НАЗНАЧЕНИЯ ЗАКАЗА ----------------------
@@ -1249,6 +1302,9 @@ function registerCommands(
       } catch (err) {
         throw new Error(`Сотрудник ${employee.name} не начал диалог с ботом. Попросите его написать /start.`);
       }
+
+      // Удаляем старые состояния, если заказ был ранее в очереди (например, повторное назначение)
+      clearOrderState(orderId);
 
       // Назначаем в БД
       await db.assignOrderToEmployee(orderId, employeeId);
@@ -1463,8 +1519,8 @@ function registerCommands(
       }
 
       // Запускаем следующий заказ, если есть
-      if (typeof processNextOrder === 'function') {
-        await processNextOrder();
+      if (typeof safeProcessNextOrder === 'function') {
+        await safeProcessNextOrder();
       }
 
       return { success: true, employee };
@@ -2357,13 +2413,13 @@ function registerCommands(
       pendingForms.clear();
 
       // 3. Перезагружаем очередь из API
-      await checkAndOfferNewOrders();
+      await safeCheckAndOfferNewOrders();
 
       // 4. Если после обновления есть заказы – отправляем первый
       if (pendingNewOrders.length) {
         // Убедимся, что нет активного заказа
         currentOrderProcessing = null;
-        await processNextOrder();
+        await safeProcessNextOrder();
         bot.sendMessage(msg.chat.id, `✅ Перезагрузка выполнена. Отправлен первый заказ. Осталось: ${pendingNewOrders.length}`);
       } else {
         bot.sendMessage(msg.chat.id, '✅ Перезагрузка выполнена. Новых заказов нет.');
@@ -3490,8 +3546,53 @@ async function restorePendingForms(db, ozon) {
   }
 }
 
+// ---------------------- ЦЕНТРАЛИЗОВАННАЯ ОЧИСТКА СОСТОЯНИЙ ЗАКАЗА ----------------------
+function clearOrderState(orderId, userId = null) {
+  // 1. Очищаем pendingForms
+  if (userId) {
+    const key = `${userId}_${orderId}`;
+    if (pendingForms.has(key)) {
+      const state = pendingForms.get(key);
+      // Удаляем сообщения для этого заказа (если они ещё есть)
+      for (const offerId of Object.keys(state.offers)) {
+        try { bot.deleteMessage(userId, state.offers[offerId].messageId); } catch (e) { }
+        try { if (state.offers[offerId].stepMessageId) bot.deleteMessage(userId, state.offers[offerId].stepMessageId); } catch (e) { }
+      }
+      pendingForms.delete(key);
+    }
+  } else {
+    // Если userId не передан, удаляем все записи для этого orderId (используется при сбросе всех)
+    for (const [key, state] of pendingForms) {
+      if (state.orderId === orderId) {
+        const uid = key.split('_')[0];
+        for (const offerId of Object.keys(state.offers)) {
+          try { bot.deleteMessage(uid, state.offers[offerId].messageId); } catch (e) { }
+          try { if (state.offers[offerId].stepMessageId) bot.deleteMessage(uid, state.offers[offerId].stepMessageId); } catch (e) { }
+        }
+        pendingForms.delete(key);
+        break;
+      }
+    }
+  }
+
+  // 2. Очищаем pendingFinishConfirmations
+  if (pendingFinishConfirmations.has(orderId)) {
+    const original = pendingFinishConfirmations.get(orderId);
+    if (original) {
+      try { bot.deleteMessage(original.originalChatId, original.originalMessageId); } catch (e) { }
+    }
+    pendingFinishConfirmations.delete(orderId);
+  }
+
+  // 3. Очищаем finishingOrders (блокировка завершения)
+  if (finishingOrders.has(orderId)) {
+    finishingOrders.delete(orderId);
+  }
+}
+
 // Экспорт registerCommands и restorePendingForms
 module.exports = {
   registerCommands,
-  restorePendingForms
+  restorePendingForms,
+  clearOrderState
 };

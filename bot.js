@@ -5,7 +5,7 @@ const ozon = require('./ozon');
 const bwipjs = require('bwip-js');
 const scheduler = require('./scheduler');
 const { syncEmployeesFromExcel } = require('./syncEmployees');
-const { registerCommands, restorePendingForms } = require('./commands');
+const { registerCommands, restorePendingForms, clearOrderState } = require('./commands');
 const debugMode = require('./debugMode');
 
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
@@ -139,6 +139,36 @@ function stopInactivityTimer() {
     }
 }
 
+let queueProcessing = false;
+
+// Обёртка для processNextOrder с блокировкой
+async function safeProcessNextOrder() {
+    if (queueProcessing) {
+        console.log('[QUEUE] Уже обрабатывается, пропускаем processNextOrder');
+        return;
+    }
+    queueProcessing = true;
+    try {
+        await processNextOrder();
+    } finally {
+        queueProcessing = false;
+    }
+}
+
+// Обёртка для checkAndOfferNewOrders с блокировкой
+async function safeCheckAndOfferNewOrders() {
+    if (queueProcessing) {
+        console.log('[QUEUE] Уже обрабатывается, пропускаем checkAndOfferNewOrders');
+        return;
+    }
+    queueProcessing = true;
+    try {
+        await checkAndOfferNewOrders();
+    } finally {
+        queueProcessing = false;
+    }
+}
+
 // Функция проверки новых заказов
 async function checkAndOfferNewOrders() {
     const debug = debugMode.isDebugMode();
@@ -220,6 +250,8 @@ async function cleanExpiredAssignments(activeOrderIds) {
 
             // Отменяем назначение (обновляем статус в БД) - БЕЗ увеличения счётчика
             await db.autoCancelOrder(orderId, assignment.employee_id);
+
+            clearOrderState(orderId, assignment.tg_user_id);
 
             // Если заказ был в очереди — удаляем
             const idx = pendingNewOrders.findIndex(o => o.posting_number === orderId);
@@ -413,9 +445,9 @@ async function forceReloadQueue() {
     currentOrderProcessing = null;
     pendingNewOrders.length = 0;
     try {
-        await checkAndOfferNewOrders();
+        await safeCheckAndOfferNewOrders();
         if (!currentOrderProcessing && pendingNewOrders.length) {
-            await processNextOrder();
+            await safeProcessNextOrder();
         }
     } catch (err) {
         console.error('❌ Ошибка при принудительной перезагрузке:', err);
@@ -438,14 +470,14 @@ process.on('SIGTERM', gracefulShutdown);
     const warehouses = await ozon.fetchWarehousesFromOzon();
     if (warehouses.length) await db.syncWarehouses(warehouses);
     await syncEmployeesFromExcel(db);
-    scheduler.startOrderChecker(SYNC_ORDERS_TIME, checkAndOfferNewOrders);
+    scheduler.startOrderChecker(SYNC_ORDERS_TIME, safeCheckAndOfferNewOrders);
     startInactivityTimer();
     console.log(debugMode.getDebugModeStatusMessage());
     // Регистрируем все команды
     registerCommands(
         bot, db, ozon, bwipjs, scheduler, debugMode,
         isAuthorizedUser, isModerator, isAdmin,
-        showOrderMenu, checkAndOfferNewOrders, processNextOrder,
+        showOrderMenu, safeCheckAndOfferNewOrders, safeProcessNextOrder,
         pendingNewOrders, currentOrderProcessing,
         deleteLastOrderMessages, updateModeratorActivity,
         startInactivityTimer, stopInactivityTimer

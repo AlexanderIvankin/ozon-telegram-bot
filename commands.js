@@ -6,6 +6,7 @@ const { syncEmployeesFromExcel } = require('./syncEmployees');
 
 // Локальные хранилища для состояний
 let pendingFinishConfirmations = new Map(); // key: orderId, value: { originalChatId, originalMessageId }
+let finishingOrders = new Map(); // key: orderId, value: true
 let pendingEmployeeUpload = new Map(); // userId -> { step: 'waiting_file' }
 let pendingMaterialsUpload = new Map(); // userId -> { step: 'waiting_file' }
 let pendingUploadModel = new Map(); // userId -> { step: 'waiting_file' }
@@ -430,6 +431,13 @@ function registerCommands(
         return;
       }
 
+      // Блокируем повторные вызовы для этого заказа
+      if (finishingOrders.has(orderId)) {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '⏳ Заказ уже завершается, подождите...' });
+        return;
+      }
+      finishingOrders.set(orderId, true);
+
       // Ответить на callback сразу, чтобы избежать ошибки "query is too old"
       await bot.answerCallbackQuery(callbackQuery.id, { text: '⏳ Заказ завершается...' });
 
@@ -477,6 +485,8 @@ function registerCommands(
       } catch (err) {
         console.error('Ошибка при завершении заказа из callback:', err);
         await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Ошибка при завершении заказа' });
+      } finally {
+        finishingOrders.delete(orderId); // снимаем блокировку
       }
       return;
     }
@@ -1083,6 +1093,13 @@ function registerCommands(
   // ---------------------- ОБЩАЯ ФУНКЦИЯ ДЛЯ ЗАВЕРШЕНИЯ ЗАКАЗА ----------------------
   async function finishOrder(chatId, postingNumber, employee) {
     try {
+      // Проверяем, что заказ ещё активен
+      const assignment = await db.db.get('SELECT status FROM assignments WHERE order_id = ? AND status = "assigned"', postingNumber);
+      if (!assignment) {
+        await bot.sendMessage(chatId, `⚠️ Заказ ${postingNumber} уже завершён или не найден.`);
+        return;
+      }
+
       console.log(`[FINISH] Начинаем завершение заказа ${postingNumber}`);
       const orderAmount = await ozon.getOrderTotalAmount(postingNumber);
       console.log(`[FINISH] Сумма заказа: ${orderAmount}`);

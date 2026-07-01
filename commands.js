@@ -831,10 +831,6 @@ function registerCommands(
 
     // 4. Назначение заказа
     if (data.startsWith('assign_')) {
-      if (!isModerator(adminId)) {
-        await bot.answerCallbackQuery(callbackQuery.id, { text: '⛔ Только модератор' });
-        return;
-      }
       const parts = data.split('_');
       const orderId = parts[1];
       const employeeId = parseInt(parts[2]);

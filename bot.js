@@ -29,6 +29,7 @@ async function setCommandsWithRetry(retries = 3, delay = 5000) {
         { command: 'my_orders', description: 'Мои активные заказы' },
         { command: 'finish_order', description: 'Завершить заказ (указать номер)' },
         { command: 'cancel_order', description: 'Отменить заказ (указать номер)' },
+        { command: 'send_label', description: 'Получить этикетку заказа (указать номер)' },
         { command: 'help', description: 'Помощь' },
     ];
 
@@ -251,7 +252,7 @@ async function cleanExpiredAssignments(activeOrderIds) {
             // Отменяем назначение (обновляем статус в БД) - БЕЗ увеличения счётчика
             await db.autoCancelOrder(orderId, assignment.employee_id);
 
-            await clearOrderState(orderId, assignment.tg_user_id);
+            await clearOrderState(bot, orderId, assignment.tg_user_id);
 
             // Если заказ был в очереди — удаляем
             const idx = pendingNewOrders.findIndex(o => o.posting_number === orderId);

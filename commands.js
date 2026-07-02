@@ -17,6 +17,9 @@ let pendingModelAdd = new Map();    // для /add_model
 let pendingFileId = new Map();      // для /get_file_id
 let materialsData = null;
 
+let labelCooldowns = new Map(); // userId -> timestamp последнего вызова /send_label
+const LABEL_COOLDOWN_MS = 60 * 1000; // 1 минута
+
 const MIN_EARNINGS = 250; // минимальный заработок за заказ
 
 const TIMEZONE = process.env.TIMEZONE || 'Europe/Moscow'; // можно переопределить через .env
@@ -684,7 +687,7 @@ function registerCommands(
       }
       try {
         // Очищаем pendingForms и удаляем сообщения перед завершением
-        await clearOrderState(orderId, userId);
+        await clearOrderState(bot, orderId, userId);
 
         await db.cancelOrder(orderId, employee.id);
         if (currentOrderProcessing && currentOrderProcessing.order.posting_number === orderId) {
@@ -863,14 +866,14 @@ function registerCommands(
       // Очистка всех состояний всех заказов
       const orderIds = Array.from(pendingForms.values()).map(state => state.orderId);
       for (const orderId of orderIds) {
-        await clearOrderState(orderId);
+        await clearOrderState(bot, orderId);
       }
       // Дополнительно очищаем pendingFinishConfirmations и finishingOrders
       for (const orderId of pendingFinishConfirmations.keys()) {
-        await clearOrderState(orderId);
+        await clearOrderState(bot, orderId);
       }
       for (const orderId of finishingOrders.keys()) {
-        await clearOrderState(orderId);
+        await clearOrderState(bot, orderId);
       }
 
       await bot.editMessageText('✅ Все активные назначения сброшены.', {
@@ -894,7 +897,7 @@ function registerCommands(
       if (assignment) {
         const employee = await db.getEmployeeById(assignment.employee_id);
         // Очищаем pendingForms и удаляем сообщения перед завершением
-        await clearOrderState(orderId, employee.tg_user_id);
+        await clearOrderState(bot, orderId, employee.tg_user_id);
       }
       // Удаляем назначение
       await db.db.run('DELETE FROM assignments WHERE order_id = ? AND status = "assigned"', orderId);
@@ -991,14 +994,14 @@ function registerCommands(
         // Очистка всех состояний всех заказов
         const orderIds = Array.from(pendingForms.values()).map(state => state.orderId);
         for (const orderId of orderIds) {
-          await clearOrderState(orderId);
+          await clearOrderState(bot, orderId);
         }
         // Дополнительно очищаем pendingFinishConfirmations и finishingOrders
         for (const orderId of pendingFinishConfirmations.keys()) {
-          await clearOrderState(orderId);
+          await clearOrderState(bot, orderId);
         }
         for (const orderId of finishingOrders.keys()) {
-          await clearOrderState(orderId);
+          await clearOrderState(bot, orderId);
         }
 
         // Синхронизация складов
@@ -1250,7 +1253,7 @@ function registerCommands(
       }
 
       console.log(`[FINISH] Заказ ${postingNumber} успешно завершён, вызываем очистку состояний`);
-      await clearOrderState(postingNumber, employee.tg_user_id);
+      await clearOrderState(bot, postingNumber, employee.tg_user_id);
       console.log(`[FINISH] === Завершено завершение заказа ${postingNumber} ===`);
 
     } catch (err) {
@@ -1261,7 +1264,7 @@ function registerCommands(
       // Пользователь может повторить попытку, и тогда сработает проверка дубля заработка.
       // Всё равно пытаемся очистить состояние, если оно есть
       try {
-        await clearOrderState(postingNumber, employee.tg_user_id);
+        await clearOrderState(bot, postingNumber, employee.tg_user_id);
       } catch (clearErr) {
         console.error(`[FINISH] Ошибка при очистке состояний после ошибки:`, clearErr);
       }
@@ -1292,7 +1295,7 @@ function registerCommands(
       }
 
       // Удаляем старые состояния, если заказ был ранее в очереди (например, повторное назначение)
-      await clearOrderState(orderId);
+      await clearOrderState(bot, orderId);
 
       // Назначаем в БД
       await db.assignOrderToEmployee(orderId, employeeId);
@@ -1557,7 +1560,7 @@ function registerCommands(
       adminMessage += `/employee_stats <id_сотрудника> — статистика сотрудника (заказы, сумма)\n`;
       adminMessage += `/employee_orders <id_сотрудника> — показать активные заказы сотрудника\n\n`;
 
-      adminMessage += `/send_label <номер_заказа> [id_сотрудника] — отправить PDF‑этикетку заказа сотруднику (если ID не указан – себе)\n\n`;
+      adminMessage += `/admin_send_label <номер_заказа> [id_сотрудника] — отправить PDF‑этикетку заказа сотруднику (если ID не указан – себе)\n\n`;
 
       adminMessage += `/admin_fill_stats <offer_id> — заполнить/обновить статистику товара (материал, цвет, вес)\n`;
       adminMessage += `/cancel_fill_stats — отменить активный процесс заполнения статистики\n`;
@@ -1623,10 +1626,12 @@ function registerCommands(
       const activeCount = await db.getEmployeeActiveOrdersCount(employee.id);
       let msgText = `С возвращением, ${employee.name}!\n Новые заказы назначает Модератор.\n У вас активно заказов: ${activeCount}. \n\n`;
       msgText += `Доступные команды:\n`;
+      msgText += `/start — перезапустить бота\n`;
       msgText += `/my_orders — показать мои активные заказы\n`;
       msgText += `/my_earnings [YYYY-MM] — показать мой заработок за месяц (по умолчанию текущий)\n`;
       msgText += `/finish_order <номер_заказа> — завершить заказ (получить этикетку)\n`;
       msgText += `/cancel_order <номер_заказа> — отменить заказ (если не можете выполнить)\n`;
+      msgText += `/send_label <номер_заказа> — получить этикетку завершённого заказа (не чаще 1 раза в минуту)\n`;
       msgText += `/help — эта справка\n`;
       await bot.sendMessage(chatId, msgText);
       return;
@@ -1934,8 +1939,8 @@ function registerCommands(
     await bot.sendMessage(msg.chat.id, '⚠️ Вы уверены, что хотите сбросить ВСЕ активные назначения? Это действие необратимо.', confirmKeyboard);
   });
 
-  // --- "/send_label" — отправить этикетку заказа сотруднику (или себе) ---
-  bot.onText(/\/send_label (\S+)(?:\s+(\d+))?/, async (msg, match) => {
+  // --- "/admin_send_label" Команда для администратора: отправить этикетку заказа сотруднику (или себе) ---
+  bot.onText(/\/admin_send_label (\S+)(?:\s+(\d+))?/, async (msg, match) => {
     const userId = msg.from.id.toString();
     if (!isAdmin(userId)) {
       return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
@@ -1943,6 +1948,20 @@ function registerCommands(
 
     const postingNumber = match[1];
     const targetEmployeeId = match[2] ? parseInt(match[2]) : null;
+
+    // Проверяем статус заказа через Ozon API
+    try {
+      const details = await ozon.getOrderDetails(postingNumber);
+      if (!details) {
+        return bot.sendMessage(msg.chat.id, `❌ Не удалось получить статус заказа ${postingNumber}.`);
+      }
+      if (details.status !== 'awaiting_delivery') {
+        return bot.sendMessage(msg.chat.id, `❌ Заказ ${postingNumber} не в статусе "awaiting_delivery" (текущий: ${details.status}). Этикетка недоступна.`);
+      }
+    } catch (err) {
+      console.error(`[ADMIN_SEND_LABEL] Ошибка проверки статуса:`, err);
+      return bot.sendMessage(msg.chat.id, `❌ Ошибка проверки статуса: ${err.message}`);
+    }
 
     // Если не указан сотрудник – отправляем себе (администратору)
     let targetChatId = msg.chat.id;
@@ -1963,6 +1982,9 @@ function registerCommands(
     } catch (err) {
       return bot.sendMessage(msg.chat.id, `❌ Не удалось отправить сообщение ${targetName}. Возможно, он не начал диалог с ботом.`);
     }
+
+    // Таймаут между вызововами методов Ozon API
+    await new Promise(resolve => setTimeout(resolve, 5000));
 
     try {
       const labelBuffer = await ozon.getPackageLabel(postingNumber);
@@ -2413,7 +2435,7 @@ function registerCommands(
         const state = pendingForms.get(key);
         if (state) {
           const uid = key.split('_')[0];
-          await clearOrderState(state.orderId, uid);
+          await clearOrderState(bot, state.orderId, uid);
         }
       }
 
@@ -3194,6 +3216,72 @@ function registerCommands(
     await bot.sendMessage(msg.chat.id, `⚠️ Вы уверены, что хотите отменить заказ ${postingNumber}?`, confirmKeyboard);
   });
 
+  // --- /send_label – получить этикетку заказа (для сотрудников) ---
+  bot.onText(/\/send_label (\S+)/, async (msg, match) => {
+    const userId = msg.from.id.toString();
+    const postingNumber = match[1];
+
+    // 1. Проверка авторизации
+    const employee = await db.getEmployee(userId);
+    if (!employee) {
+      return bot.sendMessage(msg.chat.id, '❌ Вы не зарегистрированы как сотрудник.');
+    }
+
+    // 2. Проверка кулдауна
+    const lastCall = labelCooldowns.get(userId);
+    const now = Date.now();
+    if (lastCall && (now - lastCall) < LABEL_COOLDOWN_MS) {
+      const secondsLeft = Math.ceil((LABEL_COOLDOWN_MS - (now - lastCall)) / 1000);
+      return bot.sendMessage(msg.chat.id, `⏳ Подождите ${secondsLeft} секунд перед повторным запросом этикетки.`);
+    }
+
+    // 3. Проверяем, что заказ был назначен этому сотруднику и завершён (статус completed)
+    const assignment = await db.db.get(
+      'SELECT * FROM assignments WHERE order_id = ? AND employee_id = ? AND status = "completed"',
+      postingNumber, employee.id
+    );
+    if (!assignment) {
+      return bot.sendMessage(msg.chat.id, `❌ Заказ ${postingNumber} не найден среди ваших завершённых заказов.`);
+    }
+
+    // 4. Проверяем статус заказа через Ozon API (должен быть awaiting_delivery)
+    try {
+      const details = await ozon.getOrderDetails(postingNumber);
+      if (!details) {
+        return bot.sendMessage(msg.chat.id, `❌ Не удалось получить статус заказа ${postingNumber}.`);
+      }
+      if (details.status !== 'awaiting_delivery') {
+        return bot.sendMessage(msg.chat.id, `❌ Заказ ${postingNumber} не в статусе "awaiting_delivery" (текущий: ${details.status}). Этикетка недоступна.`);
+      }
+    } catch (err) {
+      console.error(`[SEND_LABEL] Ошибка получения статуса:`, err);
+      return bot.sendMessage(msg.chat.id, `❌ Ошибка проверки статуса: ${err.message}`);
+    }
+
+    // Таймаут между вызововами методов Ozon API
+    await new Promise(resolve => setTimeout(resolve, 5000));
+
+    // 5. Получаем этикетку
+    try {
+      const labelBuffer = await ozon.getPackageLabel(postingNumber);
+      if (!labelBuffer) {
+        return bot.sendMessage(msg.chat.id, `❌ Не удалось получить этикетку для заказа ${postingNumber}.`);
+      }
+      // Отправляем этикетку сотруднику
+      await bot.sendDocument(
+        msg.chat.id,
+        labelBuffer,
+        { caption: `✅ Этикетка для заказа ${postingNumber}` },
+        { filename: `label_${postingNumber}.pdf`, contentType: 'application/pdf' }
+      );
+      // Обновляем кулдаун
+      labelCooldowns.set(userId, Date.now());
+    } catch (err) {
+      console.error(`[SEND_LABEL] Ошибка:`, err);
+      await bot.sendMessage(msg.chat.id, `❌ Ошибка получения этикетки: ${err.message}`);
+    }
+  });
+
   // --- "/my_earnings" – просмотр заработка сотрудника за месяц ---
   bot.onText(/\/my_earnings(?: (.+))?/, async (msg, match) => {
     const userId = msg.from.id.toString();
@@ -3258,7 +3346,7 @@ function registerCommands(
       helpText += `/employee_stats <id_сотрудника> — статистика сотрудника (заказы, сумма)\n`;
       helpText += `/employee_orders <id_сотрудника> — активные заказы сотрудника\n\n`;
 
-      helpText += `/send_label <номер_заказа> [id_сотрудника] — отправить PDF‑этикетку заказа сотруднику (если ID не указан – себе)\n\n`;
+      helpText += `/admin_send_label <номер_заказа> [id_сотрудника] — отправить PDF‑этикетку заказа сотруднику (если ID не указан – себе)\n\n`;
 
       helpText += `/admin_fill_stats <offer_id> — заполнить/обновить статистику товара (материал, цвет, вес)\n`;
       helpText += `/cancel_fill_stats — отменить активный процесс заполнения статистики\n`;
@@ -3319,11 +3407,12 @@ function registerCommands(
     }
     if (employee) {
       let helpText = `👋 Помощь сотрудника\n\n`;
+      helpText += `/start — перезапустить бота\n`;
       helpText += `/my_orders — показать мои активные заказы\n`;
       helpText += `/my_earnings [YYYY-MM] — показать мой заработок за месяц (по умолчанию текущий)\n`;
       helpText += `/finish_order <номер_заказа> — завершить заказ (получить этикетку)\n`;
       helpText += `/cancel_order <номер_заказа> — отменить заказ (если не можете выполнить)\n`;
-      helpText += `/start — перезапустить бота\n`;
+      helpText += `/send_label <номер_заказа> — получить этикетку завершённого заказа (не чаще 1 раза в минуту)\n`;
       helpText += `/help — эта справка\n\n`;
       helpText += `Внимание: Новые заказы вам назначает Модератор.`;
       await bot.sendMessage(msg.chat.id, helpText);
@@ -3557,15 +3646,15 @@ async function restorePendingForms(db, ozon, bot) {
           allCompleted: false
         });
       }
-      console.log('[RESTORE] Восстановление завершено');
     }
+    console.log('[RESTORE] Восстановление завершено');  
   } catch (err) {
     console.error('Ошибка восстановления состояний:', err);
   }
 }
 
 // ---------------------- ЦЕНТРАЛИЗОВАННАЯ ОЧИСТКА СОСТОЯНИЙ ЗАКАЗА ----------------------
-async function clearOrderState(orderId, userId = null) {
+async function clearOrderState(bot, orderId, userId = null) {
   console.log(`[CLEAR] Начало очистки заказа ${orderId}${userId ? ` для пользователя ${userId}` : ''}`);
 
   // 1. Очищаем pendingForms

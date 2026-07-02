@@ -1955,8 +1955,8 @@ function registerCommands(
       if (!details) {
         return bot.sendMessage(msg.chat.id, `❌ Не удалось получить статус заказа ${postingNumber}.`);
       }
-      if (details.status !== 'awaiting_delivery') {
-        return bot.sendMessage(msg.chat.id, `❌ Заказ ${postingNumber} не в статусе "awaiting_delivery" (текущий: ${details.status}). Этикетка недоступна.`);
+      if (details.status !== 'awaiting_deliver') {
+        return bot.sendMessage(msg.chat.id, `❌ Заказ ${postingNumber} не в статусе "awaiting_deliver" (текущий: ${details.status}). Этикетка недоступна.`);
       }
     } catch (err) {
       console.error(`[ADMIN_SEND_LABEL] Ошибка проверки статуса:`, err);
@@ -3244,14 +3244,14 @@ function registerCommands(
       return bot.sendMessage(msg.chat.id, `❌ Заказ ${postingNumber} не найден среди ваших завершённых заказов.`);
     }
 
-    // 4. Проверяем статус заказа через Ozon API (должен быть awaiting_delivery)
+    // 4. Проверяем статус заказа через Ozon API (должен быть awaiting_deliver)
     try {
       const details = await ozon.getOrderDetails(postingNumber);
       if (!details) {
         return bot.sendMessage(msg.chat.id, `❌ Не удалось получить статус заказа ${postingNumber}.`);
       }
-      if (details.status !== 'awaiting_delivery') {
-        return bot.sendMessage(msg.chat.id, `❌ Заказ ${postingNumber} не в статусе "awaiting_delivery" (текущий: ${details.status}). Этикетка недоступна.`);
+      if (details.status !== 'awaiting_deliver') {
+        return bot.sendMessage(msg.chat.id, `❌ Заказ ${postingNumber} не в статусе "awaiting_deliver" (текущий: ${details.status}). Этикетка недоступна.`);
       }
     } catch (err) {
       console.error(`[SEND_LABEL] Ошибка получения статуса:`, err);

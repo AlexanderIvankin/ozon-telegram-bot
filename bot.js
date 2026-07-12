@@ -30,6 +30,7 @@ async function setCommandsWithRetry(retries = 3, delay = 5000) {
         { command: 'finish_order', description: 'Завершить заказ (указать номер)' },
         { command: 'cancel_order', description: 'Отменить заказ (указать номер)' },
         { command: 'send_label', description: 'Получить этикетку заказа (указать номер)' },
+        { command: 'send_all_labels', description: 'Получить этикетки всех завершённых заказов (не чаще 1 раза в час)' },
         { command: 'help', description: 'Помощь' },
     ];
 
@@ -281,6 +282,15 @@ async function cleanExpiredAssignments(activeOrderIds) {
     }
 }
 
+// Функция для формирования вывода в HTML parse mode
+function escapeHtml(text) {
+    if (text === null || text === undefined) return '';
+    return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
 // Функция для отображения меню выбора для конкретного заказа
 async function showOrderMenu(order) {
     const debug = debugMode.isDebugMode();
@@ -303,10 +313,10 @@ async function showOrderMenu(order) {
     let currency = 'RUB';
 
     if (details?.products?.length) {
-        productsInfo = '\n\n*Состав:*\n';
+        productsInfo = '\n\n<b>Состав:</b>\n';
         for (const p of details.products) {
             let article = p.offer_id || (p.barcodes?.[0]);
-            let articleDisplay = article ? `*${article}*` : '—';
+            let articleDisplay = article ? `<b>${article}</b>` : '—';
 
             let price = parseFloat(p.price) || 0;
             let currencyCode = p.currency_code || 'RUB';
@@ -329,7 +339,7 @@ async function showOrderMenu(order) {
                 }
             }
 
-            productsInfo += `• ${p.name} — ${p.quantity} шт.\n`;
+            productsInfo += `• ${escapeHtml(p.name)} — ${p.quantity} шт.\n`;
             productsInfo += `   Артикул: ${articleDisplay}\n`;
             productsInfo += `   Цена: ${priceDisplay}\n`;
             productsInfo += `   Размеры: ${dimsDisplay}\n`;
@@ -340,11 +350,11 @@ async function showOrderMenu(order) {
         }
 
         let totalDisplay = totalAmount > 0 ? `${totalAmount.toFixed(2)} ${currency}` : '—';
-        productsInfo += `\n*Общая сумма заказа:* ${totalDisplay}`;
+        productsInfo += `\n<b>Общая сумма заказа:</b> ${totalDisplay}`;
     }
 
     const adminChatId = MODERATOR_ID.toString();
-    const messageText = `🆕 *Новый заказ!*\nНомер: ${order.posting_number}\nСклад: ${warehouseDisplay}${createdAtDisplay}${productsInfo}\n\nВыберите действие:`;
+    const messageText = `🆕 <b>Новый заказ!</b>\nНомер: ${order.posting_number}\nСклад: ${warehouseDisplay}${createdAtDisplay}${productsInfo}\n\nВыберите действие:`;
 
     const keyboard = [
         [{ text: '👑 Приоритетные', callback_data: `priority_${order.posting_number}` }],
@@ -356,7 +366,7 @@ async function showOrderMenu(order) {
 
     const sentMsg = await bot.sendMessage(adminChatId, messageText, {
         reply_markup: { inline_keyboard: keyboard },
-        parse_mode: 'Markdown'
+        parse_mode: 'HTML'
     });
     lastOrderMessageId = sentMsg.message_id;
 
@@ -476,7 +486,7 @@ process.on('SIGTERM', gracefulShutdown);
     console.log(debugMode.getDebugModeStatusMessage());
     // Регистрируем все команды
     registerCommands(
-        bot, db, ozon, bwipjs, scheduler, debugMode,
+        bot, db, ozon, escapeHtml, bwipjs, scheduler, debugMode,
         isAuthorizedUser, isModerator, isAdmin,
         showOrderMenu, safeCheckAndOfferNewOrders, safeProcessNextOrder,
         pendingNewOrders, currentOrderProcessing,

@@ -2641,8 +2641,7 @@ function registerCommands(
     const reply = `📊 <b>Статистика сотрудника ${escapeHtml(emp.name)}</b>\n\n` +
       `✅ Завершённых заказов: ${escapeHtml(stats.total_orders)}\n` +
       `❌ Отменённых заказов: ${escapeHtml(stats.canceled_orders || 0)}\n` +
-      `💰 Общая сумма: ${escapeHtml(stats.total_amount.toFixed(2))}` +
-      (isGod ? ` 💲` : ` ₽`) +
+      `💰 Общая сумма: ` + (isGod ? `<b>${escapeHtml(stats.total_amount)} 💲USD</b>` : `${escapeHtml(stats.total_amount.toFixed(2))} ₽`) +
       (isGod ? '\n\n👻 <b>Создатель!</b>' : '');
 
     await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'HTML' });

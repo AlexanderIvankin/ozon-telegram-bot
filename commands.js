@@ -3331,6 +3331,15 @@ function registerCommands(
           continue;
         }
 
+        const currentAssignment = await db.db.get(
+          'SELECT * FROM assignments WHERE order_id = ? AND employee_id = ? AND status = "completed"',
+          orderId, employee.id
+        );
+        if (!currentAssignment) {
+          console.log(`[SEND_ALL_LABELS] Заказ ${orderId} больше не принадлежит сотруднику ${employee.id}, пропускаем`);
+          continue;
+        }
+
         let labelBuffer = null;
         for (let attempt = 1; attempt <= 3; attempt++) {
           try {
@@ -3342,15 +3351,6 @@ function registerCommands(
               await new Promise(resolve => setTimeout(resolve, 2000));
             }
           }
-        }
-
-        const currentAssignment = await db.db.get(
-          'SELECT * FROM assignments WHERE order_id = ? AND employee_id = ? AND status = "completed"',
-          orderId, employee.id
-        );
-        if (!currentAssignment) {
-          console.log(`[SEND_ALL_LABELS] Заказ ${orderId} больше не принадлежит сотруднику ${employee.id}, пропускаем`);
-          continue;
         }
 
         if (labelBuffer) {

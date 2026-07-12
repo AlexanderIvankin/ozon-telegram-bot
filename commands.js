@@ -2641,7 +2641,7 @@ function registerCommands(
     const reply = `📊 <b>Статистика сотрудника ${escapeHtml(emp.name)}</b>\n\n` +
       `✅ Завершённых заказов: ${escapeHtml(stats.total_orders)}\n` +
       `❌ Отменённых заказов: ${escapeHtml(stats.canceled_orders || 0)}\n` +
-      `💰 Общая сумма: ` + (isGod ? `<b>${escapeHtml(stats.total_amount)} 💲USD</b>` : `${escapeHtml(stats.total_amount.toFixed(2))} ₽`) +
+      `💰 Общая сумма: ` + (isGod ? `<b>${escapeHtml(stats.total_amount)} $USD</b>` : `${escapeHtml(stats.total_amount.toFixed(2))} ₽`) +
       (isGod ? '\n\n👻 <b>Создатель!</b>' : '');
 
     await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'HTML' });
@@ -3091,7 +3091,7 @@ function registerCommands(
     }
 
     // Отправляем новое сообщение и сохраняем его ID
-    await bot.sendMessage(msg.chat.id, reply, {
+    const sentMsg = await bot.sendMessage(msg.chat.id, reply, {
       parse_mode: 'HTML',
       reply_markup: keyboard.length ? { inline_keyboard: keyboard } : undefined
     });

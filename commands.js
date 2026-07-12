@@ -2632,7 +2632,7 @@ function registerCommands(
       stats = {
         total_orders: 1337,
         canceled_orders: 666,
-        total_amount: 999999999
+        total_amount: 999999999.99
       };
     } else {
       stats = await db.getEmployeeStats(employeeId);
@@ -2641,7 +2641,7 @@ function registerCommands(
     const reply = `📊 <b>Статистика сотрудника ${escapeHtml(emp.name)}</b>\n\n` +
       `✅ Завершённых заказов: ${escapeHtml(stats.total_orders)}\n` +
       `❌ Отменённых заказов: ${escapeHtml(stats.canceled_orders || 0)}\n` +
-      `💰 Общая сумма: ` + (isGod ? `<b>${escapeHtml(stats.total_amount)} $USD</b>` : `${escapeHtml(stats.total_amount.toFixed(2))} ₽`) +
+      `💰 Общая сумма: ` + (isGod ? `<b>${escapeHtml(stats.total_amount.toLocaleString('en-US', { style: 'currency', currency: 'USD' }))} USD</b>` : `${escapeHtml(stats.total_amount.toFixed(2))} ₽`) +
       (isGod ? '\n\n👻 <b>Создатель!</b>' : '');
 
     await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'HTML' });

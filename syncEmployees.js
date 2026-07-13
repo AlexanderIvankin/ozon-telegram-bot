@@ -2,10 +2,6 @@ const XLSX = require('xlsx');
 const path = require('path');
 const debugMode = require('./debugMode');
 
-/**
- * Синхронизирует список сотрудников из Excel-файла с БД.
- * @param {Object} db - объект базы данных (с методами)
- */
 async function syncEmployeesFromExcel(db) {
     const filePath = path.join(__dirname, 'team-info.xlsx');
     console.log('[SYNC] Загрузка сотрудников из', filePath);
@@ -20,23 +16,30 @@ async function syncEmployeesFromExcel(db) {
         return;
     }
 
-    // --- Парсим заголовки складов (вторая строка, столбцы G-Q) ---
-    // Столбцы: G=6, H=7, I=8, J=9, K=10, L=11, M=12, N=13, O=14, P=15, Q=16
+    // --- Динамическое определение колонок складов, начиная с G (индекс 6) ---
     const warehouseHeaderRow = rows[1];
-    const warehouseIds = [];
-    for (let col = 6; col <= 16; col++) {
+    const warehouseColumns = [];
+
+    // Идём от индекса 6 до конца строки заголовков
+    for (let col = 6; col < warehouseHeaderRow.length; col++) {
         const cellValue = warehouseHeaderRow[col];
         if (cellValue && typeof cellValue === 'string') {
             const match = cellValue.match(/ID:\s*(\d+)/i);
             if (match) {
-                warehouseIds.push(match[1]);
-            } else {
-                warehouseIds.push(null);
+                warehouseColumns.push({
+                    colIndex: col,
+                    warehouseId: match[1]
+                });
             }
-        } else {
-            warehouseIds.push(null);
         }
     }
+
+    // Если колонки не найдены, используем пустой массив (никаких складов)
+    if (!warehouseColumns.length) {
+        console.warn('[SYNC] Не найдено ни одной колонки с ID склада в заголовках');
+    }
+
+    console.log(`[SYNC] Найдено ${warehouseColumns.length} колонок складов`);
 
     // --- Парсим сотрудников, начиная с третьей строки (индекс 2) ---
     const employeesData = [];
@@ -58,15 +61,13 @@ async function syncEmployeesFromExcel(db) {
         let earningsFactor = parseFloat(row[4]);
         if (isNaN(earningsFactor) || earningsFactor <= 0) earningsFactor = 1.0;
 
-        // Столбцы G-Q (индексы 6-16): склады (символ "+")
+        // Собираем склады сотрудника по динамическим колонкам
         const employeeWarehouses = [];
-        for (let col = 6; col <= 16; col++) {
+        for (const colInfo of warehouseColumns) {
+            const col = colInfo.colIndex;
             const val = row[col];
             if (val === '+' || val === '➕' || val === '✔') {
-                const warehouseId = warehouseIds[col - 6];
-                if (warehouseId) {
-                    employeeWarehouses.push(warehouseId);
-                }
+                employeeWarehouses.push(colInfo.warehouseId);
             }
         }
 

@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const XLSX = require('xlsx');
 const axios = require('axios');
+const { PDFDocument } = require('pdf-lib');
 const { syncEmployeesFromExcel } = require('./syncEmployees');
 
 // Локальные хранилища для состояний
@@ -67,6 +68,24 @@ function formatDateDDMMYYYY(timestamp) {
   const month = parts.find(p => p.type === 'month')?.value || '??';
   const year = parts.find(p => p.type === 'year')?.value || '????';
   return `${day}.${month}.${year}`;
+}
+
+async function mergePdfs(pdfBuffers) {
+  if (!pdfBuffers.length) return null;
+  const mergedPdf = await PDFDocument.create();
+  for (const buffer of pdfBuffers) {
+    try {
+      const pdf = await PDFDocument.load(buffer);
+      const indices = await mergedPdf.copyPages(pdf, pdf.getPageIndices());
+      for (const page of indices) {
+        mergedPdf.addPage(page);
+      }
+    } catch (err) {
+      console.error('Ошибка при объединении PDF:', err);
+      // Пропускаем битый PDF
+    }
+  }
+  return await mergedPdf.save();
 }
 
 // Загружаем справочники при старте
@@ -3306,7 +3325,7 @@ function registerCommands(
     sendAllLabelsCooldowns.set(userId, now);
 
     const completedOrders = await db.db.all(
-      'SELECT order_id FROM assignments WHERE employee_id = ? AND status = "completed"',
+      'SELECT order_id FROM assignments WHERE employee_id = ? AND status = "completed" ORDER BY assigned_at DESC LIMIT 50',
       employee.id
     );
 
@@ -3316,17 +3335,20 @@ function registerCommands(
       return;
     }
 
-    await bot.sendMessage(msg.chat.id, `📦 Начинаю отправку этикеток для ${completedOrders.length} завершённых заказов. Это может занять некоторое время...`);
+    await bot.sendMessage(msg.chat.id, `📦 Начинаю загрузку этикеток для ${completedOrders.length} заказов. Это может занять некоторое время...`);
 
-    let sentCount = 0;
-    let errorCount = 0;
+    const pdfBuffers = [];
+    let errors = 0;
+    let skipped = 0;
 
     for (const row of completedOrders) {
       const orderId = row.order_id;
       try {
+        // Проверяем статус и принадлежность
         const details = await ozon.getOrderDetails(orderId);
         if (!details || details.status !== 'awaiting_deliver') {
-          console.log(`[SEND_ALL_LABELS] Заказ ${orderId} не в статусе awaiting_deliver (${details?.status}), пропускаем`);
+          console.log(`[SEND_ALL_LABELS] Заказ ${orderId} не в awaiting_deliver (${details?.status}), пропускаем`);
+          skipped++;
           continue;
         }
 
@@ -3335,10 +3357,12 @@ function registerCommands(
           orderId, employee.id
         );
         if (!currentAssignment) {
-          console.log(`[SEND_ALL_LABELS] Заказ ${orderId} больше не принадлежит сотруднику ${employee.id}, пропускаем`);
+          console.log(`[SEND_ALL_LABELS] Заказ ${orderId} больше не принадлежит сотруднику, пропускаем`);
+          skipped++;
           continue;
         }
 
+        // Получаем этикетку с ретраями
         let labelBuffer = null;
         for (let attempt = 1; attempt <= 3; attempt++) {
           try {
@@ -3346,39 +3370,71 @@ function registerCommands(
             if (labelBuffer) break;
           } catch (err) {
             console.error(`[SEND_ALL_LABELS] Ошибка получения этикетки для ${orderId}, попытка ${attempt}:`, err.message);
-            if (attempt < 3) {
-              await new Promise(resolve => setTimeout(resolve, 2000));
-            }
+            if (attempt < 3) await new Promise(resolve => setTimeout(resolve, 2000));
           }
         }
 
         if (labelBuffer) {
-          await bot.sendDocument(
-            msg.chat.id,
-            labelBuffer,
-            { caption: `✅ Этикетка для заказа ${orderId}` },
-            { filename: `label_${orderId}.pdf`, contentType: 'application/pdf' }
-          );
-          sentCount++;
+          pdfBuffers.push(labelBuffer);
         } else {
-          errorCount++;
+          errors++;
           await bot.sendMessage(msg.chat.id, `❌ Не удалось получить этикетку для заказа ${orderId} после 3 попыток.`);
-        }
-
-        if (row !== completedOrders[completedOrders.length - 1]) {
-          await new Promise(resolve => setTimeout(resolve, 10000));
         }
       } catch (err) {
         console.error(`[SEND_ALL_LABELS] Ошибка обработки заказа ${orderId}:`, err);
-        errorCount++;
+        errors++;
         await bot.sendMessage(msg.chat.id, `❌ Ошибка при обработке заказа ${orderId}: ${escapeHtml(err.message)}`);
-        if (row !== completedOrders[completedOrders.length - 1]) {
-          await new Promise(resolve => setTimeout(resolve, 10000));
-        }
       }
     }
 
-    await bot.sendMessage(msg.chat.id, `✅ Отправлено этикеток: ${sentCount}. Ошибок: ${errorCount}.`);
+    if (!pdfBuffers.length) {
+      await bot.sendMessage(msg.chat.id, `⚠️ Не удалось загрузить ни одной этикетки. Ошибок: ${errors}, пропущено: ${skipped}.`);
+      return;
+    }
+
+    // Объединяем PDF
+    try {
+      const mergedPdfBuffer = await mergePdfs(pdfBuffers);
+      if (!mergedPdfBuffer) {
+        throw new Error('Не удалось объединить PDF');
+      }
+
+      // Проверяем размер (Telegram лимит 50 МБ)
+      const sizeMB = mergedPdfBuffer.length / (1024 * 1024);
+      if (sizeMB > 45) { // оставляем запас
+        await bot.sendMessage(msg.chat.id,
+          `⚠️ Размер объединённого PDF слишком велик (${sizeMB.toFixed(2)} МБ). Отправляю по частям...`
+        );
+        // Разбиваем по 20 этикеток в пакете
+        const chunkSize = 20;
+        for (let i = 0; i < pdfBuffers.length; i += chunkSize) {
+          const chunk = pdfBuffers.slice(i, i + chunkSize);
+          const chunkPdf = await mergePdfs(chunk);
+          if (chunkPdf) {
+            await bot.sendDocument(
+              msg.chat.id,
+              chunkPdf,
+              { caption: `✅ Этикетки (часть ${Math.floor(i / chunkSize) + 1})` },
+              { filename: `labels_part_${Math.floor(i / chunkSize) + 1}.pdf`, contentType: 'application/pdf' }
+            );
+          }
+        }
+      } else {
+        await bot.sendDocument(
+          msg.chat.id,
+          mergedPdfBuffer,
+          { caption: `✅ Все этикетки (${pdfBuffers.length} шт.)` },
+          { filename: `labels_${employee.name}_${Date.now()}.pdf`, contentType: 'application/pdf' }
+        );
+      }
+
+      await bot.sendMessage(msg.chat.id,
+        `✅ Отправлено ${pdfBuffers.length} этикеток. Пропущено: ${skipped}, ошибок: ${errors}.`
+      );
+    } catch (err) {
+      console.error('[SEND_ALL_LABELS] Ошибка объединения/отправки PDF:', err);
+      await bot.sendMessage(msg.chat.id, `❌ Ошибка при формировании PDF: ${escapeHtml(err.message)}`);
+    }
   });
 
   // --- "/my_earnings" – просмотр заработка сотрудника за месяц ---

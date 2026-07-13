@@ -869,6 +869,13 @@ function registerCommands(
       return;
     }
 
+    // Кнопка отмены назначения заказа сотруднику для администратора
+    if (data.startsWith('cancel_assign_')) {
+      await safeDeleteMessage(msg.chat.id, msg.message_id);
+      await bot.answerCallbackQuery(callbackQuery.id, { text: 'Отменено' });
+      return;
+    }
+
     // 5. Кнопка "Назад"
     if (data.startsWith('back_')) {
       const orderId = data.substring(5);
@@ -1903,6 +1910,7 @@ function registerCommands(
         text: `${emp.name} (активных: ${emp.active_count}, принтеры: ${emp.capacity})`,
         callback_data: `assign_${postingNumber}_${emp.id}`
       }]));
+      kb.push([{ text: '❌ Отмена', callback_data: `cancel_assign_${postingNumber}` }]);
       await bot.sendMessage(msg.chat.id, `👥 Выберите сотрудника для заказа ${postingNumber}:`, {
         reply_markup: { inline_keyboard: kb }
       });

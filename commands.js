@@ -3324,8 +3324,9 @@ function registerCommands(
 
     sendAllLabelsCooldowns.set(userId, now);
 
+    // Берём последние 30 завершённых заказов (чтобы не перегружать память)
     const completedOrders = await db.db.all(
-      'SELECT order_id FROM assignments WHERE employee_id = ? AND status = "completed" ORDER BY assigned_at DESC LIMIT 50',
+      'SELECT order_id FROM assignments WHERE employee_id = ? AND status = "completed" ORDER BY assigned_at DESC LIMIT 30',
       employee.id
     );
 
@@ -3335,7 +3336,7 @@ function registerCommands(
       return;
     }
 
-    await bot.sendMessage(msg.chat.id, `📦 Начинаю загрузку этикеток для ${completedOrders.length} заказов. Это может занять некоторое время...`);
+    await bot.sendMessage(msg.chat.id, `📦 Начинаю загрузку этикеток для ${completedOrders.length} заказов...`);
 
     const pdfBuffers = [];
     let errors = 0;
@@ -3344,7 +3345,6 @@ function registerCommands(
     for (const row of completedOrders) {
       const orderId = row.order_id;
       try {
-        // Проверяем статус и принадлежность
         const details = await ozon.getOrderDetails(orderId);
         if (!details || details.status !== 'awaiting_deliver') {
           console.log(`[SEND_ALL_LABELS] Заказ ${orderId} не в awaiting_deliver (${details?.status}), пропускаем`);
@@ -3362,7 +3362,6 @@ function registerCommands(
           continue;
         }
 
-        // Получаем этикетку с ретраями
         let labelBuffer = null;
         for (let attempt = 1; attempt <= 3; attempt++) {
           try {
@@ -3392,49 +3391,129 @@ function registerCommands(
       return;
     }
 
-    // Объединяем PDF
-    try {
-      const mergedPdfBuffer = await mergePdfs(pdfBuffers);
-      if (!mergedPdfBuffer) {
-        throw new Error('Не удалось объединить PDF');
-      }
+    // Разбиваем буферы на части по размеру (не более 30 МБ каждая)
+    const MAX_PART_SIZE = 30 * 1024 * 1024; // 30 МБ
+    const parts = [];
+    let currentPart = [];
+    let currentSize = 0;
 
-      // Проверяем размер (Telegram лимит 50 МБ)
-      const sizeMB = mergedPdfBuffer.length / (1024 * 1024);
-      if (sizeMB > 45) { // оставляем запас
-        await bot.sendMessage(msg.chat.id,
-          `⚠️ Размер объединённого PDF слишком велик (${sizeMB.toFixed(2)} МБ). Отправляю по частям...`
-        );
-        // Разбиваем по 20 этикеток в пакете
-        const chunkSize = 20;
-        for (let i = 0; i < pdfBuffers.length; i += chunkSize) {
-          const chunk = pdfBuffers.slice(i, i + chunkSize);
-          const chunkPdf = await mergePdfs(chunk);
-          if (chunkPdf) {
-            await bot.sendDocument(
-              msg.chat.id,
-              chunkPdf,
-              { caption: `✅ Этикетки (часть ${Math.floor(i / chunkSize) + 1})` },
-              { filename: `labels_part_${Math.floor(i / chunkSize) + 1}.pdf`, contentType: 'application/pdf' }
-            );
-          }
+    for (const buf of pdfBuffers) {
+      const size = buf.length;
+      if (size > MAX_PART_SIZE) {
+        console.warn(`[SEND_ALL_LABELS] Этикетка слишком большая (${(size / 1024 / 1024).toFixed(2)} МБ), пропускаем`);
+        skipped++;
+        continue;
+      }
+      if (currentSize + size > MAX_PART_SIZE && currentPart.length > 0) {
+        parts.push([...currentPart]);
+        currentPart = [];
+        currentSize = 0;
+      }
+      currentPart.push(buf);
+      currentSize += size;
+    }
+    if (currentPart.length) parts.push(currentPart);
+
+    console.log(`[SEND_ALL_LABELS] Всего буферов: ${pdfBuffers.length}, разбито на ${parts.length} частей`);
+
+    // Создаём временную директорию, если её нет
+    const tempDir = path.join(__dirname, 'temp');
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
+    }
+
+    let sentCount = 0;
+    for (let i = 0; i < parts.length; i++) {
+      const partIndex = i + 1;
+      try {
+        // Объединяем часть
+        const mergedPdf = await mergePdfs(parts[i]);
+        if (!mergedPdf) {
+          throw new Error('Не удалось объединить PDF для части ' + partIndex);
         }
-      } else {
+
+        // Преобразуем Uint8Array в Buffer
+        const buffer = Buffer.from(mergedPdf);
+
+        // Сохраняем во временный файл
+        const tempFilePath = path.join(tempDir, `labels_part_${Date.now()}_${partIndex}.pdf`);
+        fs.writeFileSync(tempFilePath, buffer);
+
+        // Проверяем размер файла
+        const stats = fs.statSync(tempFilePath);
+        if (stats.size > 45 * 1024 * 1024) {
+          await bot.sendMessage(msg.chat.id, `⚠️ Часть ${partIndex} слишком большая (${(stats.size / 1024 / 1024).toFixed(2)} МБ), разбиваю дальше...`);
+          // Разбиваем часть на две подчасти и отправляем их отдельно
+          const mid = Math.floor(parts[i].length / 2);
+          const subPart1 = parts[i].slice(0, mid);
+          const subPart2 = parts[i].slice(mid);
+          for (const [idx, sub] of [subPart1, subPart2].entries()) {
+            if (sub.length) {
+              const subMerged = await mergePdfs(sub);
+              if (subMerged) {
+                const subBuffer = Buffer.from(subMerged);
+                const subPath = path.join(tempDir, `labels_part_${Date.now()}_${partIndex}_${idx + 1}.pdf`);
+                fs.writeFileSync(subPath, subBuffer);
+                await bot.sendDocument(
+                  msg.chat.id,
+                  fs.createReadStream(subPath),
+                  { caption: `✅ Этикетки (часть ${partIndex}.${idx + 1})` },
+                  { filename: `labels_part_${partIndex}_${idx + 1}.pdf`, contentType: 'application/pdf' }
+                );
+                sentCount += sub.length;
+                fs.unlinkSync(subPath);
+              }
+            }
+          }
+          fs.unlinkSync(tempFilePath);
+          continue;
+        }
+
+        // Отправляем файл через поток
         await bot.sendDocument(
           msg.chat.id,
-          mergedPdfBuffer,
-          { caption: `✅ Все этикетки (${pdfBuffers.length} шт.)` },
-          { filename: `labels_${employee.name}_${Date.now()}.pdf`, contentType: 'application/pdf' }
+          fs.createReadStream(tempFilePath),
+          { caption: `✅ Этикетки (часть ${partIndex} из ${parts.length})` },
+          { filename: `labels_part_${partIndex}.pdf`, contentType: 'application/pdf' }
         );
-      }
+        sentCount += parts[i].length;
 
-      await bot.sendMessage(msg.chat.id,
-        `✅ Отправлено ${pdfBuffers.length} этикеток. Пропущено: ${skipped}, ошибок: ${errors}.`
-      );
-    } catch (err) {
-      console.error('[SEND_ALL_LABELS] Ошибка объединения/отправки PDF:', err);
-      await bot.sendMessage(msg.chat.id, `❌ Ошибка при формировании PDF: ${escapeHtml(err.message)}`);
+        // Удаляем временный файл
+        fs.unlinkSync(tempFilePath);
+
+        // Небольшая пауза между частями
+        if (i < parts.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+      } catch (err) {
+        console.error(`[SEND_ALL_LABELS] Ошибка отправки части ${partIndex}:`, err);
+        await bot.sendMessage(msg.chat.id, `⚠️ Ошибка при отправке части ${partIndex}: ${escapeHtml(err.message)}`);
+        // Пытаемся отправить по отдельности
+        for (const buf of parts[i]) {
+          try {
+            const singleBuffer = Buffer.from(buf);
+            const singlePath = path.join(tempDir, `label_${Date.now()}.pdf`);
+            fs.writeFileSync(singlePath, singleBuffer);
+            await bot.sendDocument(
+              msg.chat.id,
+              fs.createReadStream(singlePath),
+              { caption: `✅ Этикетка (поштучно)` },
+              { filename: `label_${Date.now()}.pdf`, contentType: 'application/pdf' }
+            );
+            sentCount++;
+            fs.unlinkSync(singlePath);
+            await new Promise(resolve => setTimeout(resolve, 500));
+          } catch (e) {
+            console.error('[SEND_ALL_LABELS] Ошибка отправки отдельной этикетки:', e);
+            errors++;
+          }
+        }
+      }
     }
+
+    await bot.sendMessage(msg.chat.id,
+      `✅ Отправлено этикеток: ${sentCount}. Ошибок: ${errors}, пропущено: ${skipped}.`
+    );
   });
 
   // --- "/my_earnings" – просмотр заработка сотрудника за месяц ---

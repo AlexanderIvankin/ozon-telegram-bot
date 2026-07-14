@@ -179,13 +179,13 @@ function registerCommands(
   }
 
   // Вспомогательная функция для отправки PDF
-  async function sendPdf(chatId, buffer, caption, filename) {
+  async function sendPdf(chatId, pdfBuffer, caption, filename) {
     const tempDir = path.join(__dirname, 'temp');
     if (!fs.existsSync(tempDir)) {
       fs.mkdirSync(tempDir, { recursive: true });
     }
     const tempPath = path.join(tempDir, filename);
-    fs.writeFileSync(tempPath, buffer);
+    fs.writeFileSync(tempPath, pdfBuffer);
     try {
       await bot.sendDocument(
         chatId,
@@ -194,38 +194,32 @@ function registerCommands(
         { filename, contentType: 'application/pdf' }
       );
     } finally {
-      // Удаляем временный файл даже в случае ошибки
-      try { fs.unlinkSync(tempPath); } catch (_) { }
+      fs.unlinkSync(tempPath);
     }
   }
 
   // Вспомогательная функция для отправки этикеток по одной
-  async function sendLabelsIndividually(chatId, buffers, delay = 500) {
-    let sent = 0;
+  async function sendLabelsIndividually(chatId, pdfBuffers) {
     const tempDir = path.join(__dirname, 'temp');
     if (!fs.existsSync(tempDir)) {
       fs.mkdirSync(tempDir, { recursive: true });
     }
-    for (const buf of buffers) {
-      const filename = `label_${Date.now()}.pdf`;
-      const tempPath = path.join(tempDir, filename);
+    for (let i = 0; i < pdfBuffers.length; i++) {
       try {
-        fs.writeFileSync(tempPath, Buffer.from(buf));
+        const singlePath = path.join(tempDir, `label_${Date.now()}_${i}.pdf`);
+        fs.writeFileSync(singlePath, Buffer.from(pdfBuffers[i]));
         await bot.sendDocument(
           chatId,
-          fs.createReadStream(tempPath),
-          { caption: `✅ Этикетка` },
-          { filename, contentType: 'application/pdf' }
+          fs.createReadStream(singlePath),
+          { caption: `✅ Этикетка ${i + 1} из ${pdfBuffers.length}` },
+          { filename: `label_${Date.now()}_${i}.pdf`, contentType: 'application/pdf' }
         );
-        sent++;
-      } catch (e) {
-        console.error('[SEND_ALL_LABELS] Ошибка отправки отдельной этикетки:', e);
-      } finally {
-        try { fs.unlinkSync(tempPath); } catch (_) { }
+        fs.unlinkSync(singlePath);
+        await new Promise(resolve => setTimeout(resolve, 500));
+      } catch (err) {
+        console.error('[SEND_ALL_LABELS] Ошибка отправки отдельной этикетки:', err);
       }
-      if (delay) await new Promise(resolve => setTimeout(resolve, delay));
     }
-    return sent;
   }
 
   async function calculateOrderEarnings(orderDetails, employee) {

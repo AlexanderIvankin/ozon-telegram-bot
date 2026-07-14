@@ -178,6 +178,56 @@ function registerCommands(
     }
   }
 
+  // Вспомогательная функция для отправки PDF
+  async function sendPdf(chatId, buffer, caption, filename) {
+    const tempDir = path.join(__dirname, 'temp');
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
+    }
+    const tempPath = path.join(tempDir, filename);
+    fs.writeFileSync(tempPath, buffer);
+    try {
+      await bot.sendDocument(
+        chatId,
+        fs.createReadStream(tempPath),
+        { caption },
+        { filename, contentType: 'application/pdf' }
+      );
+    } finally {
+      // Удаляем временный файл даже в случае ошибки
+      try { fs.unlinkSync(tempPath); } catch (_) { }
+    }
+  }
+
+  // Вспомогательная функция для отправки этикеток по одной
+  async function sendLabelsIndividually(chatId, buffers, delay = 500) {
+    let sent = 0;
+    const tempDir = path.join(__dirname, 'temp');
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
+    }
+    for (const buf of buffers) {
+      const filename = `label_${Date.now()}.pdf`;
+      const tempPath = path.join(tempDir, filename);
+      try {
+        fs.writeFileSync(tempPath, Buffer.from(buf));
+        await bot.sendDocument(
+          chatId,
+          fs.createReadStream(tempPath),
+          { caption: `✅ Этикетка` },
+          { filename, contentType: 'application/pdf' }
+        );
+        sent++;
+      } catch (e) {
+        console.error('[SEND_ALL_LABELS] Ошибка отправки отдельной этикетки:', e);
+      } finally {
+        try { fs.unlinkSync(tempPath); } catch (_) { }
+      }
+      if (delay) await new Promise(resolve => setTimeout(resolve, delay));
+    }
+    return sent;
+  }
+
   async function calculateOrderEarnings(orderDetails, employee) {
     const earningsDetails = [];
     let totalEarnings = 0;
@@ -3330,7 +3380,6 @@ function registerCommands(
       const minutesLeft = Math.ceil((SEND_ALL_LABELS_COOLDOWN_MS - (now - lastCall)) / 60000);
       return bot.sendMessage(msg.chat.id, `⏳ Команда доступна раз в час. Подождите ${minutesLeft} мин.`);
     }
-
     sendAllLabelsCooldowns.set(userId, now);
 
     // 1. Получаем ВСЕ заказы в статусе awaiting_deliver (1 вызов API)
@@ -3360,7 +3409,7 @@ function registerCommands(
     // 3. Фильтруем: только те, что есть в completedIds
     const activeOrders = allAwaitingDeliver
       .filter(order => completedIds.has(order.posting_number))
-      .slice(0, 100);  // берём не более 100
+      .slice(0, 100);
 
     if (!activeOrders.length) {
       await bot.sendMessage(msg.chat.id, '📭 Нет завершённых заказов в статусе awaiting_deliver.');
@@ -3368,18 +3417,17 @@ function registerCommands(
       return;
     }
 
-    await bot.sendMessage(msg.chat.id, `📦 Начинаю загрузку этикеток для последних ${activeOrders.length} активных заказов...`);
+    await bot.sendMessage(msg.chat.id, `📦 Начинаю загрузку этикеток для ${activeOrders.length} активных заказов...`);
 
     // 4. Собираем этикетки
     const pdfBuffers = [];
     let errors = 0;
     let skipped = 0;
-    const errorDetails = []; // для модератора
+    const errorDetails = [];
 
     for (const order of activeOrders) {
       const orderId = order.posting_number;
       try {
-        // Проверяем, что заказ всё ещё принадлежит сотруднику
         const currentAssignment = await db.db.get(
           'SELECT * FROM assignments WHERE order_id = ? AND employee_id = ? AND status = "completed"',
           orderId, employee.id
@@ -3414,12 +3462,11 @@ function registerCommands(
       }
     }
 
-    // Если есть ошибки, отправим краткий отчёт модератору
+    // Отправляем отчёт об ошибках модератору
     const moderatorId = process.env.MODERATOR_ID;
     if (moderatorId && errorDetails.length) {
       let modMsg = `⚠️ <b>Ошибки при отправке этикеток для сотрудника ${escapeHtml(employee.name)}</b>\n`;
       modMsg += `Всего ошибок: ${errorDetails.length}\n\n`;
-      // Покажем только первые 5 ошибок, чтобы не спамить
       const shown = errorDetails.slice(0, 5);
       for (const err of shown) {
         modMsg += `• Заказ ${escapeHtml(err.orderId)}: ${escapeHtml(err.reason)}\n`;
@@ -3431,11 +3478,11 @@ function registerCommands(
     }
 
     if (!pdfBuffers.length) {
-      await bot.sendMessage(msg.chat.id, `⚠️ Не удалось загрузить ни одной этикетки.`);
+      await bot.sendMessage(msg.chat.id, '⚠️ Не удалось загрузить ни одной этикетки.');
       return;
     }
 
-    // 5. Объединение и отправка
+    // 5. Разбиваем на части по размеру (не более 30 МБ каждая)
     const MAX_PART_SIZE = 30 * 1024 * 1024; // 30 МБ
     const parts = [];
     let currentPart = [];
@@ -3460,11 +3507,7 @@ function registerCommands(
 
     console.log(`[SEND_ALL_LABELS] Всего буферов: ${pdfBuffers.length}, разбито на ${parts.length} частей`);
 
-    const tempDir = path.join(__dirname, 'temp');
-    if (!fs.existsSync(tempDir)) {
-      fs.mkdirSync(tempDir, { recursive: true });
-    }
-
+    // 6. Отправка частей
     let sentCount = 0;
     const isSinglePart = parts.length === 1;
 
@@ -3477,85 +3520,65 @@ function registerCommands(
         }
 
         const buffer = Buffer.from(mergedPdf);
-        const tempFilePath = path.join(tempDir, `labels_part_${Date.now()}_${partIndex}.pdf`);
-        fs.writeFileSync(tempFilePath, buffer);
+        const sizeMB = buffer.length / (1024 * 1024);
 
-        const stats = fs.statSync(tempFilePath);
-        if (stats.size > 45 * 1024 * 1024) {
-          await bot.sendMessage(msg.chat.id, `⚠️ Часть ${partIndex} слишком большая (${(stats.size / 1024 / 1024).toFixed(2)} МБ), разбиваю дальше...`);
+        if (buffer.length <= 45 * 1024 * 1024) {
+          // Отправляем как один файл
+          const fileName = isSinglePart
+            ? `all_labels_${Date.now()}.pdf`
+            : `all_labels_part_${partIndex}_${Date.now()}.pdf`;
+          const caption = isSinglePart
+            ? `✅ Все этикетки (${pdfBuffers.length} шт.)`
+            : `✅ Этикетки (часть ${partIndex} из ${parts.length})`;
+          await sendPdf(msg.chat.id, buffer, caption, fileName);
+          sentCount += parts[i].length;
+        } else {
+          // Пытаемся разбить на две половины
+          await bot.sendMessage(msg.chat.id, `⚠️ Часть ${partIndex} слишком большая (${sizeMB.toFixed(2)} МБ), разбиваю...`);
           const mid = Math.floor(parts[i].length / 2);
-          const subPart1 = parts[i].slice(0, mid);
-          const subPart2 = parts[i].slice(mid);
-          for (const [idx, sub] of [subPart1, subPart2].entries()) {
-            if (sub.length) {
+          const subParts = [
+            parts[i].slice(0, mid),
+            parts[i].slice(mid)
+          ];
+
+          let subSuccess = true;
+          for (let j = 0; j < subParts.length; j++) {
+            const sub = subParts[j];
+            if (!sub.length) continue;
+            try {
               const subMerged = await mergePdfs(sub);
-              if (subMerged) {
-                const subBuffer = Buffer.from(subMerged);
-                const subPath = path.join(tempDir, `labels_part_${Date.now()}_${partIndex}_${idx + 1}.pdf`);
-                fs.writeFileSync(subPath, subBuffer);
-                const caption = isSinglePart ? `✅ Все этикетки (${pdfBuffers.length} шт.)` : `✅ Этикетки (часть ${partIndex}.${idx + 1})`;
-                await bot.sendDocument(
-                  msg.chat.id,
-                  fs.createReadStream(subPath),
-                  { caption },
-                  { filename: `labels_part_${partIndex}_${idx + 1}.pdf`, contentType: 'application/pdf' }
-                );
-                sentCount += sub.length;
-                fs.unlinkSync(subPath);
-              }
+              if (!subMerged) throw new Error('Не удалось объединить подчасть');
+              const subBuffer = Buffer.from(subMerged);
+              const subName = `all_labels_part_${partIndex}_${j + 1}.pdf`;
+              const subCaption = `✅ Этикетки (часть ${partIndex}.${j + 1})`;
+              await sendPdf(msg.chat.id, subBuffer, subCaption, subName);
+              sentCount += sub.length;
+            } catch (subErr) {
+              console.error(`[SEND_ALL_LABELS] Ошибка отправки подчасти ${partIndex}.${j + 1}:`, subErr);
+              subSuccess = false;
+              break;
             }
           }
-          fs.unlinkSync(tempFilePath);
-          continue;
-        }
 
-        // Формируем подпись
-        let caption;
-        if (isSinglePart) {
-          caption = `✅ Все этикетки (${pdfBuffers.length} шт.)`;
-        } else {
-          caption = `✅ Этикетки (часть ${partIndex} из ${parts.length})`;
-        }
-
-        await bot.sendDocument(
-          msg.chat.id,
-          fs.createReadStream(tempFilePath),
-          { caption },
-          { filename: `labels_part_${partIndex}.pdf`, contentType: 'application/pdf' }
-        );
-        sentCount += parts[i].length;
-
-        fs.unlinkSync(tempFilePath);
-
-        if (i < parts.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, 2000));
-        }
-      } catch (err) {
-        console.error(`[SEND_ALL_LABELS] Ошибка отправки части ${partIndex}:`, err);
-        await bot.sendMessage(msg.chat.id, `⚠️ Ошибка при отправке части ${partIndex}, пробую отправить по отдельности...`);
-        // Отправляем поштучно
-        for (const buf of parts[i]) {
-          try {
-            const singleBuffer = Buffer.from(buf);
-            const singlePath = path.join(tempDir, `label_${Date.now()}.pdf`);
-            fs.writeFileSync(singlePath, singleBuffer);
-            await bot.sendDocument(
-              msg.chat.id,
-              fs.createReadStream(singlePath),
-              { caption: `✅ Этикетка (поштучно)` },
-              { filename: `label_${Date.now()}.pdf`, contentType: 'application/pdf' }
-            );
-            sentCount++;
-            fs.unlinkSync(singlePath);
-            await new Promise(resolve => setTimeout(resolve, 500));
-          } catch (e) {
-            console.error('[SEND_ALL_LABELS] Ошибка отправки отдельной этикетки:', e);
+          if (!subSuccess) {
+            // Если не получилось отправить подчасти, отправляем по одной
+            await bot.sendMessage(msg.chat.id, `⚠️ Не удалось отправить часть ${partIndex} целиком, отправляю по одной...`);
+            await sendLabelsIndividually(msg.chat.id, parts[i]);
+            sentCount += parts[i].length;
           }
         }
+      } catch (err) {
+        console.error(`[SEND_ALL_LABELS] Ошибка обработки части ${partIndex}:`, err);
+        await bot.sendMessage(msg.chat.id, `⚠️ Ошибка при обработке части ${partIndex}, отправляю по одной...`);
+        await sendLabelsIndividually(msg.chat.id, parts[i]);
+        sentCount += parts[i].length;
+      }
+
+      if (i < parts.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
       }
     }
 
-    // Финальное сообщение сотруднику (только количество)
     await bot.sendMessage(msg.chat.id, `✅ Отправлено этикеток: ${sentCount}.`);
   });
 

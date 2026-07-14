@@ -173,6 +173,61 @@ async function fetchAwaitingOrdersById(orderId) {
     }
 }
 
+// Получить список заказов FBS со статусом "awaiting_deliver"
+async function fetchAwaitingDeliverOrders(limit = 100) {
+    if (debugMode.isDebugMode()) console.log('[Ozon] Запрос списка заказов в awaiting_deliver...');
+    if (MOCK_MODE) {
+        console.log('[Ozon MOCK] Возвращаем тестовые заказы в awaiting_deliver');
+        // Для мока можно вернуть те же заказы, но с нужным статусом
+        return mockOrders.map(o => ({
+            ...o,
+            status: 'awaiting_deliver',
+            posting_number: o.posting_number
+        }));
+    }
+
+    try {
+        const since = new Date();
+        since.setDate(since.getDate() - 90);
+        const to = new Date();
+
+        let allOrders = [];
+        let cursor = null;
+        let hasNext = true;
+
+        while (hasNext) {
+            const filter = {
+                statuses: ['awaiting_deliver'],
+                since: since.toISOString(),
+                to: to.toISOString()
+            };
+            const requestBody = {
+                filter,
+                limit,
+                with: { analytics_data: true }
+            };
+            if (cursor) {
+                requestBody.cursor = cursor;
+            }
+
+            const response = await requestWithRetry(
+                () => apiClient.post('/v4/posting/fbs/list', requestBody),
+                { context: 'fetchAwaitingDeliverOrders' }
+            );
+            const orders = response.data.postings || [];
+            allOrders = allOrders.concat(orders);
+            cursor = response.data.cursor || null;
+            hasNext = response.data.has_next || false;
+        }
+
+        if (debugMode.isDebugMode()) console.log(`[Ozon] Успешно получено ${allOrders.length} заказов в awaiting_deliver.`);
+        return allOrders;
+    } catch (error) {
+        console.error('[Ozon] Ошибка при получении заказов в awaiting_deliver:', error.message);
+        throw new Error(`Ошибка Ozon API при получении заказов: ${error.message}`);
+    }
+}
+
 // Получить детали заказа (состав, адрес и т.д.)
 async function getOrderDetails(orderId) {
     if (debugMode.isDebugMode()) console.log(`[Ozon] Запрос деталей заказа ${orderId}`);
@@ -490,6 +545,7 @@ async function getOrderTotalAmount(orderId) {
 module.exports = {
     fetchAwaitingOrders,
     fetchAwaitingOrdersById,
+    fetchAwaitingDeliverOrders,
     getOrderDetails,
     fetchWarehousesFromOzon,
     fetchProductsImages,

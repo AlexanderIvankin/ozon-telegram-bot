@@ -3323,6 +3323,7 @@ function registerCommands(
       return bot.sendMessage(msg.chat.id, '❌ Вы не зарегистрированы как сотрудник.');
     }
 
+    // Проверка кулдауна
     const now = Date.now();
     const lastCall = sendAllLabelsCooldowns.get(userId);
     if (lastCall && (now - lastCall) < SEND_ALL_LABELS_COOLDOWN_MS) {
@@ -3332,34 +3333,53 @@ function registerCommands(
 
     sendAllLabelsCooldowns.set(userId, now);
 
-    // Берём последние 30 завершённых заказов (чтобы не перегружать память)
-    const completedOrders = await db.db.all(
-      'SELECT order_id FROM assignments WHERE employee_id = ? AND status = "completed" ORDER BY assigned_at DESC LIMIT 30',
-      employee.id
-    );
-
-    if (!completedOrders.length) {
-      await bot.sendMessage(msg.chat.id, '📭 У вас нет завершённых заказов.');
+    // 1. Получаем ВСЕ заказы в статусе awaiting_deliver (1 вызов API)
+    let allAwaitingDeliver = [];
+    try {
+      allAwaitingDeliver = await ozon.fetchAwaitingDeliverOrders();
+    } catch (err) {
+      console.error('[SEND_ALL_LABELS] Ошибка получения заказов из Ozon:', err);
+      await bot.sendMessage(msg.chat.id, `❌ Не удалось получить список заказов: ${escapeHtml(err.message)}`);
       sendAllLabelsCooldowns.delete(userId);
       return;
     }
 
-    await bot.sendMessage(msg.chat.id, `📦 Начинаю загрузку этикеток для ${completedOrders.length} заказов...`);
+    if (!allAwaitingDeliver.length) {
+      await bot.sendMessage(msg.chat.id, '📭 Нет заказов в статусе awaiting_deliver.');
+      sendAllLabelsCooldowns.delete(userId);
+      return;
+    }
 
+    // 2. Получаем список завершённых заказов сотрудника из БД
+    const completedOrders = await db.db.all(
+      'SELECT order_id FROM assignments WHERE employee_id = ? AND status = "completed"',
+      employee.id
+    );
+    const completedIds = new Set(completedOrders.map(o => o.order_id));
+
+    // 3. Фильтруем: только те, что есть в completedIds
+    const activeOrders = allAwaitingDeliver
+      .filter(order => completedIds.has(order.posting_number))
+      .slice(0, 100);  // берём не более 100
+
+    if (!activeOrders.length) {
+      await bot.sendMessage(msg.chat.id, '📭 Нет завершённых заказов в статусе awaiting_deliver.');
+      sendAllLabelsCooldowns.delete(userId);
+      return;
+    }
+
+    await bot.sendMessage(msg.chat.id, `📦 Начинаю загрузку этикеток для последних ${activeOrders.length} активных заказов...`);
+
+    // 4. Собираем этикетки
     const pdfBuffers = [];
     let errors = 0;
     let skipped = 0;
+    const errorDetails = []; // для модератора
 
-    for (const row of completedOrders) {
-      const orderId = row.order_id;
+    for (const order of activeOrders) {
+      const orderId = order.posting_number;
       try {
-        const details = await ozon.getOrderDetails(orderId);
-        if (!details || details.status !== 'awaiting_deliver') {
-          console.log(`[SEND_ALL_LABELS] Заказ ${orderId} не в awaiting_deliver (${details?.status}), пропускаем`);
-          skipped++;
-          continue;
-        }
-
+        // Проверяем, что заказ всё ещё принадлежит сотруднику
         const currentAssignment = await db.db.get(
           'SELECT * FROM assignments WHERE order_id = ? AND employee_id = ? AND status = "completed"',
           orderId, employee.id
@@ -3385,21 +3405,37 @@ function registerCommands(
           pdfBuffers.push(labelBuffer);
         } else {
           errors++;
-          await bot.sendMessage(msg.chat.id, `❌ Не удалось получить этикетку для заказа ${orderId} после 3 попыток.`);
+          errorDetails.push({ orderId, reason: 'Не удалось получить этикетку после 3 попыток' });
         }
       } catch (err) {
         console.error(`[SEND_ALL_LABELS] Ошибка обработки заказа ${orderId}:`, err);
         errors++;
-        await bot.sendMessage(msg.chat.id, `❌ Ошибка при обработке заказа ${orderId}: ${escapeHtml(err.message)}`);
+        errorDetails.push({ orderId, reason: err.message });
       }
     }
 
+    // Если есть ошибки, отправим краткий отчёт модератору
+    const moderatorId = process.env.MODERATOR_ID;
+    if (moderatorId && errorDetails.length) {
+      let modMsg = `⚠️ <b>Ошибки при отправке этикеток для сотрудника ${escapeHtml(employee.name)}</b>\n`;
+      modMsg += `Всего ошибок: ${errorDetails.length}\n\n`;
+      // Покажем только первые 5 ошибок, чтобы не спамить
+      const shown = errorDetails.slice(0, 5);
+      for (const err of shown) {
+        modMsg += `• Заказ ${escapeHtml(err.orderId)}: ${escapeHtml(err.reason)}\n`;
+      }
+      if (errorDetails.length > 5) {
+        modMsg += `\n... и ещё ${errorDetails.length - 5} ошибок (см. логи)`;
+      }
+      await bot.sendMessage(moderatorId, modMsg, { parse_mode: 'HTML' });
+    }
+
     if (!pdfBuffers.length) {
-      await bot.sendMessage(msg.chat.id, `⚠️ Не удалось загрузить ни одной этикетки. Ошибок: ${errors}, пропущено: ${skipped}.`);
+      await bot.sendMessage(msg.chat.id, `⚠️ Не удалось загрузить ни одной этикетки.`);
       return;
     }
 
-    // Разбиваем буферы на части по размеру (не более 30 МБ каждая)
+    // 5. Объединение и отправка
     const MAX_PART_SIZE = 30 * 1024 * 1024; // 30 МБ
     const parts = [];
     let currentPart = [];
@@ -3424,34 +3460,29 @@ function registerCommands(
 
     console.log(`[SEND_ALL_LABELS] Всего буферов: ${pdfBuffers.length}, разбито на ${parts.length} частей`);
 
-    // Создаём временную директорию, если её нет
     const tempDir = path.join(__dirname, 'temp');
     if (!fs.existsSync(tempDir)) {
       fs.mkdirSync(tempDir, { recursive: true });
     }
 
     let sentCount = 0;
+    const isSinglePart = parts.length === 1;
+
     for (let i = 0; i < parts.length; i++) {
       const partIndex = i + 1;
       try {
-        // Объединяем часть
         const mergedPdf = await mergePdfs(parts[i]);
         if (!mergedPdf) {
           throw new Error('Не удалось объединить PDF для части ' + partIndex);
         }
 
-        // Преобразуем Uint8Array в Buffer
         const buffer = Buffer.from(mergedPdf);
-
-        // Сохраняем во временный файл
         const tempFilePath = path.join(tempDir, `labels_part_${Date.now()}_${partIndex}.pdf`);
         fs.writeFileSync(tempFilePath, buffer);
 
-        // Проверяем размер файла
         const stats = fs.statSync(tempFilePath);
         if (stats.size > 45 * 1024 * 1024) {
           await bot.sendMessage(msg.chat.id, `⚠️ Часть ${partIndex} слишком большая (${(stats.size / 1024 / 1024).toFixed(2)} МБ), разбиваю дальше...`);
-          // Разбиваем часть на две подчасти и отправляем их отдельно
           const mid = Math.floor(parts[i].length / 2);
           const subPart1 = parts[i].slice(0, mid);
           const subPart2 = parts[i].slice(mid);
@@ -3462,10 +3493,11 @@ function registerCommands(
                 const subBuffer = Buffer.from(subMerged);
                 const subPath = path.join(tempDir, `labels_part_${Date.now()}_${partIndex}_${idx + 1}.pdf`);
                 fs.writeFileSync(subPath, subBuffer);
+                const caption = isSinglePart ? `✅ Все этикетки (${pdfBuffers.length} шт.)` : `✅ Этикетки (часть ${partIndex}.${idx + 1})`;
                 await bot.sendDocument(
                   msg.chat.id,
                   fs.createReadStream(subPath),
-                  { caption: `✅ Этикетки (часть ${partIndex}.${idx + 1})` },
+                  { caption },
                   { filename: `labels_part_${partIndex}_${idx + 1}.pdf`, contentType: 'application/pdf' }
                 );
                 sentCount += sub.length;
@@ -3477,26 +3509,31 @@ function registerCommands(
           continue;
         }
 
-        // Отправляем файл через поток
+        // Формируем подпись
+        let caption;
+        if (isSinglePart) {
+          caption = `✅ Все этикетки (${pdfBuffers.length} шт.)`;
+        } else {
+          caption = `✅ Этикетки (часть ${partIndex} из ${parts.length})`;
+        }
+
         await bot.sendDocument(
           msg.chat.id,
           fs.createReadStream(tempFilePath),
-          { caption: `✅ Этикетки (часть ${partIndex} из ${parts.length})` },
+          { caption },
           { filename: `labels_part_${partIndex}.pdf`, contentType: 'application/pdf' }
         );
         sentCount += parts[i].length;
 
-        // Удаляем временный файл
         fs.unlinkSync(tempFilePath);
 
-        // Небольшая пауза между частями
         if (i < parts.length - 1) {
           await new Promise(resolve => setTimeout(resolve, 2000));
         }
       } catch (err) {
         console.error(`[SEND_ALL_LABELS] Ошибка отправки части ${partIndex}:`, err);
-        await bot.sendMessage(msg.chat.id, `⚠️ Ошибка при отправке части ${partIndex}: ${escapeHtml(err.message)}`);
-        // Пытаемся отправить по отдельности
+        await bot.sendMessage(msg.chat.id, `⚠️ Ошибка при отправке части ${partIndex}, пробую отправить по отдельности...`);
+        // Отправляем поштучно
         for (const buf of parts[i]) {
           try {
             const singleBuffer = Buffer.from(buf);
@@ -3513,15 +3550,13 @@ function registerCommands(
             await new Promise(resolve => setTimeout(resolve, 500));
           } catch (e) {
             console.error('[SEND_ALL_LABELS] Ошибка отправки отдельной этикетки:', e);
-            errors++;
           }
         }
       }
     }
 
-    await bot.sendMessage(msg.chat.id,
-      `✅ Отправлено этикеток: ${sentCount}. Ошибок: ${errors}, пропущено: ${skipped}.`
-    );
+    // Финальное сообщение сотруднику (только количество)
+    await bot.sendMessage(msg.chat.id, `✅ Отправлено этикеток: ${sentCount}.`);
   });
 
   // --- "/my_earnings" – просмотр заработка сотрудника за месяц ---

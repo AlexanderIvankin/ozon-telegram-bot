@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const XLSX = require('xlsx');
+const ExcelJS = require('exceljs');
 const axios = require('axios');
 const { PDFDocument } = require('pdf-lib');
 const { syncEmployeesFromExcel } = require('./syncEmployees');
@@ -150,23 +151,47 @@ function registerCommands(
       try {
         const stats = await db.getAllProductStats();
         if (!stats.length) return;
-        const wb = XLSX.utils.book_new();
-        const ws = XLSX.utils.json_to_sheet(stats.map(s => ({
-          'Артикул': s.offer_id,
-          'Материал': s.material,
-          'Цвет': s.color,
-          'Вес (г)': s.weight_grams,
-          'Кто заполнил': s.employee_name || 'Неизвестно',
-          'Дата': formatDateDDMMYYYY(s.updated_at)
-        })));
-        XLSX.utils.book_append_sheet(wb, ws, 'Статистика');
-        const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+
+        const workbook = new ExcelJS.Workbook();
+        const worksheet = workbook.addWorksheet('Статистика');
+
+        // Заголовки
+        const headers = ['Артикул', 'Материал', 'Цвет', 'Вес (г)', 'Кто заполнил', 'Дата'];
+        const headerRow = worksheet.addRow(headers);
+        headerRow.eachCell((cell) => {
+          cell.alignment = { horizontal: 'center', vertical: 'middle' };
+          cell.font = { bold: true }; // Жирный шрифт для заголовков
+        });
+
+        // Данные
+        for (const s of stats) {
+          const rowData = [
+            s.offer_id,
+            s.material,
+            s.color,
+            s.weight_grams,
+            s.employee_name || 'Неизвестно',
+            formatDateDDMMYYYY(s.updated_at)
+          ];
+          const row = worksheet.addRow(rowData);
+          row.eachCell((cell) => {
+            cell.alignment = { horizontal: 'center', vertical: 'middle' };
+          });
+        }
+
+        // Ширина столбцов
+        const columnWidths = [20, 20, 20, 15, 40, 20];
+        worksheet.columns.forEach((col, index) => {
+          col.width = columnWidths[index];
+        });
+
+        const buffer = await workbook.xlsx.writeBuffer();
         const outputPath = path.join(__dirname, 'exports', 'product-stats.xlsx');
         fs.mkdirSync(path.dirname(outputPath), { recursive: true });
         fs.writeFileSync(outputPath, buffer);
-        // небольшая задержка после записи
+
         await new Promise(resolve => setTimeout(resolve, 100));
-        return; // успешно
+        return;
       } catch (err) {
         console.error(`[EXPORT] Попытка ${attempt} ошибка:`, err);
         if (attempt === maxRetries) {
@@ -2725,6 +2750,8 @@ function registerCommands(
   });
 
   // --- "/export_earnings" Команда для администратора: экспорт заработка сотрудников (с корректировками) за месяц ---
+  const ExcelJS = require('exceljs');
+
   bot.onText(/\/export_earnings(?: (.+))?/, async (msg, match) => {
     const userId = msg.from.id.toString();
     if (!isAdmin(userId)) {
@@ -2753,7 +2780,7 @@ function registerCommands(
       return bot.sendMessage(msg.chat.id, '📭 Нет данных о заработке за указанный период.');
     }
 
-    // Группируем по сотруднику
+    // Группировка
     const employeeMap = new Map();
     for (const row of earningsData) {
       const empId = row.id;
@@ -2769,10 +2796,9 @@ function registerCommands(
       emp.orderCount += 1;
     }
 
-    // Формируем массив для Excel
+    // Подготовка данных
     const rows = [];
     for (const [empId, emp] of employeeMap) {
-      // Получаем сумму корректировок за период
       const adjustments = await db.getEmployeeAdjustments(empId, fromDate, toDate);
       const totalWithAdjustments = emp.totalAmount + adjustments;
       rows.push({
@@ -2786,34 +2812,47 @@ function registerCommands(
       });
     }
 
-    // Сортируем по сумме
     rows.sort((a, b) => b['Заработок (итоговый)'] - a['Заработок (итоговый)']);
 
-    // Создаём Excel
     try {
-      const wb = XLSX.utils.book_new();
-      const ws = XLSX.utils.json_to_sheet(rows);
-      XLSX.utils.book_append_sheet(wb, ws, 'Заработок');
-      const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-      console.log(`[EXPORT_EARNINGS] Размер буфера: ${buffer.length} байт`);
+      const workbook = new ExcelJS.Workbook();
+      const worksheet = workbook.addWorksheet('Заработок');
 
-      // Сохраняем файл на диск
+      // Заголовки
+      const headers = ['ID сотрудника', 'Сотрудник', 'Количество заказов', 'Заработок (базовый)', 'Корректировки', 'Заработок (итоговый)', 'Средний чек (итоговый)'];
+      const headerRow = worksheet.addRow(headers);
+      headerRow.eachCell((cell) => {
+        cell.alignment = { horizontal: 'center', vertical: 'middle' };
+        cell.font = { bold: true }; // Жирный шрифт для заголовков
+      });
+
+      // Данные
+      for (const rowData of rows) {
+        const row = worksheet.addRow(Object.values(rowData));
+        row.eachCell((cell) => {
+          cell.alignment = { horizontal: 'center', vertical: 'middle' };
+        });
+      }
+
+      // Ширина столбцов
+      const columnWidths = [15, 40, 25, 25, 20, 25, 25];
+      worksheet.columns.forEach((col, index) => {
+        col.width = columnWidths[index];
+      });
+
+      const buffer = await workbook.xlsx.writeBuffer();
       const fileName = `earnings_${monthStr || (new Date(fromDate).toISOString().slice(0, 7))}.xlsx`;
       const outputPath = path.join(__dirname, 'exports', fileName);
       fs.mkdirSync(path.dirname(outputPath), { recursive: true });
       fs.writeFileSync(outputPath, buffer);
-      console.log(`[EXPORT_EARNINGS] Файл сохранён: ${outputPath}`);
 
-      // Отправляем файл
       const monthLabel = monthStr || `${new Date(fromDate).toLocaleString('ru-RU', { month: 'long', year: 'numeric' })}`;
       await bot.sendDocument(msg.chat.id, outputPath, {
         caption: `🤑 Отчёт по заработку за ${monthLabel}`
       });
 
-      // Удаляем временный файл после отправки
       try {
         fs.unlinkSync(outputPath);
-        console.log(`[EXPORT_EARNINGS] Временный файл удалён: ${outputPath}`);
       } catch (unlinkErr) {
         console.warn(`[EXPORT_EARNINGS] Не удалось удалить файл: ${unlinkErr.message}`);
       }

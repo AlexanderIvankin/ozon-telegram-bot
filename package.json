@@ -16,6 +16,7 @@
     "axios": "^1.17.0",
     "bwip-js": "^4.11.1",
     "dotenv": "^17.4.2",
+    "exceljs": "^4.4.0",
     "node-telegram-bot-api": "^0.67.0",
     "ozon-seller-api-extended": "^1.1.6",
     "pdf-lib": "^1.17.1",

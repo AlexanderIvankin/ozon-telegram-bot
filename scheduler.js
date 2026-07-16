@@ -1,3 +1,4 @@
+const { exportMonthlyEarnings } = require('./commands');
 const debugMode = require('./debugMode');
 
 let checkInterval = null;
@@ -27,4 +28,37 @@ function pauseChecker() { isPaused = true; }
 function resumeChecker() { isPaused = false; }
 function isCheckerPaused() { return isPaused; }
 
-module.exports = { startOrderChecker, stopOrderChecker, pauseChecker, resumeChecker, isCheckerPaused };
+let monthlyExportInterval = null;
+
+function startMonthlyExportChecker(db, bot = null) {
+    if (monthlyExportInterval) clearInterval(monthlyExportInterval);
+    monthlyExportInterval = setInterval(async () => {
+        try {
+            const now = new Date();
+            const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+            if (now.getDate() === lastDay && now.getHours() >= 23 && now.getMinutes() < 60) {
+                const prevMonth = new Date(now.getFullYear(), now.getMonth() - 1);
+                const monthStr = `${prevMonth.getFullYear()}-${String(prevMonth.getMonth() + 1).padStart(2, '0')}`;
+                console.log(`[SCHEDULER] Запуск автоматического экспорта за ${monthStr}`);
+                await exportMonthlyEarnings(db, monthStr);
+                if (bot) {
+                    const moderatorId = process.env.MODERATOR_ID;
+                    if (moderatorId) {
+                        await bot.sendMessage(moderatorId, `📊 Автоматический экспорт за ${monthStr} выполнен.`);
+                    }
+                }
+            }
+        } catch (err) {
+            console.error('[SCHEDULER] Ошибка автоматического экспорта:', err);
+        }
+    }, 60 * 60 * 1000);
+}
+
+function stopMonthlyExportChecker() {
+    if (monthlyExportInterval) {
+        clearInterval(monthlyExportInterval);
+        monthlyExportInterval = null;
+    }
+}
+
+module.exports = { startOrderChecker, stopOrderChecker, pauseChecker, resumeChecker, isCheckerPaused, startMonthlyExportChecker, stopMonthlyExportChecker };

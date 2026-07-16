@@ -2,10 +2,9 @@ require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const db = require('./db');
 const ozon = require('./ozon');
-const bwipjs = require('bwip-js');
 const scheduler = require('./scheduler');
 const { syncEmployeesFromExcel } = require('./syncEmployees');
-const { registerCommands, restorePendingForms, clearOrderState } = require('./commands');
+const { registerCommands, restorePendingForms, clearOrderState, escapeHtml } = require('./commands');
 const debugMode = require('./debugMode');
 
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
@@ -25,7 +24,8 @@ process.on('unhandledRejection', (reason, promise) => {
 async function setCommandsWithRetry(retries = 3, delay = 5000) {
     const commands = [
         { command: 'start', description: 'Запустить бота' },
-        { command: 'my_earnings', description: 'Мой заработок за месяц (указать YYYY-MM), по умолчанию текущий' },
+        { command: 'my_monthly_earnings', description: 'Заработок за месяц (указать YYYY-MM)' },
+        { command: 'my_active_earnings', description: 'Полный активный заработок (до расчёта)' },
         { command: 'my_orders', description: 'Мои активные заказы' },
         { command: 'finish_order', description: 'Завершить заказ (указать номер)' },
         { command: 'cancel_order', description: 'Отменить заказ (указать номер)' },
@@ -282,15 +282,6 @@ async function cleanExpiredAssignments(activeOrderIds) {
     }
 }
 
-// Функция для формирования вывода в HTML parse mode
-function escapeHtml(text) {
-    if (text === null || text === undefined) return '';
-    return String(text)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;');
-}
-
 // Функция для отображения меню выбора для конкретного заказа
 async function showOrderMenu(order) {
     const debug = debugMode.isDebugMode();
@@ -486,7 +477,7 @@ process.on('SIGTERM', gracefulShutdown);
     console.log(debugMode.getDebugModeStatusMessage());
     // Регистрируем все команды
     registerCommands(
-        bot, db, ozon, escapeHtml, bwipjs, scheduler, debugMode,
+        bot, db, ozon, scheduler, debugMode,
         isAuthorizedUser, isModerator, isAdmin,
         showOrderMenu, safeCheckAndOfferNewOrders, safeProcessNextOrder,
         pendingNewOrders, currentOrderProcessing,
@@ -497,5 +488,7 @@ process.on('SIGTERM', gracefulShutdown);
         checkAndOfferNewOrders();
         restorePendingForms(db, ozon, bot);
     }, 5000);
+    // Eжемесячный экспорт статистики заработков в Excel
+    scheduler.startMonthlyExportChecker(db, bot);
     console.log('Бот запущен...');
 })();

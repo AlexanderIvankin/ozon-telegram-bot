@@ -96,7 +96,7 @@ async function initDB() {
         console.log('[DB] Добавлена колонка canceled_orders в employee_stats');
     }
 
-    // Таблица заработка сотрудников employee_earnings
+    // Таблица заработка сотрудников employee_earnings ЗА ВСЁ ВРЕМЯ
     await database.exec(`
     CREATE TABLE IF NOT EXISTS employee_earnings (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -109,7 +109,19 @@ async function initDB() {
 `);
     await database.exec(`CREATE INDEX IF NOT EXISTS idx_employee_earnings_employee_id ON employee_earnings(employee_id);`);
 
-    // Таблица корректировок заработка
+    // Таблица активного рассчёта заработка сотрудников employee_earnings_active
+    await database.exec(`
+    CREATE TABLE employee_earnings_active(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        employee_id INTEGER NOT NULL,
+        order_id TEXT NOT NULL,
+        amount REAL NOT NULL,
+        calculated_at INTEGER NOT NULL,
+        FOREIGN KEY(employee_id) REFERENCES employees(id)
+    );
+`);
+
+    // Таблица истории корректировок заработка employee_earnings_adjustments
     await database.exec(`
     CREATE TABLE IF NOT EXISTS employee_earnings_adjustments (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -122,6 +134,19 @@ async function initDB() {
 `);
     await database.exec(`CREATE INDEX IF NOT EXISTS idx_adjustments_employee_id ON employee_earnings_adjustments(employee_id);`);
     await database.exec(`CREATE INDEX IF NOT EXISTS idx_adjustments_adjusted_at ON employee_earnings_adjustments(adjusted_at);`);
+
+    // Таблица активных корректировок заработка
+    await database.exec(`
+    CREATE TABLE IF NOT EXISTS employee_earnings_adjustments_active (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        employee_id INTEGER NOT NULL,
+        amount REAL NOT NULL,
+        reason TEXT,
+        adjusted_at INTEGER NOT NULL,
+        FOREIGN KEY (employee_id) REFERENCES employees(id)
+    )
+`);
+    await database.exec(`CREATE INDEX IF NOT EXISTS idx_adjustments_active_employee_id ON employee_earnings_adjustments_active(employee_id);`);
 
     // Таблица статистики по товарам product_stats
     await database.exec(`
@@ -161,6 +186,45 @@ async function initDB() {
     )
 `);
     await database.exec(`CREATE INDEX IF NOT EXISTS idx_skipped_models_offer_id ON skipped_models(offer_id);`);
+
+    // Одноразовое копирование исторических данных в активные таблицы, если они пусты
+    await database.exec(`
+    CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
+    )
+`);
+
+    // Проверяем флаг initial_copy_done
+    const copyDone = await database.get("SELECT value FROM app_settings WHERE key = 'initial_copy_done'");
+    if (!copyDone) {
+        // Выполняем копирование
+        const activeEarningsCount = await database.get('SELECT COUNT(*) as count FROM employee_earnings_active');
+        if (activeEarningsCount.count === 0) {
+            const historyCount = await database.get('SELECT COUNT(*) as count FROM employee_earnings');
+            if (historyCount.count > 0) {
+                console.log('[DB] Копирование исторических заработков в активную таблицу...');
+                await database.run(`
+                INSERT INTO employee_earnings_active (employee_id, order_id, amount, calculated_at)
+                SELECT employee_id, order_id, amount, calculated_at FROM employee_earnings
+            `);
+            }
+        }
+        const activeAdjCount = await database.get('SELECT COUNT(*) as count FROM employee_earnings_adjustments_active');
+        if (activeAdjCount.count === 0) {
+            const historyAdjCount = await database.get('SELECT COUNT(*) as count FROM employee_earnings_adjustments');
+            if (historyAdjCount.count > 0) {
+                console.log('[DB] Копирование исторических корректировок в активную таблицу...');
+                await database.run(`
+                INSERT INTO employee_earnings_adjustments_active (employee_id, amount, reason, adjusted_at)
+                SELECT employee_id, amount, reason, adjusted_at FROM employee_earnings_adjustments
+            `);
+            }
+        }
+        // Устанавливаем флаг
+        await database.run("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('initial_copy_done', 'true')");
+        console.log('[DB] Одноразовое копирование завершено');
+    }
 
     return database;
 }
@@ -285,6 +349,7 @@ async function getEmployeeActiveOrdersCount(employeeId) {
     return row ? row.count : 0;
 }
 
+// Сохранить заработок сотрудника в employee_earnings
 async function saveEmployeeEarnings(employeeId, orderId, amount) {
     await database.run(
         `INSERT INTO employee_earnings (employee_id, order_id, amount, calculated_at)
@@ -293,6 +358,7 @@ async function saveEmployeeEarnings(employeeId, orderId, amount) {
     );
 }
 
+// Получить историю заработка сотрудника за период (для экспорта)
 async function getEmployeeEarnings(employeeId, fromDate, toDate) {
     // для будущего экспорта
     return database.all(
@@ -303,6 +369,7 @@ async function getEmployeeEarnings(employeeId, fromDate, toDate) {
     );
 }
 
+// Получить историю заработков всех сотрудников за период (для экспорта)
 async function getAllEmployeeEarningsForPeriod(fromDate, toDate) {
     return database.all(`
         SELECT e.id, e.name, ee.order_id, ee.amount, ee.calculated_at
@@ -311,6 +378,54 @@ async function getAllEmployeeEarningsForPeriod(fromDate, toDate) {
         WHERE ee.calculated_at >= ? AND ee.calculated_at <= ?
         ORDER BY e.id, ee.calculated_at
     `, fromDate, toDate);
+}
+
+// Сохранить заработок в активную таблицу
+async function saveEmployeeEarningsActive(employeeId, orderId, amount) {
+    await database.run(
+        `INSERT INTO employee_earnings_active (employee_id, order_id, amount, calculated_at)
+         VALUES (?, ?, ?, ?)`,
+        employeeId, orderId, amount, Date.now()
+    );
+}
+
+// Получить активные заработки сотрудника за период (или все)
+async function getActiveEmployeeEarnings(employeeId, fromDate, toDate) {
+    return database.all(
+        `SELECT order_id, amount, calculated_at FROM employee_earnings_active
+         WHERE employee_id = ? AND calculated_at >= ? AND calculated_at <= ?
+         ORDER BY calculated_at`,
+        employeeId, fromDate, toDate
+    );
+}
+
+// Получить все активные заработки всех сотрудников за период (для экспорта)
+async function getAllActiveEmployeeEarningsForPeriod(fromDate, toDate) {
+    return database.all(`
+        SELECT e.id, e.name, ee.order_id, ee.amount, ee.calculated_at
+        FROM employee_earnings_active ee
+        JOIN employees e ON ee.employee_id = e.id
+        WHERE ee.calculated_at >= ? AND ee.calculated_at <= ?
+        ORDER BY e.id, ee.calculated_at
+    `, fromDate, toDate);
+}
+
+// Очистить активные заработки для сотрудника (расчёт произведён)
+async function clearActiveEarningsForEmployee(employeeId) {
+    await database.run(
+        'DELETE FROM employee_earnings_active WHERE employee_id = ?',
+        employeeId
+    );
+}
+
+// Получить сумму активных заработков для сотрудника за период
+async function getActiveEmployeeEarningsSum(employeeId, fromDate, toDate) {
+    const row = await database.get(
+        `SELECT COALESCE(SUM(amount), 0) as total FROM employee_earnings_active
+         WHERE employee_id = ? AND calculated_at >= ? AND calculated_at <= ?`,
+        employeeId, fromDate, toDate
+    );
+    return row ? row.total : 0;
 }
 
 /**
@@ -347,6 +462,33 @@ async function getAllAdjustmentsForPeriod(fromDate, toDate) {
          WHERE a.adjusted_at >= ? AND a.adjusted_at <= ?
          ORDER BY e.id, a.adjusted_at`,
         fromDate, toDate
+    );
+}
+
+// Сохранить корректировку в активную таблицу
+async function saveEarningsAdjustmentActive(employeeId, amount, reason = '') {
+    await database.run(
+        `INSERT INTO employee_earnings_adjustments_active (employee_id, amount, reason, adjusted_at)
+         VALUES (?, ?, ?, ?)`,
+        employeeId, amount, reason, Date.now()
+    );
+}
+
+// Получить сумму активных корректировок за период для сотрудника
+async function getActiveAdjustmentsSum(employeeId, fromDate, toDate) {
+    const row = await database.get(
+        `SELECT COALESCE(SUM(amount), 0) as total FROM employee_earnings_adjustments_active
+         WHERE employee_id = ? AND adjusted_at >= ? AND adjusted_at <= ?`,
+        employeeId, fromDate, toDate
+    );
+    return row ? row.total : 0;
+}
+
+// Очистить активные корректировки для сотрудника
+async function clearActiveAdjustmentsForEmployee(employeeId) {
+    await database.run(
+        'DELETE FROM employee_earnings_adjustments_active WHERE employee_id = ?',
+        employeeId
     );
 }
 
@@ -566,9 +708,17 @@ module.exports = {
     saveEmployeeEarnings,
     getEmployeeEarnings,
     getAllEmployeeEarningsForPeriod,
+    saveEmployeeEarningsActive,
+    getActiveEmployeeEarnings,
+    getAllActiveEmployeeEarningsForPeriod,
+    clearActiveEarningsForEmployee,
+    getActiveEmployeeEarningsSum,
     addEarningsAdjustment,
     getEmployeeAdjustments,
     getAllAdjustmentsForPeriod,
+    saveEarningsAdjustmentActive,
+    getActiveAdjustmentsSum,
+    clearActiveAdjustmentsForEmployee,
     syncWarehouses,
     getAllWarehouses,
     getWarehouseNameById,

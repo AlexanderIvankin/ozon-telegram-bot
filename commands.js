@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const ExcelJS = require('exceljs');
 const axios = require('axios');
+const bwipjs = require('bwip-js');
 const { PDFDocument } = require('pdf-lib');
 const { syncEmployeesFromExcel, exportTeamInfoXlsx } = require('./syncEmployees');
 
@@ -70,6 +71,17 @@ function formatDateDDMMYYYY(timestamp) {
   return `${day}.${month}.${year}`;
 }
 
+
+// Функция для формирования вывода в HTML parse mode
+function escapeHtml(text) {
+  if (text === null || text === undefined) return '';
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+// Функция для склейки PDF файлов
 async function mergePdfs(pdfBuffers) {
   if (!pdfBuffers.length) return null;
   const mergedPdf = await PDFDocument.create();
@@ -86,6 +98,91 @@ async function mergePdfs(pdfBuffers) {
     }
   }
   return await mergedPdf.save();
+}
+
+/**
+ * Экспорт заработка за месяц (исторический, без корректировок) в Excel.
+ * Сохраняет файл в папку outputs.
+ * @param {string} monthStr - строка в формате YYYY-MM (если null, то текущий месяц)
+ * @returns {Promise<string>} - путь к созданному файлу
+ */
+async function exportMonthlyEarnings(db, monthStr = null) {
+  let fromDate, toDate;
+  if (monthStr) {
+    if (!/^\d{4}-\d{2}$/.test(monthStr)) {
+      throw new Error('Неверный формат. Используйте YYYY-MM');
+    }
+    const [year, month] = monthStr.split('-').map(Number);
+    fromDate = new Date(year, month - 1, 1).getTime();
+    toDate = new Date(year, month, 1).getTime() - 1;
+  } else {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = now.getMonth();
+    fromDate = new Date(year, month, 1).getTime();
+    toDate = new Date(year, month + 1, 1).getTime() - 1;
+  }
+
+  const earningsData = await db.getAllEmployeeEarningsForPeriod(fromDate, toDate);
+  if (!earningsData.length) {
+    throw new Error('Нет данных о заработке за указанный период.');
+  }
+
+  // Группировка
+  const employeeMap = new Map();
+  for (const row of earningsData) {
+    const empId = row.id;
+    if (!employeeMap.has(empId)) {
+      employeeMap.set(empId, {
+        name: row.name,
+        totalAmount: 0,
+        orderCount: 0,
+      });
+    }
+    const emp = employeeMap.get(empId);
+    emp.totalAmount += row.amount;
+    emp.orderCount += 1;
+  }
+
+  const rows = [];
+  for (const [empId, emp] of employeeMap) {
+    rows.push({
+      'ID сотрудника': empId,
+      'Сотрудник': emp.name,
+      'Количество заказов': emp.orderCount,
+      'Средний чек': (emp.orderCount > 0 ? (emp.totalAmount / emp.orderCount).toFixed(2) : 0),
+      'Заработок': emp.totalAmount.toFixed(2),
+    });
+  }
+  rows.sort((a, b) => parseFloat(b['Заработок']) - parseFloat(a['Заработок']));
+
+  // Генерация Excel
+  const workbook = new ExcelJS.Workbook();
+  const worksheet = workbook.addWorksheet('Заработок (месяц)');
+  const headers = ['ID сотрудника', 'Сотрудник', 'Количество заказов', 'Средний чек', 'Заработок'];
+  const headerRow = worksheet.addRow(headers);
+  headerRow.eachCell(cell => {
+    cell.alignment = { horizontal: 'center', vertical: 'middle' };
+    cell.font = { bold: true };
+  });
+  for (const rowData of rows) {
+    const row = worksheet.addRow(Object.values(rowData));
+    row.eachCell(cell => {
+      cell.alignment = { horizontal: 'center', vertical: 'middle' };
+    });
+  }
+  const columnWidths = [15, 40, 25, 15, 20];
+  worksheet.columns.forEach((col, index) => {
+    col.width = columnWidths[index] || 20;
+  });
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  const fileName = `monthly_earnings_${monthStr || (new Date(fromDate).toISOString().slice(0, 7))}.xlsx`;
+  const outputPath = path.join(__dirname, 'outputs', fileName);
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+  fs.writeFileSync(outputPath, buffer);
+  console.log(`[EXPORT] Файл сохранён: ${outputPath}`);
+  return outputPath;
 }
 
 // Загружаем справочники при старте
@@ -122,7 +219,7 @@ function loadMaterials() {
 loadMaterials();
 
 function registerCommands(
-  bot, db, ozon, escapeHtml, bwipjs, scheduler, debugMode,
+  bot, db, ozon, scheduler, debugMode,
   isAuthorizedUser, isModerator, isAdmin,
   showOrderMenu, safeCheckAndOfferNewOrders, safeProcessNextOrder,
   pendingNewOrders, currentOrderProcessing,
@@ -852,7 +949,7 @@ function registerCommands(
 
     if (debugMode.isDebugMode()) console.log(`[CALLBACK] admin ${adminId} вызвал ${data}`);
 
-    // 1. Пропуск заказа
+    // Пропуск заказа
     if (data.startsWith('skip_')) {
       if (!isModerator(adminId)) {
         await bot.answerCallbackQuery(callbackQuery.id, { text: '⛔ Только модератор' });
@@ -873,7 +970,7 @@ function registerCommands(
       return;
     }
 
-    // 2. Показать приоритетных сотрудников
+    // Показать приоритетных сотрудников
     if (data.startsWith('priority_')) {
       if (!isModerator(adminId)) {
         await bot.answerCallbackQuery(callbackQuery.id, { text: '⛔ Только модератор' });
@@ -909,7 +1006,7 @@ function registerCommands(
       return;
     }
 
-    // 3. Показать всех сотрудников
+    // Показать всех сотрудников
     if (data.startsWith('others_')) {
       if (!isModerator(adminId)) {
         await bot.answerCallbackQuery(callbackQuery.id, { text: '⛔ Только модератор' });
@@ -943,7 +1040,7 @@ function registerCommands(
       return;
     }
 
-    // 4. Назначение заказа
+    // Назначение заказа
     if (data.startsWith('assign_')) {
       const parts = data.split('_');
       const orderId = parts[1];
@@ -965,7 +1062,7 @@ function registerCommands(
       return;
     }
 
-    // 5. Кнопка "Назад"
+    // Кнопка "Назад"
     if (data.startsWith('back_')) {
       const orderId = data.substring(5);
       await safeDeleteMessage(msg.chat.id, msg.message_id);
@@ -977,7 +1074,7 @@ function registerCommands(
       return;
     }
 
-    // 6. Сброс всех назначений (подтверждение)
+    // Сброс всех назначений (подтверждение)
     if (data === 'confirm_clear_all') {
       await db.db.run('DELETE FROM assignments WHERE status = "assigned"');
 
@@ -1007,7 +1104,7 @@ function registerCommands(
       return;
     }
 
-    // 7. Снятие заказа администратором (подтверждение)
+    // Снятие заказа администратором (подтверждение)
     if (data.startsWith('admin_cancel_confirm_')) {
       const orderId = data.substring(21);
       // Находим сотрудника, у которого был этот заказ
@@ -1046,20 +1143,40 @@ function registerCommands(
       return;
     }
 
-    // 8. Кнопка "Нет" для снятия заказа администратором
+    // Кнопка "Нет" для снятия заказа администратором
     if (data.startsWith('admin_cancel_abort_')) {
       await bot.answerCallbackQuery(callbackQuery.id, { text: 'Снятие заказа отменено' });
       await safeDeleteMessage(msg.chat.id, msg.message_id);
       return;
     }
 
-    // 9. Обработка подтверждения сброса заработка
+    // Обработка подтверждения расчёта сотрудника
+    if (data.startsWith('confirm_settle_')) {
+      const employeeId = parseInt(data.substring(16));
+      await db.clearActiveEarningsForEmployee(employeeId);
+      await db.clearActiveAdjustmentsForEmployee(employeeId);
+      await bot.answerCallbackQuery(callbackQuery.id, { text: '✅ Активный заработок обнулён' });
+      await bot.editMessageText(`✅ Расчёт с сотрудником (ID ${employeeId}) произведён. Активный заработок обнулён.`, {
+        chat_id: msg.chat.id,
+        message_id: msg.message_id
+      });
+    }
+
+    // Обработка отмены расчёта сотрудника
+    if (data.startsWith('cancel_settle_')) {
+      await bot.answerCallbackQuery(callbackQuery.id, { text: 'Отменено' });
+      await bot.deleteMessage(msg.chat.id, msg.message_id);
+    }
+
+    // Обработка подтверждения сброса заработка
     if (data === 'confirm_clear_earnings') {
       try {
         const dbConn = db.db;
         await dbConn.run('BEGIN TRANSACTION');
         await dbConn.run('DELETE FROM employee_earnings');
         await dbConn.run('DELETE FROM employee_earnings_adjustments');
+        await dbConn.run('DELETE FROM employee_earnings_active');
+        await dbConn.run('DELETE FROM employee_earnings_adjustments_active');
         await dbConn.run('COMMIT');
         await bot.editMessageText('✅ Все записи о заработке и корректировках сотрудников удалены.', {
           chat_id: msg.chat.id,
@@ -1078,14 +1195,14 @@ function registerCommands(
       return;
     }
 
-    // 10. Обработка отмены сброса заработка
+    // 12. Обработка отмены сброса заработка
     if (data === 'cancel_clear_earnings') {
       await bot.deleteMessage(msg.chat.id, msg.message_id);
       await bot.answerCallbackQuery(callbackQuery.id, { text: 'Отменено' });
       return;
     }
 
-    // 11. Сброс всех данных (кроме моделей и сотрудников) и синхронизация — подтверждение
+    // Сброс всех данных (кроме моделей и сотрудников) и синхронизация — подтверждение
     if (data === 'confirm_full_reset_sync') {
       try {
         const dbConn = db.db;
@@ -1327,6 +1444,7 @@ function registerCommands(
           );
           if (!existingEarnings) {
             await db.saveEmployeeEarnings(employee.id, postingNumber, earningsData.total);
+            await db.saveEmployeeEarningsActive(employee.id, postingNumber, earningsData.total);
             console.log(`[FINISH] Заработок сохранён: ${earningsData.total}`);
           } else {
             console.log(`[FINISH] Заработок для заказа ${postingNumber} уже существует, пропускаем`);
@@ -1686,21 +1804,23 @@ function registerCommands(
       adminMessage += `/employee_stats <id_сотрудника> — статистика сотрудника (заказы, сумма)\n`;
       adminMessage += `/employee_orders <id_сотрудника> — показать активные заказы сотрудника\n\n`;
 
+      adminMessage += `/admin_assign_order <номер_заказа> [id_сотрудника] — назначить заказ сотруднику (если ID не указан – показать список сотрудников)\n`;
+      adminMessage += `/admin_cancel_order <номер_заказа> — снять заказ с сотрудника\n\n`;
+
       adminMessage += `/admin_send_label <номер_заказа> [id_сотрудника] — отправить PDF‑этикетку заказа сотруднику (если ID не указан – себе)\n\n`;
+
+      adminMessage += `/clear_assignments — сброс ВСЕХ назначений на заказы\n\n`;
 
       adminMessage += `/admin_fill_stats <offer_id> — заполнить/обновить статистику товара (материал, цвет, вес)\n`;
       adminMessage += `/cancel_fill_stats — отменить активный процесс заполнения статистики\n`;
       adminMessage += `/clear_product_stats <offer_id> — удалить статистику для продукта\n\n`;
 
-      adminMessage += `/edit_earnings <employee_id> <сумма> [причина] — изменение заработка сотрудника (опционально: причина изменения)\n`;
-      adminMessage += `/export_earnings [YYYY-MM] — экспорт заработка всех сотрудников за месяц (по умолчанию текущий)\n`;
-      adminMessage += `/clear_earnings — удалить все записи о заработке сотрудников и корректировки (с подтверждением)\n\n`;
+      adminMessage += `/edit_earnings <id_сотрудника> <сумма> [причина] — изменение заработка сотрудника (опционально: причина изменения)\n`;
+      adminMessage += `/export_earnings — экспорт активного заработка сотрудников (с корректировками)\n`;
+      adminMessage += `/settle_earnings <id_сотрудника> — полный расчёт (с обнулением) активного заработка (с корректировками) сотрудника\n`;
+      adminMessage += `/monthly_earnings [YYYY-MM] — экспорт заработка всех сотрудников за месяц (по умолчанию текущий)\n\n`;
 
-      adminMessage += `/admin_assign_order <номер_заказа> [id_сотрудника] — назначить заказ сотруднику (если ID не указан – показать список сотрудников)\n\n`;
-
-      adminMessage += `/admin_cancel_order <номер_заказа> — снять заказ с сотрудника\n\n`;
-
-      adminMessage += `/clear_assignments — сброс ВСЕХ назначений на заказы\n\n`;
+      adminMessage += `/full_reset_earnings — удалить ВСЕ записи из БД о заработке сотрудников и корректировках (с подтверждением)\n\n`;
 
       adminMessage += `📁 3D-модели:
 
@@ -1735,12 +1855,12 @@ function registerCommands(
       adminMessage += `/download_product_stats — скачать файл статистики продуктов "product-stats.xlsx" (с принудительной выгрузкой статистики из bot.db)\n`;
       adminMessage += `/download_db — скачать файл базы данных "bot.db"\n\n`;
 
-      adminMessage += `/backup_db — создать бэкап базы данных "bot.db"\n\n`;
-
       adminMessage += `/upload_employees — загрузить новый файл "team-info.xlsx" с сотрудниками (автоматически синхронизирует БД)\n`;
       adminMessage += `/upload_materials — загрузить новый файл "materials-prices.json" с ценами материалов\n\n`;
 
-      adminMessage += `/full_reset_and_sync — сброс всех данных (сотрудники, склады, назначения), кроме 3D-моделей, статистики товаров и заработка сотрудников, синхронизация складов/сотрудников\n\n`;
+      adminMessage += `/backup_db — создать бэкап базы данных "bot.db"\n\n`;
+
+      adminMessage += `/full_reset_and_sync — сброс ВСЕХ данных в БД (сотрудники, склады, назначения), кроме 3D-моделей, статистики товаров и заработка сотрудников, синхронизация складов/сотрудников\n\n`;
 
       if (debugMode.isDebugMode()) adminMessage += `/debug_clear — сбросить отладочные назначения\n`;
 
@@ -1755,7 +1875,8 @@ function registerCommands(
       msgText += `Доступные команды:\n`;
       msgText += `/start — перезапустить бота\n`;
       msgText += `/my_orders — показать мои активные заказы\n`;
-      msgText += `/my_earnings [YYYY-MM] — показать мой заработок за месяц (по умолчанию текущий)\n`;
+      msgText += `my_monthly_earnings [YYYY-MM] — показать мой заработок за любой месяц (по умолчанию текущий)\n`;
+      msgText += `/my_active_earnings — показать мой полный активный заработок (до расчёта)\n`;
       msgText += `/finish_order <номер_заказа> — завершить заказ (получить этикетку)\n`;
       msgText += `/cancel_order <номер_заказа> — отменить заказ (если не можете выполнить)\n`;
       msgText += `/send_label <номер_заказа> — получить этикетку завершённого заказа (не чаще 1 раза в минуту)\n`;
@@ -2771,38 +2892,39 @@ function registerCommands(
     await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'HTML' });
   });
 
-  // --- "/export_earnings" Команда для администратора: экспорт заработка сотрудников (с корректировками) за месяц ---
   const ExcelJS = require('exceljs');
 
-  bot.onText(/\/export_earnings(?: (.+))?/, async (msg, match) => {
+  // --- "/monthly_earnings" Команда для администратора: экспорт заработка сотрудников (с корректировками) за месяц ---
+  bot.onText(/\/monthly_earnings(?: (.+))?/, async (msg, match) => {
     const userId = msg.from.id.toString();
-    if (!isAdmin(userId)) {
-      return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
-    }
+    if (!isAdmin(userId)) return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
 
-    let monthStr = match[1] || null;
-    let fromDate, toDate;
-    if (monthStr) {
-      if (!/^\d{4}-\d{2}$/.test(monthStr)) {
-        return bot.sendMessage(msg.chat.id, '❌ Неверный формат. Используйте YYYY-MM');
-      }
-      const [year, month] = monthStr.split('-').map(Number);
-      fromDate = new Date(year, month - 1, 1).getTime();
-      toDate = new Date(year, month, 1).getTime() - 1;
-    } else {
-      const now = new Date();
-      const year = now.getFullYear();
-      const month = now.getMonth();
-      fromDate = new Date(year, month, 1).getTime();
-      toDate = new Date(year, month + 1, 1).getTime() - 1;
+    const monthStr = match[1] || null;
+    try {
+      const filePath = await exportMonthlyEarnings(db, monthStr);
+      const monthLabel = monthStr || `${new Date().toLocaleString('ru-RU', { month: 'long', year: 'numeric' })}`;
+      await bot.sendDocument(msg.chat.id, filePath, {
+        caption: `📅 Заработок за ${monthLabel}`
+      });
+      // Не удаляем файл, оставляем в outputs для архива
+    } catch (err) {
+      console.error('[MONTHLY_EARNINGS] Ошибка:', err);
+      await bot.sendMessage(msg.chat.id, `❌ ${err.message}`);
     }
+  });
 
-    const earningsData = await db.getAllEmployeeEarningsForPeriod(fromDate, toDate);
+  // --- "/export_earnings" Команда для администратора: экспорт активного заработка сотрудников (с корректировками) ---
+  bot.onText(/\/export_earnings/, async (msg) => {
+    const userId = msg.from.id.toString();
+    if (!isAdmin(userId)) return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
+
+    // Получаем все активные заработки (без фильтра по дате)
+    const earningsData = await db.getAllActiveEmployeeEarningsForPeriod(0, Date.now());
     if (!earningsData.length) {
-      return bot.sendMessage(msg.chat.id, '📭 Нет данных о заработке за указанный период.');
+      return bot.sendMessage(msg.chat.id, '📭 Нет данных о заработке (активных).');
     }
 
-    // Группировка
+    // Группировка по сотрудникам
     const employeeMap = new Map();
     for (const row of earningsData) {
       const empId = row.id;
@@ -2818,70 +2940,83 @@ function registerCommands(
       emp.orderCount += 1;
     }
 
-    // Подготовка данных
     const rows = [];
     for (const [empId, emp] of employeeMap) {
-      const adjustments = await db.getEmployeeAdjustments(empId, fromDate, toDate);
-      const totalWithAdjustments = emp.totalAmount + adjustments;
+      const adjustments = await db.getActiveAdjustmentsSum(empId, 0, Date.now());
+      const baseEarnings = emp.totalAmount;
+      const totalEarnings = baseEarnings + adjustments;
       rows.push({
         'ID сотрудника': empId,
         'Сотрудник': emp.name,
         'Количество заказов': emp.orderCount,
-        'Заработок (базовый)': emp.totalAmount.toFixed(2),
+        'Заработок (базовый)': baseEarnings.toFixed(2),
         'Корректировки': adjustments.toFixed(2),
-        'Заработок (итоговый)': totalWithAdjustments.toFixed(2),
-        'Средний чек (итоговый)': (emp.orderCount > 0 ? (totalWithAdjustments / emp.orderCount).toFixed(2) : 0),
+        'Заработок (итоговый)': totalEarnings.toFixed(2),
       });
     }
 
     rows.sort((a, b) => parseFloat(b['Заработок (итоговый)']) - parseFloat(a['Заработок (итоговый)']));
 
-    try {
-      const workbook = new ExcelJS.Workbook();
-      const worksheet = workbook.addWorksheet('Заработок');
-
-      // Заголовки
-      const headers = ['ID сотрудника', 'Сотрудник', 'Количество заказов', 'Заработок (базовый)', 'Корректировки', 'Заработок (итоговый)', 'Средний чек (итоговый)'];
-      const headerRow = worksheet.addRow(headers);
-      headerRow.eachCell((cell) => {
+    // Генерация Excel (аналогично, но без среднего чека)
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('Заработок (активный)');
+    const headers = ['ID сотрудника', 'Сотрудник', 'Количество заказов', 'Заработок (базовый)', 'Корректировки', 'Заработок (итоговый)'];
+    const headerRow = worksheet.addRow(headers);
+    headerRow.eachCell(cell => {
+      cell.alignment = { horizontal: 'center', vertical: 'middle' };
+      cell.font = { bold: true };
+    });
+    for (const rowData of rows) {
+      const row = worksheet.addRow(Object.values(rowData));
+      row.eachCell(cell => {
         cell.alignment = { horizontal: 'center', vertical: 'middle' };
-        cell.font = { bold: true }; // Жирный шрифт для заголовков
       });
-
-      // Данные
-      for (const rowData of rows) {
-        const row = worksheet.addRow(Object.values(rowData));
-        row.eachCell((cell) => {
-          cell.alignment = { horizontal: 'center', vertical: 'middle' };
-        });
-      }
-
-      // Ширина столбцов
-      const columnWidths = [15, 40, 25, 25, 20, 25, 25];
-      worksheet.columns.forEach((col, index) => {
-        col.width = columnWidths[index];
-      });
-
-      const buffer = await workbook.xlsx.writeBuffer();
-      const fileName = `earnings_${monthStr || (new Date(fromDate).toISOString().slice(0, 7))}.xlsx`;
-      const outputPath = path.join(__dirname, 'exports', fileName);
-      fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-      fs.writeFileSync(outputPath, buffer);
-
-      const monthLabel = monthStr || `${new Date(fromDate).toLocaleString('ru-RU', { month: 'long', year: 'numeric' })}`;
-      await bot.sendDocument(msg.chat.id, outputPath, {
-        caption: `🤑 Отчёт по заработку за ${monthLabel}`
-      });
-
-      try {
-        fs.unlinkSync(outputPath);
-      } catch (unlinkErr) {
-        console.warn(`[EXPORT_EARNINGS] Не удалось удалить файл: ${unlinkErr.message}`);
-      }
-    } catch (err) {
-      console.error('[EXPORT_EARNINGS] Ошибка создания Excel:', err);
-      await bot.sendMessage(msg.chat.id, `❌ Ошибка создания Excel: ${err.message}`);
     }
+    const columnWidths = [15, 40, 25, 25, 20, 25];
+    worksheet.columns.forEach((col, index) => {
+      col.width = columnWidths[index] || 20;
+    });
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    const fileName = `earnings_active_${Date.now()}.xlsx`;
+    const outputPath = path.join(__dirname, 'exports', fileName);
+    fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+    fs.writeFileSync(outputPath, buffer);
+    await bot.sendDocument(msg.chat.id, outputPath, {
+      caption: `📊 Активный заработок сотрудников (с последнего расчёта)`
+    });
+    fs.unlinkSync(outputPath);
+  });
+
+  // --- "/settle_earnings" Команда для администратора: полный расчёт (с обнулением) активного заработка (с корректировками) сотрудника ---
+  bot.onText(/\/settle_earnings (\d+)/, async (msg, match) => {
+    const userId = msg.from.id.toString();
+    if (!isAdmin(userId)) return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
+
+    const employeeId = parseInt(match[1]);
+    const employee = await db.getEmployeeById(employeeId);
+    if (!employee) return bot.sendMessage(msg.chat.id, '❌ Сотрудник не найден.');
+
+    // Получаем сумму активного заработка для этого сотрудника (за всё время, т.к. without period = все записи)
+    const totalActive = await db.getActiveEmployeeEarningsSum(employeeId, 0, Date.now());
+
+    const keyboard = {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: '✅ Да, обнулить', callback_data: `confirm_settle_${employeeId}` },
+            { text: '❌ Отмена', callback_data: `cancel_settle_${employeeId}` }
+          ]
+        ]
+      }
+    };
+    await bot.sendMessage(msg.chat.id,
+      `⚠️ Вы собираетесь произвести расчёт с сотрудником <b>${escapeHtml(employee.name)}</b>.\n` +
+      `Текущий активный заработок (с последнего расчёта): <b>${totalActive.toFixed(2)} руб.</b>\n` +
+      `После подтверждения активный заработок и корректировки для этого сотрудника будетут обнулёны.\n\n` +
+      `Продолжить?`,
+      { parse_mode: 'HTML', ...keyboard }
+    );
   });
 
   // --- "/edit_earnings" Команда для администратора: изменение заработка сотрудника <employee_id> <сумма> [причина] ---
@@ -2907,6 +3042,7 @@ function registerCommands(
     // Добавляем корректировку
     try {
       await db.addEarningsAdjustment(employeeId, amount, reason);
+      await db.saveEarningsAdjustmentActive(employeeId, amount, reason);
 
       // Отправляем уведомление сотруднику
       const now = new Date();
@@ -2940,8 +3076,8 @@ function registerCommands(
     }
   });
 
-  // --- "/clear_earnings" Команда для администратора: сброс таблицы заработка (и корректировок) сотрудников (с подтверждением) ---
-  bot.onText(/\/clear_earnings/, async (msg) => {
+  // --- "/full_reset_earnings" Команда для администратора: сброс таблицы заработка (и корректировок) сотрудников (с подтверждением) ---
+  bot.onText(/\/full_reset_earnings/, async (msg) => {
     const userId = msg.from.id.toString();
     if (!isAdmin(userId)) return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
 
@@ -2956,7 +3092,7 @@ function registerCommands(
       }
     };
     await bot.sendMessage(msg.chat.id,
-      '⚠️ Вы уверены?\n\nБудут удалены ВСЕ записи о заработке сотрудников и все корректировки.\nЭто действие необратимо!',
+      '⚠️ Вы уверены?\n\nБудут удалены ВСЕ записи из БД о заработке сотрудников и все корректировки.\nЭто действие необратимо!',
       keyboard
     );
   });
@@ -3428,7 +3564,7 @@ function registerCommands(
     await bot.sendMessage(msg.chat.id, `⚠️ Вы уверены, что хотите отменить заказ ${postingNumber}?`, confirmKeyboard);
   });
 
-  // --- /send_label – получить этикетку заказа (для сотрудников) ---
+  // --- "/send_label" – получить этикетку заказа (для сотрудников) ---
   bot.onText(/\/send_label (\S+)/, async (msg, match) => {
     const userId = msg.from.id.toString();
     const postingNumber = match[1];
@@ -3494,7 +3630,7 @@ function registerCommands(
     }
   });
 
-  // --- /send_all_labels – получить все этикетки к активным заказам сотрудинка в статусте awaiting_deliver (с куллдауном 1 час)  ---
+  // --- "/send_all_labels" – получить все этикетки к активным заказам сотрудинка в статусте awaiting_deliver (с куллдауном 1 час)  ---
   bot.onText(/\/send_all_labels/, async (msg) => {
     const userId = msg.from.id.toString();
     const employee = await db.getEmployee(userId);
@@ -3711,27 +3847,24 @@ function registerCommands(
     await bot.sendMessage(msg.chat.id, `✅ Отправлено этикеток: ${sentCount}.`);
   });
 
-  // --- "/my_earnings" – просмотр заработка сотрудника за месяц ---
-  bot.onText(/\/my_earnings(?: (.+))?/, async (msg, match) => {
+  // --- "/my_monthly_earnings" – просмотр заработка сотрудника за месяц (без корректировок) ---
+  bot.onText(/\/my_monthly_earnings(?: (.+))?/, async (msg, match) => {
     const userId = msg.from.id.toString();
     const employee = await db.getEmployee(userId);
     if (!employee) {
       return bot.sendMessage(msg.chat.id, '❌ Вы не зарегистрированы как сотрудник.');
     }
 
-    // Парсим месяц (если указан)
     let monthStr = match[1] || null;
     let fromDate, toDate;
     if (monthStr) {
-      // Проверяем формат YYYY-MM
       if (!/^\d{4}-\d{2}$/.test(monthStr)) {
-        return bot.sendMessage(msg.chat.id, '❌ Неверный формат. Используйте YYYY-MM (например, 2025-06)');
+        return bot.sendMessage(msg.chat.id, '❌ Неверный формат. Используйте YYYY-MM');
       }
       const [year, month] = monthStr.split('-').map(Number);
       fromDate = new Date(year, month - 1, 1).getTime();
       toDate = new Date(year, month, 1).getTime() - 1;
     } else {
-      // Текущий месяц
       const now = new Date();
       const year = now.getFullYear();
       const month = now.getMonth();
@@ -3745,20 +3878,44 @@ function registerCommands(
     }
 
     let monthDisplay = monthStr || `${new Date(fromDate).toLocaleString('ru-RU', { month: 'long', year: 'numeric' })}`;
-
-    const adjustments = await db.getEmployeeAdjustments(employee.id, fromDate, toDate);
-    const totalBase = earnings.reduce((sum, e) => sum + e.amount, 0);
-    const totalWithAdjustments = totalBase + adjustments;
-    let orderCount = earnings.length;
+    const total = earnings.reduce((sum, e) => sum + e.amount, 0);
+    const orderCount = earnings.length;
 
     let reply = `💰 <b>Ваш заработок за ${escapeHtml(monthDisplay)}</b>\n\n`;
+    reply += `• Заказов: ${escapeHtml(orderCount)}\n`;
+    reply += `• Средний чек: ${escapeHtml((total / orderCount).toFixed(2))} руб.`;
+    reply += `• Заработок: ${escapeHtml(total.toFixed(2))} руб.\n`;
+
+    await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'HTML' });
+  });
+
+  // --- "/my_active_earnings" – просмотр текущего активного заработка (с корректировками) ---
+  bot.onText(/\/my_active_earnings/, async (msg) => {
+    const userId = msg.from.id.toString();
+    const employee = await db.getEmployee(userId);
+    if (!employee) {
+      return bot.sendMessage(msg.chat.id, '❌ Вы не зарегистрированы как сотрудник.');
+    }
+
+    // Получаем активные заработки (за всё время)
+    const earnings = await db.getActiveEmployeeEarnings(employee.id, 0, Date.now());
+    if (!earnings.length) {
+      return bot.sendMessage(msg.chat.id, '📭 Нет активных заработков (расчёт ещё не проводился).');
+    }
+
+    const totalBase = earnings.reduce((sum, e) => sum + e.amount, 0);
+    const orderCount = earnings.length;
+    const adjustments = await db.getActiveAdjustmentsSum(employee.id, 0, Date.now());
+    const totalWithAdjustments = totalBase + adjustments;
+
+    let reply = `💰 <b>Ваш активный заработок (с последнего расчёта)</b>\n\n`;
     reply += `• Базовый заработок: ${escapeHtml(totalBase.toFixed(2))} руб.\n`;
+    reply += `• Заказов: ${escapeHtml(orderCount)}\n`;
+    reply += `• Средний чек: ${escapeHtml((totalWithAdjustments / orderCount).toFixed(2))} руб.`;
     if (adjustments !== 0) {
       reply += `• Корректировки: ${escapeHtml(adjustments > 0 ? '+' : '')}${escapeHtml(adjustments.toFixed(2))} руб.\n`;
     }
     reply += `• <b>Итого: ${escapeHtml(totalWithAdjustments.toFixed(2))} руб.</b>\n`;
-    reply += `• Заказов: ${escapeHtml(orderCount)}\n`;
-    reply += `• Средний чек: ${escapeHtml((totalWithAdjustments / orderCount).toFixed(2))} руб.`;
 
     await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'HTML' });
   });
@@ -3779,21 +3936,23 @@ function registerCommands(
       helpText += `/employee_stats <id_сотрудника> — статистика сотрудника (заказы, сумма)\n`;
       helpText += `/employee_orders <id_сотрудника> — активные заказы сотрудника\n\n`;
 
+      helpText += `/admin_assign_order <номер_заказа> [id_сотрудника] — назначить заказ сотруднику (если ID не указан – показать список сотрудников)\n`;
+      helpText += `/admin_cancel_order <номер_заказа> — снять заказ с сотрудника\n\n`;
+
       helpText += `/admin_send_label <номер_заказа> [id_сотрудника] — отправить PDF‑этикетку заказа сотруднику (если ID не указан – себе)\n\n`;
+
+      helpText += `/clear_assignments — сброс ВСЕХ назначений на заказы\n\n`;
 
       helpText += `/admin_fill_stats <offer_id> — заполнить/обновить статистику товара (материал, цвет, вес)\n`;
       helpText += `/cancel_fill_stats — отменить активный процесс заполнения статистики\n`;
       helpText += `/clear_product_stats <offer_id> — удалить статистику для продукта\n\n`;
 
-      helpText += `/edit_earnings <employee_id> <сумма> [причина] — изменение заработка сотрудника (опционально: причина изменения)\n`;
-      helpText += `/export_earnings [YYYY-MM] — экспорт заработка всех сотрудников за месяц (по умолчанию текущий)\n`;
-      helpText += `/clear_earnings — удалить все записи о заработке сотрудников и корректировки (с подтверждением)\n\n`;
+      helpText += `/edit_earnings <id_сотрудника> <сумма> [причина] — изменение заработка сотрудника (опционально: причина изменения)\n`;
+      helpText += `/export_earnings — экспорт активного заработка сотрудников (с корректировками)\n`;
+      helpText += `/settle_earnings <id_сотрудника> — полный расчёт (с обнулением) активного заработка (с корректировками) сотрудника\n`;
+      helpText += `/monthly_earnings [YYYY-MM] — экспорт заработка всех сотрудников за месяц (по умолчанию текущий)\n`;
 
-      helpText += `/admin_assign_order <номер_заказа> [id_сотрудника] — назначить заказ сотруднику (если ID не указан – показать список сотрудников)\n\n`;
-
-      helpText += `/admin_cancel_order <номер_заказа> — снять заказ с сотрудника\n\n`;
-
-      helpText += `/clear_assignments — сброс ВСЕХ назначений на заказы\n\n`;
+      helpText += `/full_reset_earnings — удалить ВСЕ записи из БД о заработке сотрудников и корректировках (с подтверждением)\n\n`;
 
       helpText += `📁 3D-модели:
 
@@ -3828,12 +3987,12 @@ function registerCommands(
       helpText += `/download_product_stats — скачать файл статистики продуктов "product-stats.xlsx" (с принудительной выгрузкой статистики из bot.db)\n`;
       helpText += `/download_db — скачать файл базы данных "bot.db"\n\n`;
 
-      helpText += `/backup_db — создать бэкап базы данных "бот.db"\n\n`;
-
       helpText += `/upload_employees — загрузить новый файл "team-info.xlsx" с сотрудниками (автоматически синхронизирует БД)\n`;
       helpText += `/upload_materials — загрузить новый файл "materials-prices.json" с ценами материалов\n\n`;
 
-      helpText += `/full_reset_and_sync — сброс всех данных (сотрудники, склады, назначения), кроме 3D-моделей, статистики товаров и заработка сотрудников, синхронизация складов/сотрудников\n\n`;
+      helpText += `/backup_db — создать бэкап базы данных "bot.db"\n\n`;
+
+      helpText += `/full_reset_and_sync — сброс ВСЕХ данных в БД (сотрудники, склады, назначения), кроме 3D-моделей, статистики товаров и заработка сотрудников, синхронизация складов/сотрудников\n\n`;
 
       if (debugMode.isDebugMode()) helpText += `/debug_clear — сброс отладочных данных\n`;
       await bot.sendMessage(msg.chat.id, helpText);
@@ -3843,7 +4002,8 @@ function registerCommands(
       let helpText = `👋 Помощь сотрудника\n\n`;
       helpText += `/start — перезапустить бота\n`;
       helpText += `/my_orders — показать мои активные заказы\n`;
-      helpText += `/my_earnings [YYYY-MM] — показать мой заработок за месяц (по умолчанию текущий)\n`;
+      helpText += `my_monthly_earnings [YYYY-MM] — показать мой заработок за любой месяц (по умолчанию текущий)\n`;
+      helpText += `/my_active_earnings — показать мой полный активный заработок (до расчёта)\n`;
       helpText += `/finish_order <номер_заказа> — завершить заказ (получить этикетку)\n`;
       helpText += `/cancel_order <номер_заказа> — отменить заказ (если не можете выполнить)\n`;
       helpText += `/send_label <номер_заказа> — получить этикетку завершённого заказа (не чаще 1 раза в минуту)\n`;
@@ -4144,9 +4304,11 @@ async function clearOrderState(bot, orderId, userId = null) {
   console.log(`[CLEAR] Завершена очистка заказа ${orderId}`);
 }
 
-// Экспорт registerCommands и restorePendingForms
+// Экспорт
 module.exports = {
   registerCommands,
   restorePendingForms,
-  clearOrderState
+  clearOrderState,
+  escapeHtml,
+  exportMonthlyEarnings,
 };

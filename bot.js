@@ -467,15 +467,29 @@ process.on('SIGINT', gracefulShutdown);
 process.on('SIGTERM', gracefulShutdown);
 
 (async () => {
+    console.log('1. Инициализация БД...');
     await db.initDB();
-    console.log('Загрузка складов...');
+    console.log('2. БД инициализирована');
+    console.log('3. Загрузка складов...');
     const warehouses = await ozon.fetchWarehousesFromOzon();
-    if (warehouses.length) await db.syncWarehouses(warehouses);
+    console.log('4. Склады загружены, количество:', warehouses.length);
+    if (warehouses.length) {
+        console.log('5. Синхронизация складов...');
+        await db.syncWarehouses(warehouses);
+        console.log('6. Склады синхронизированы');
+    }
+    console.log('7. Синхронизация сотрудников...');
     await syncEmployeesFromExcel(db);
+    console.log('8. Сотрудники синхронизированы');
+    console.log('9. Запуск проверки заказов...');
     scheduler.startOrderChecker(SYNC_ORDERS_TIME, safeCheckAndOfferNewOrders);
+    console.log('10. Проверка заказов запущена');
+    console.log('11. Запуск таймера неактивности...');
     startInactivityTimer();
+    console.log('12. Таймер неактивности запущен');
     console.log(debugMode.getDebugModeStatusMessage());
     // Регистрируем все команды
+    console.log('13. Регистрация команд...');
     registerCommands(
         bot, db, ozon, scheduler, debugMode,
         isAuthorizedUser, isModerator, isAdmin,
@@ -484,11 +498,17 @@ process.on('SIGTERM', gracefulShutdown);
         deleteLastOrderMessages, updateModeratorActivity,
         startInactivityTimer, stopInactivityTimer
     );
+    console.log('14. Команды зарегистрированы');
     setTimeout(() => {
+        console.log('15. Отложенная проверка заказов...');
         checkAndOfferNewOrders();
+        console.log('16. Восстановление состояний...');
         restorePendingForms(db, ozon, bot);
+        console.log('17. Восстановление завершено');
     }, 5000);
     // Eжемесячный экспорт статистики заработков в Excel
+    console.log('18. Запуск ежемесячного экспорта...');
     scheduler.startMonthlyExportChecker(db, bot);
-    console.log('Бот запущен...');
+    console.log('19. Ежемесячный экспорт запущен');
+    console.log('20. Бот запущен...');
 })();

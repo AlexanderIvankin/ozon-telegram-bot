@@ -1972,7 +1972,7 @@ function registerCommands(
       const phoneFormatted = formatPhone(emp.phone);
       reply += `📞 Телефон: ${phoneFormatted ? escapeHtml(phoneFormatted) : '📵'}\n`;
       reply += `📦 Активных заказов: ${escapeHtml(emp.active_count)}\n`;
-      if (emp.earnings_factor) reply += `📈 Коэффициент заработка: ${escapeHtml(emp.earnings_factor)}\n`;
+      if (emp.earnings_factor) reply += `📈 Коэффициент заработка: ${escapeHtml(emp.earnings_factor.toFixed(2))}\n`;
       reply += `🖨️ 3D-принтеров: ${escapeHtml(emp.capacity)}\n\n`;
     }
     await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'HTML' });

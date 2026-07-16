@@ -2983,7 +2983,7 @@ function registerCommands(
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
     fs.writeFileSync(outputPath, buffer);
     await bot.sendDocument(msg.chat.id, outputPath, {
-      caption: `📊 Активный заработок сотрудников (с последнего расчёта)`
+      caption: `🤑 Активный заработок сотрудников (с последнего расчёта)`
     });
     fs.unlinkSync(outputPath);
   });
@@ -3908,7 +3908,7 @@ function registerCommands(
     const adjustments = await db.getActiveAdjustmentsSum(employee.id, 0, Date.now());
     const totalWithAdjustments = totalBase + adjustments;
 
-    let reply = `💰 <b>Ваш активный заработок (с последнего расчёта)</b>\n\n`;
+    let reply = `🪙 <b>Ваш активный заработок (с последнего расчёта)</b>\n\n`;
     reply += `• Базовый заработок: ${escapeHtml(totalBase.toFixed(2))} руб.\n`;
     reply += `• Заказов: ${escapeHtml(orderCount)}\n`;
     reply += `• Средний чек: ${escapeHtml((totalWithAdjustments / orderCount).toFixed(2))} руб.`;

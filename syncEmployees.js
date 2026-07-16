@@ -1,4 +1,5 @@
 const XLSX = require('xlsx');
+const ExcelJS = require('exceljs');
 const path = require('path');
 const debugMode = require('./debugMode');
 
@@ -53,7 +54,7 @@ async function syncEmployeesFromExcel(db) {
         let tgUserId = row[1] ? String(row[1]).trim() : '';
         if (!tgUserId) continue;
 
-        let phone = row[2] ? String(row[2]).trim() : ''; // не используется, но читаем
+        let phone = row[2] ? String(row[2]).trim() : '';
         let capacity = row[3] ? parseInt(row[3]) : 1;
         if (isNaN(capacity)) capacity = 1;
 
@@ -96,14 +97,14 @@ async function syncEmployeesFromExcel(db) {
             if (existing) {
                 // Обновляем существующую запись (восстанавливаем)
                 await dbConn.run(
-                    `UPDATE employees SET name = ?, capacity = ?, earnings_factor = ?, is_fired = 0 WHERE id = ?`,
-                    emp.name, emp.capacity, emp.earningsFactor, existing.id
+                    `UPDATE employees SET name = ?, capacity = ?, earnings_factor = ?, phone = ?, is_fired = 0 WHERE id = ?`,
+                    emp.name, emp.capacity, emp.earningsFactor, emp.phone, existing.id
                 );
             } else {
                 // Вставляем нового
                 await dbConn.run(
-                    `INSERT INTO employees (tg_user_id, name, capacity, earnings_factor, is_fired) VALUES (?, ?, ?, ?, 0)`,
-                    emp.tgUserId, emp.name, emp.capacity, emp.earningsFactor
+                    `INSERT INTO employees (tg_user_id, name, capacity, earnings_factor, phone, is_fired) VALUES (?, ?, ?, ?, ?, 0)`,
+                    emp.tgUserId, emp.name, emp.capacity, emp.earningsFactor, emp.phone
                 );
             }
         }
@@ -142,4 +143,115 @@ async function syncEmployeesFromExcel(db) {
     }
 }
 
-module.exports = { syncEmployeesFromExcel };
+/**
+ * Экспортирует текущий список сотрудников и складов в team-info.xlsx с форматированием.
+ * @param {Object} db - объект базы данных (с полем .db для доступа к sqlite)
+ */
+async function exportTeamInfoXlsx(db) {
+    const dbConn = db.db;
+
+    // 1. Получаем всех сотрудников (включая уволенных, чтобы можно было выгрузить полный список)
+    const employees = await dbConn.all(`
+    SELECT id, tg_user_id, name, phone, capacity, earnings_factor, is_fired
+    FROM employees
+    ORDER BY id
+`);
+
+    // 2. Получаем все склады
+    const warehouses = await dbConn.all('SELECT warehouse_id, name FROM warehouses ORDER BY name');
+    const warehouseIds = warehouses.map(w => w.warehouse_id);
+
+    // 3. Получаем связи сотрудник-склад
+    const employeeWarehouses = await dbConn.all('SELECT employee_id, warehouse_id FROM employee_warehouses');
+    const empWhMap = new Map();
+    for (const ew of employeeWarehouses) {
+        if (!empWhMap.has(ew.employee_id)) empWhMap.set(ew.employee_id, new Set());
+        empWhMap.get(ew.employee_id).add(ew.warehouse_id);
+    }
+
+    // 4. Создаём книгу ExcelJS
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('Сотрудники');
+
+    // 5. Формируем заголовки
+    // Первая строка: "Сотрудник", "Telegram ID", "Телефон", "Число принтеров", "Коэффициент Заработка", "" (пусто), "Склады" (слияние)
+    const headerRow1 = ['Сотрудник', 'Telegram ID', 'Телефон', 'Число принтеров', 'Коэффициент Заработка', ''];
+    // Вторая строка: заголовки складов (ID склада или имя)
+    const headerRow2 = ['', '', '', '', '', '']; // пустые под первые 6 колонок
+
+    // Добавляем названия складов во вторую строку
+    for (const wh of warehouses) {
+        headerRow1.push(''); // первая строка – пусто, слияние будет позже
+        headerRow2.push(`${wh.name} (ID: ${wh.warehouse_id})`);
+    }
+
+    // Добавляем первую строку
+    const row1 = worksheet.addRow(headerRow1);
+    // Добавляем вторую строку
+    const row2 = worksheet.addRow(headerRow2);
+
+    // 6. Слияние для "Склады" в первой строке
+    if (warehouseIds.length > 0) {
+        // Первая строка, столбец G (индекс 6) и до конца
+        const startCol = 7; // G
+        const endCol = 6 + warehouseIds.length; // последний столбец складов
+        worksheet.mergeCells(`G1:${String.fromCharCode(64 + endCol)}1`);
+        // Записываем текст в объединённую ячейку
+        row1.getCell(startCol).value = 'Склады';
+    }
+
+    // 7. Стили для строк заголовков (1 и 2)
+    [row1, row2].forEach(row => {
+        row.eachCell((cell) => {
+            cell.alignment = { horizontal: 'center', vertical: 'middle' };
+            cell.font = { bold: true };
+        });
+    });
+
+    // 8. Ширина столбцов
+    const colWidths = [
+        40, // A
+        15, // B
+        15, // C
+        20, // D
+        25, // E
+        10, // F
+    ];
+    // Для складов – 40
+    for (let i = 0; i < 6; i++) {
+        worksheet.getColumn(i + 1).width = colWidths[i];
+    }
+    for (let i = 0; i < warehouseIds.length; i++) {
+        worksheet.getColumn(7 + i).width = 40;
+    }
+
+    // 9. Данные сотрудников (начиная с 3-й строки)
+    for (const emp of employees) {
+        const whSet = empWhMap.get(emp.id) || new Set();
+        const rowData = [
+            emp.name,
+            emp.tg_user_id,
+            emp.phone || '',
+            emp.capacity,
+            emp.earnings_factor,
+            '', // разделитель
+        ];
+        // Для каждого склада – ставим '+' если есть связь
+        for (const whId of warehouseIds) {
+            rowData.push(whSet.has(whId) ? '+' : '');
+        }
+        const dataRow = worksheet.addRow(rowData);
+        // Выравнивание по центру для всех ячеек данных
+        dataRow.eachCell((cell) => {
+            cell.alignment = { horizontal: 'center', vertical: 'middle' };
+        });
+    }
+
+    // 10. Сохраняем файл
+    const outputPath = path.join(__dirname, 'team-info.xlsx');
+    await workbook.xlsx.writeFile(outputPath);
+    console.log('[EXPORT] team-info.xlsx успешно создан с форматированием.');
+    return outputPath;
+}
+
+module.exports = { syncEmployeesFromExcel, exportTeamInfoXlsx };

@@ -1,10 +1,9 @@
 const fs = require('fs');
 const path = require('path');
-const XLSX = require('xlsx');
 const ExcelJS = require('exceljs');
 const axios = require('axios');
 const { PDFDocument } = require('pdf-lib');
-const { syncEmployeesFromExcel } = require('./syncEmployees');
+const { syncEmployeesFromExcel, exportTeamInfoXlsx } = require('./syncEmployees');
 
 // Локальные хранилища для состояний
 let pendingFinishConfirmations = new Map(); // key: orderId, value: { originalChatId, originalMessageId }
@@ -209,6 +208,18 @@ function registerCommands(
           await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
         }
       }
+    }
+  }
+
+  function formatPhone(phone) {
+    if (!phone) return '';
+    const digits = phone.replace(/\D/g, '');
+    if (digits.length === 11) {
+      return `+${digits[0]}(${digits.slice(1, 4)})${digits.slice(4, 7)}-${digits.slice(7, 9)}-${digits.slice(9)}`;
+    } else if (digits.length === 10) {
+      return `+7(${digits.slice(0, 3)})${digits.slice(3, 6)}-${digits.slice(6, 8)}-${digits.slice(8)}`;
+    } else {
+      return phone;
     }
   }
 
@@ -1837,6 +1848,8 @@ function registerCommands(
 
       reply += `${roleEmoji} ${escapeHtml(emp.name)} — <b>${escapeHtml(roleText)}</b>\n`;
       reply += `🆔 <b>ID сотрудника:</b> <code>${escapeHtml(emp.id)}</code>\n`;
+      const phoneFormatted = formatPhone(emp.phone);
+      reply += `📞 Телефон: ${phoneFormatted ? escapeHtml(phoneFormatted) : '📵'}\n`;
       reply += `📦 Активных заказов: ${escapeHtml(emp.active_count)}\n`;
       if (emp.earnings_factor) reply += `📈 Коэффициент заработка: ${escapeHtml(emp.earnings_factor)}\n`;
       reply += `🖨️ 3D-принтеров: ${escapeHtml(emp.capacity)}\n\n`;
@@ -2821,7 +2834,7 @@ function registerCommands(
       });
     }
 
-    rows.sort((a, b) => b['Заработок (итоговый)'] - a['Заработок (итоговый)']);
+    rows.sort((a, b) => parseFloat(b['Заработок (итоговый)']) - parseFloat(a['Заработок (итоговый)']));
 
     try {
       const workbook = new ExcelJS.Workbook();
@@ -3037,9 +3050,16 @@ function registerCommands(
   bot.onText(/\/download_team_info/, async (msg) => {
     const userId = msg.from.id.toString();
     if (!isAdmin(userId)) return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
-    const filePath = path.join(__dirname, 'team-info.xlsx');
-    if (!fs.existsSync(filePath)) return bot.sendMessage(msg.chat.id, '❌ Файл team-info.xlsx не найден.');
-    await bot.sendDocument(msg.chat.id, filePath, { caption: '📄 Актуальный файл сотрудников.' });
+    try {
+      const filePath = await exportTeamInfoXlsx(db);
+      await bot.sendDocument(msg.chat.id, filePath, {
+        caption: '📄 Актуальный файл сотрудников и складов (team-info.xlsx).'
+      });
+      // Можно удалить файл после отправки, но оставим для дальнейшего использования
+    } catch (err) {
+      console.error('[DOWNLOAD_TEAM_INFO] Ошибка:', err);
+      await bot.sendMessage(msg.chat.id, `❌ Ошибка генерации файла: ${err.message}`);
+    }
   });
 
   // --- "/download_product_stats" Команда для администратора: скачать файл product-stats.xlsx (с принудительной выгрузкой статистики из bot.db) ---

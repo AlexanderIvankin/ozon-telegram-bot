@@ -1195,7 +1195,7 @@ function registerCommands(
       return;
     }
 
-    // 12. Обработка отмены сброса заработка
+    // Обработка отмены сброса заработка
     if (data === 'cancel_clear_earnings') {
       await bot.deleteMessage(msg.chat.id, msg.message_id);
       await bot.answerCallbackQuery(callbackQuery.id, { text: 'Отменено' });

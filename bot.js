@@ -30,7 +30,7 @@ async function setCommandsWithRetry(retries = 3, delay = 5000) {
         { command: 'finish_order', description: 'Завершить заказ (указать номер)' },
         { command: 'cancel_order', description: 'Отменить заказ (указать номер)' },
         { command: 'send_label', description: 'Получить этикетку заказа (указать номер)' },
-        { command: 'send_all_labels', description: 'Получить этикетки всех завершённых заказов (не чаще 1 раза в час)' },
+        { command: 'send_all_labels', description: 'Получить этикетки всех завершённых заказов (1 раз в час)' },
         { command: 'help', description: 'Помощь' },
     ];
 

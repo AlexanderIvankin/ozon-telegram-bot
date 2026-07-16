@@ -59,7 +59,7 @@ async function syncEmployeesFromExcel(db) {
         if (isNaN(capacity)) capacity = 1;
 
         // Столбец E: коэффициент заработка (по умолчанию 1.0)
-        let earningsFactor = parseFloat(row[4]);
+        let earningsFactor = parseFloat(String(row[4]).replace(',', '.'));
         if (isNaN(earningsFactor) || earningsFactor <= 0) earningsFactor = 1.0;
 
         // Собираем склады сотрудника по динамическим колонкам
@@ -241,9 +241,26 @@ async function exportTeamInfoXlsx(db) {
             rowData.push(whSet.has(whId) ? '+' : '');
         }
         const dataRow = worksheet.addRow(rowData);
-        // Выравнивание по центру для всех ячеек данных
-        dataRow.eachCell((cell) => {
+        // Выравнивание по центру для всех ячеек данных и установка форматов
+        dataRow.eachCell((cell, colNumber) => {
             cell.alignment = { horizontal: 'center', vertical: 'middle' };
+            // Колонка B (индекс 2) – Telegram ID – текстовый формат
+            if (colNumber === 2) {
+                cell.numFmt = '@';
+                cell.value = String(cell.value);
+            }
+            // Колонка C (индекс 3) – Телефон – текстовый формат
+            else if (colNumber === 3) {
+                cell.numFmt = '@';
+                cell.value = String(cell.value);
+            }
+            // Колонка E (индекс 5) – Коэффициент заработка – числовой формат с двумя знаками
+            else if (colNumber === 5) {
+                cell.numFmt = '0.00';
+                if (typeof cell.value === 'string') {
+                    cell.value = parseFloat(cell.value.replace(',', '.')) || 0;
+                }
+            }
         });
     }
 

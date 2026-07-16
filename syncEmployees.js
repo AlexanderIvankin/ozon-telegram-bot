@@ -228,12 +228,13 @@ async function exportTeamInfoXlsx(db) {
     // 9. Данные сотрудников (начиная с 3-й строки)
     for (const emp of employees) {
         const whSet = empWhMap.get(emp.id) || new Set();
+        const earningsFactor = parseFloat(emp.earnings_factor) || 1.0;
         const rowData = [
             emp.name,
-            emp.tg_user_id,
+            String(emp.tg_user_id),
             emp.phone || '',
             emp.capacity,
-            emp.earnings_factor,
+            earningsFactor,
             '', // разделитель
         ];
         // Для каждого склада – ставим '+' если есть связь
@@ -257,8 +258,8 @@ async function exportTeamInfoXlsx(db) {
             // Колонка E (индекс 5) – Коэффициент заработка – числовой формат с двумя знаками
             else if (colNumber === 5) {
                 cell.numFmt = '0.00';
-                if (typeof cell.value === 'string') {
-                    cell.value = parseFloat(cell.value.replace(',', '.')) || 0;
+                if (typeof cell.value !== 'number') {
+                    cell.value = parseFloat(String(cell.value).replace(',', '.')) || 0;
                 }
             }
         });

@@ -102,7 +102,7 @@ function loadMaterials() {
     }
     console.log(`✅ Справочники материалов загружены. MIN_EARNINGS = ${MIN_EARNINGS}`);
   } catch (err) {
-    console.error('❌ Ошибка загрузки materials.json:', err.message);
+    console.error('❌ Ошибка загрузки materials-prices.json:', err.message);
     // Задаём дефолтные значения
     materialsData = {
       colors: ["Черный", "Белый", "Серый", "Прозрачный", "Красный", "Желтый", "Зеленый"],
@@ -1730,7 +1730,7 @@ function registerCommands(
       adminMessage += `/pause — приостановить авто-проверку очереди заказов\n`;
       adminMessage += `/resume — возобновить авто-проверку очереди заказов\n\n`;
 
-      adminMessage += `/download_materials — скачать файл цен материала за грамм "materials.json"\n`;
+      adminMessage += `/download_materials — скачать файл цен материала за грамм "materials-prices.json"\n`;
       adminMessage += `/download_team_info — скачать файл сотрудников "team-info.xlsx"\n`;
       adminMessage += `/download_product_stats — скачать файл статистики продуктов "product-stats.xlsx" (с принудительной выгрузкой статистики из bot.db)\n`;
       adminMessage += `/download_db — скачать файл базы данных "bot.db"\n\n`;
@@ -1738,7 +1738,7 @@ function registerCommands(
       adminMessage += `/backup_db — создать бэкап базы данных "bot.db"\n\n`;
 
       adminMessage += `/upload_employees — загрузить новый файл "team-info.xlsx" с сотрудниками (автоматически синхронизирует БД)\n`;
-      adminMessage += `/upload_materials — загрузить новый файл "materials.json" с ценами материалов\n\n`;
+      adminMessage += `/upload_materials — загрузить новый файл "materials-prices.json" с ценами материалов\n\n`;
 
       adminMessage += `/full_reset_and_sync — сброс всех данных (сотрудники, склады, назначения), кроме 3D-моделей, статистики товаров и заработка сотрудников, синхронизация складов/сотрудников\n\n`;
 
@@ -1963,7 +1963,7 @@ function registerCommands(
     await bot.sendMessage(msg.chat.id, '📤 Отправьте файл team-info.xlsx с сотрудниками.');
   });
 
-  // --- "/upload_materials" Команда для администратора: загрузить новый файл materials.json с ценами материалов ---
+  // --- "/upload_materials" Команда для администратора: загрузить новый файл materials-prices.json с ценами материалов ---
   bot.onText(/\/upload_materials/, async (msg) => {
     const userId = msg.from.id.toString();
     if (!isAdmin(userId)) {
@@ -1971,7 +1971,7 @@ function registerCommands(
       return;
     }
     pendingMaterialsUpload.set(userId, { step: 'waiting_file' });
-    await bot.sendMessage(msg.chat.id, '📤 Отправьте файл materials.json с настройками материалов.');
+    await bot.sendMessage(msg.chat.id, '📤 Отправьте файл materials-prices.json с настройками материалов.');
   });
 
   // --- "/admin_assign_order" Команда для администратора: назначить заказ сотруднику вручную ---
@@ -2313,14 +2313,14 @@ function registerCommands(
     if (pendingMaterialsUpload && pendingMaterialsUpload.has(userId)) {
       const pending = pendingMaterialsUpload.get(userId);
       if (pending.step !== 'waiting_file') return;
-      if (fileName !== 'materials.json') {
-        await bot.sendMessage(msg.chat.id, '❌ Пожалуйста, отправьте файл с именем materials.json.');
+      if (fileName !== 'materials-prices.json') {
+        await bot.sendMessage(msg.chat.id, '❌ Пожалуйста, отправьте файл с именем materials-prices.json.');
         pendingMaterialsUpload.delete(userId);
         return;
       }
       try {
         const fileLink = await bot.getFileLink(file.file_id);
-        const tempPath = path.join(__dirname, 'temp_materials.json');
+        const tempPath = path.join(__dirname, 'temp_materials-prices.json');
         const writer = fs.createWriteStream(tempPath);
         const response = await axios({ url: fileLink, method: 'GET', responseType: 'stream' });
         response.data.pipe(writer);
@@ -2329,7 +2329,7 @@ function registerCommands(
           writer.on('error', reject);
         });
         // Заменяем основной файл
-        const targetPath = path.join(__dirname, 'materials.json');
+        const targetPath = path.join(__dirname, 'materials-prices.json');
         fs.renameSync(tempPath, targetPath);
         loadMaterials(); // перезагружаем в память
         await bot.sendMessage(msg.chat.id, '✅ Справочник материалов обновлён.');
@@ -3037,12 +3037,12 @@ function registerCommands(
     bot.sendMessage(msg.chat.id, '▶️ Автоматическая проверка заказов возобновлена.');
   });
 
-  // --- "/download_materials" Команда для администратора: скачать файл materials.json ---
+  // --- "/download_materials" Команда для администратора: скачать файл materials-prices.json ---
   bot.onText(/\/download_materials/, async (msg) => {
     const userId = msg.from.id.toString();
     if (!isAdmin(userId)) return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
-    const filePath = path.join(__dirname, 'materials.json');
-    if (!fs.existsSync(filePath)) return bot.sendMessage(msg.chat.id, '❌ Файл materials.json не найден.');
+    const filePath = path.join(__dirname, 'materials-prices.json');
+    if (!fs.existsSync(filePath)) return bot.sendMessage(msg.chat.id, '❌ Файл materials-prices.json не найден.');
     await bot.sendDocument(msg.chat.id, filePath, { caption: '🧾 Актуальный файл цен материалов за грамм.' });
   });
 
@@ -3823,7 +3823,7 @@ function registerCommands(
       helpText += `/pause — приостановить авто-проверку очереди заказов\n`;
       helpText += `/resume — возобновить авто-проверку очереди заказов\n\n`;
 
-      helpText += `/download_materials — скачать файл цен материала за грамм "materials.json"\n`;
+      helpText += `/download_materials — скачать файл цен материала за грамм "materials-prices.json"\n`;
       helpText += `/download_team_info — скачать файл сотрудников "team-info.xlsx"\n`;
       helpText += `/download_product_stats — скачать файл статистики продуктов "product-stats.xlsx" (с принудительной выгрузкой статистики из bot.db)\n`;
       helpText += `/download_db — скачать файл базы данных "bot.db"\n\n`;
@@ -3831,7 +3831,7 @@ function registerCommands(
       helpText += `/backup_db — создать бэкап базы данных "бот.db"\n\n`;
 
       helpText += `/upload_employees — загрузить новый файл "team-info.xlsx" с сотрудниками (автоматически синхронизирует БД)\n`;
-      helpText += `/upload_materials — загрузить новый файл "materials.json" с ценами материалов\n\n`;
+      helpText += `/upload_materials — загрузить новый файл "materials-prices.json" с ценами материалов\n\n`;
 
       helpText += `/full_reset_and_sync — сброс всех данных (сотрудники, склады, назначения), кроме 3D-моделей, статистики товаров и заработка сотрудников, синхронизация складов/сотрудников\n\n`;
 

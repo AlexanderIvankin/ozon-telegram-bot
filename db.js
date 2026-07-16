@@ -21,28 +21,28 @@ async function initDB() {
     )
 `);
 
-    // Проверяем и добавляем колонку phone, если отсутствует
-    const employeeTableInfo = await database.all("PRAGMA table_info(employees)");
-    const hasPhone = employeeTableInfo.some(col => col.name === 'phone');
+    // Проверяем наличие всех необходимых колонок (phone, is_fired, earnings_factor)
+    const tableInfo = await database.all("PRAGMA table_info(employees)");
+    const hasPhone = tableInfo.some(col => col.name === 'phone');
+    const hasIsFired = tableInfo.some(col => col.name === 'is_fired');
+    const hasEarningsFactor = tableInfo.some(col => col.name === 'earnings_factor');
+    const hasCapacity = tableInfo.some(col => col.name === 'capacity');
+
     if (!hasPhone) {
         await database.run('ALTER TABLE employees ADD COLUMN phone TEXT');
         console.log('[DB] Добавлена колонка phone в employees');
     }
-
-    // Проверяем и добавляем колонку is_fired, если отсутствует
-    const employeeTableInfo = await database.all("PRAGMA table_info(employees)");
-    const hasIsFired = employeeTableInfo.some(col => col.name === 'is_fired');
     if (!hasIsFired) {
         await database.run('ALTER TABLE employees ADD COLUMN is_fired INTEGER DEFAULT 0');
         console.log('[DB] Добавлена колонка is_fired в employees');
     }
-
-    // Проверяем и добавляем колонку earnings_factor, если отсутствует
-    const factorTableInfo = await database.all("PRAGMA table_info(employees)");
-    const hasEarningsFactor = factorTableInfo.some(col => col.name === 'earnings_factor');
     if (!hasEarningsFactor) {
         await database.run('ALTER TABLE employees ADD COLUMN earnings_factor REAL DEFAULT 1.0');
         console.log('[DB] Добавлена колонка earnings_factor в employees');
+    }
+    if (!hasCapacity) {
+        await database.run('ALTER TABLE employees ADD COLUMN capacity INTEGER DEFAULT 1');
+        console.log('[DB] Добавлена колонка capacity в employees');
     }
 
     // Таблица назначенных заказов
@@ -94,14 +94,6 @@ async function initDB() {
     if (!hasCanceled) {
         await database.run('ALTER TABLE employee_stats ADD COLUMN canceled_orders INTEGER DEFAULT 0');
         console.log('[DB] Добавлена колонка canceled_orders в employee_stats');
-    }
-
-    // Проверяем и добавляем колонку capacity, если отсутствует
-    const capacityTableInfo = await database.all("PRAGMA table_info(employees)");
-    const hasCapacity = capacityTableInfo.some(col => col.name === 'capacity');
-    if (!hasCapacity) {
-        await database.run('ALTER TABLE employees ADD COLUMN capacity INTEGER DEFAULT 1');
-        console.log('[DB] Добавлена колонка capacity в employees');
     }
 
     // Таблица заработка сотрудников employee_earnings

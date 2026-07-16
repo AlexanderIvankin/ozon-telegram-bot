@@ -25,7 +25,7 @@ const LABEL_COOLDOWN_MS = 60 * 1000; // 1 минута
 let sendAllLabelsCooldowns = new Map();
 const SEND_ALL_LABELS_COOLDOWN_MS = 3600 * 1000; // 1 час
 
-const MIN_EARNINGS = 250; // минимальный заработок за заказ
+let MIN_EARNINGS = 250; // значение по умолчанию, перезаписывается при загрузке
 
 const TIMEZONE = process.env.TIMEZONE || 'Europe/Moscow'; // можно переопределить через .env
 
@@ -92,9 +92,16 @@ async function mergePdfs(pdfBuffers) {
 // Загружаем справочники при старте
 function loadMaterials() {
   try {
-    const raw = fs.readFileSync(path.join(__dirname, 'materials.json'), 'utf8');
-    materialsData = JSON.parse(raw);
-    console.log('✅ Справочники материалов загружены');
+    const raw = fs.readFileSync(path.join(__dirname, 'materials-prices.json'), 'utf8');
+    const data = JSON.parse(raw);
+    materialsData = data;
+    // Обновляем MIN_EARNINGS из файла, если поле есть
+    if (data.minEarnings !== undefined && typeof data.minEarnings === 'number') {
+      MIN_EARNINGS = data.minEarnings;
+    } else {
+      MIN_EARNINGS = 250; // значение по умолчанию
+    }
+    console.log(`✅ Справочники материалов загружены. MIN_EARNINGS = ${MIN_EARNINGS}`);
   } catch (err) {
     console.error('❌ Ошибка загрузки materials.json:', err.message);
     // Задаём дефолтные значения
@@ -107,8 +114,10 @@ function loadMaterials() {
         "Нейлон Pa-12": 2.5,
         "НейлонАрмир": 2.5,
         "ASA": 2.5
-      }
+      },
+      minEarnings: 250
     };
+    MIN_EARNINGS = 250;
   }
 }
 loadMaterials();

@@ -467,9 +467,9 @@ process.on('SIGINT', gracefulShutdown);
 process.on('SIGTERM', gracefulShutdown);
 
 (async () => {
-    console.log('1. Инициализация БД...');
+    console.log('Инициализация БД...');
     await db.initDB();
-    console.log('2. БД инициализирована');
+    console.log('БД инициализирована');
     const warehouses = await ozon.fetchWarehousesFromOzon();
     if (warehouses.length) {
         await db.syncWarehouses(warehouses);

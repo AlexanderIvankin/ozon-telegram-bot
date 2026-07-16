@@ -187,66 +187,102 @@ async function initDB() {
 `);
     await database.exec(`CREATE INDEX IF NOT EXISTS idx_skipped_models_offer_id ON skipped_models(offer_id);`);
 
-    // Одноразовое копирование исторических данных в активные таблицы, если они пусты
-        try {
-            // Одноразовое копирование исторических данных в активные таблицы, если они пусты
-            await database.exec(`
-        CREATE TABLE IF NOT EXISTS app_settings (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        )
+    // Создаём таблицу миграций (если её ещё нет)
+    await database.exec(`
+    CREATE TABLE IF NOT EXISTS migration_status (
+        migration TEXT PRIMARY KEY,
+        completed_at INTEGER NOT NULL
+    )
+`);
+
+    // --- ПЕРЕНАСЕНИЕ ДАННЫХ ИЗ СТАРОЙ ТАБЛИЦЫ app_settings (если есть) ---
+    const oldTableExists = await database.get(
+        `SELECT name FROM sqlite_master WHERE type='table' AND name='app_settings'`
+    );
+
+    if (oldTableExists) {
+        console.log('[DB] Обнаружена старая таблица app_settings, переносим данные...');
+
+        // Переносим только записи, где key = 'initial_copy_done' и value = 'true'
+        await database.run(`
+        INSERT OR IGNORE INTO migration_status (migration, completed_at)
+        SELECT
+            'earnings_migrated',
+            strftime('%s', 'now') * 1000
+        FROM app_settings
+        WHERE key = 'initial_copy_done'
+          AND value = 'true'
     `);
 
-            // Проверяем флаг initial_copy_done
-            const copyDone = await database.get("SELECT value FROM app_settings WHERE key = 'initial_copy_done'");
-            if (!copyDone) {
-                console.log('[DB] Начинаем одноразовое копирование заработков...');
-                // Выполняем копирование
-                const activeEarningsCount = await database.get('SELECT COUNT(*) as count FROM employee_earnings_active');
-                if (activeEarningsCount.count === 0) {
-                    const historyCount = await database.get('SELECT COUNT(*) as count FROM employee_earnings');
-                    if (historyCount.count > 0) {
-                        console.log('[DB] Копирование исторических заработков в активную таблицу...');
-                        await database.run(`
-                    INSERT INTO employee_earnings_active (employee_id, order_id, amount, calculated_at)
-                    SELECT employee_id, order_id, amount, calculated_at FROM employee_earnings
-                `);
-                        console.log('[DB] Копирование заработков завершено');
-                    } else {
-                        console.log('[DB] Нет исторических заработков для копирования');
-                    }
-                }
-                const activeAdjCount = await database.get('SELECT COUNT(*) as count FROM employee_earnings_adjustments_active');
-                if (activeAdjCount.count === 0) {
-                    const historyAdjCount = await database.get('SELECT COUNT(*) as count FROM employee_earnings_adjustments');
-                    if (historyAdjCount.count > 0) {
-                        console.log('[DB] Копирование исторических корректировок в активную таблицу...');
-                        await database.run(`
-                    INSERT INTO employee_earnings_adjustments_active (employee_id, amount, reason, adjusted_at)
-                    SELECT employee_id, amount, reason, adjusted_at FROM employee_earnings_adjustments
-                `);
-                        console.log('[DB] Копирование корректировок завершено');
-                    } else {
-                        console.log('[DB] Нет исторических корректировок для копирования');
-                    }
-                }
-                // Устанавливаем флаг
-                await database.run("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('initial_copy_done', 'true')");
-                console.log('[DB] Одноразовое копирование завершено');
+        // Удаляем старую таблицу (если перенос выполнен или её нет)
+        await database.exec(`DROP TABLE app_settings`);
+        console.log('[DB] Таблица app_settings удалена');
+    }
+
+    // --- ПРОВЕРЯЕМ МИГРАЦИЮ: КОПИРОВАНИЕ ЗАРАБОТКОВ ---
+    const earningsMigrated = await database.get(
+        `SELECT 1 FROM migration_status WHERE migration = 'earnings_migrated'`
+    );
+
+    if (!earningsMigrated) {
+        console.log('[DB] Начинаем одноразовое копирование заработков...');
+
+        // Проверяем, пуста ли активная таблица
+        const activeEarningsCount = await database.get(
+            'SELECT COUNT(*) as count FROM employee_earnings_active'
+        );
+
+        // Если активная таблица пуста, копируем из истории
+        if (activeEarningsCount.count === 0) {
+            const historyCount = await database.get(
+                'SELECT COUNT(*) as count FROM employee_earnings'
+            );
+            if (historyCount.count > 0) {
+                console.log('[DB] Копирование исторических заработков в активную таблицу...');
+                await database.run(`
+                INSERT INTO employee_earnings_active (employee_id, order_id, amount, calculated_at)
+                SELECT employee_id, order_id, amount, calculated_at FROM employee_earnings
+            `);
+                console.log('[DB] Копирование заработков завершено');
             } else {
-                console.log('[DB] Одноразовое копирование уже выполнено ранее, пропускаем');
+                console.log('[DB] Нет исторических заработков для копирования');
             }
-        } catch (err) {
-            console.error('[DB] Ошибка при одноразовом копировании:', err);
-            // В случае ошибки всё равно пытаемся установить флаг, чтобы избежать повторных попыток
-            try {
-                await database.run("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('initial_copy_done', 'true')");
-                console.log('[DB] Флаг initial_copy_done установлен несмотря на ошибку');
-            } catch (setErr) {
-                console.error('[DB] Не удалось установить флаг initial_copy_done:', setErr);
-            }
-            // Не выбрасываем ошибку, чтобы бот продолжил работу
+        } else {
+            console.log('[DB] Активная таблица заработков не пуста, копирование не требуется');
         }
+
+        // Аналогично для корректировок
+        const activeAdjCount = await database.get(
+            'SELECT COUNT(*) as count FROM employee_earnings_adjustments_active'
+        );
+        if (activeAdjCount.count === 0) {
+            const historyAdjCount = await database.get(
+                'SELECT COUNT(*) as count FROM employee_earnings_adjustments'
+            );
+            if (historyAdjCount.count > 0) {
+                console.log('[DB] Копирование исторических корректировок в активную таблицу...');
+                await database.run(`
+                INSERT INTO employee_earnings_adjustments_active (employee_id, amount, reason, adjusted_at)
+                SELECT employee_id, amount, reason, adjusted_at FROM employee_earnings_adjustments
+            `);
+                console.log('[DB] Копирование корректировок завершено');
+            } else {
+                console.log('[DB] Нет исторических корректировок для копирования');
+            }
+        } else {
+            console.log('[DB] Активная таблица корректировок не пуста, копирование не требуется');
+        }
+
+        // Отмечаем миграцию как выполненную
+        await database.run(`
+        INSERT OR REPLACE INTO migration_status (migration, completed_at)
+        VALUES ('earnings_migrated', ?)
+    `, Date.now());
+
+        console.log('[DB] Миграция earnings_migrated отмечена как выполненная');
+    } else {
+        console.log('[DB] Миграция earnings_migrated уже выполнена, пропускаем');
+    }
 
     return database;
 }

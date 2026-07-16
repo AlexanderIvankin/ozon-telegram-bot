@@ -5,11 +5,13 @@ const path = require('path');
 let database; // внутреннее хранилище соединения
 
 async function initDB() {
+    console.log('[DB] Открытие базы данных...');
     database = await open({
         filename: path.join(__dirname, 'bot.db'),
         driver: sqlite3.Database,
         trace: process.env.NODE_ENV === 'development' ? console.log : undefined
     });
+    console.log('[DB] База данных открыта');
 
     // Таблица сотрудников
     await database.exec(`
@@ -188,42 +190,64 @@ async function initDB() {
     await database.exec(`CREATE INDEX IF NOT EXISTS idx_skipped_models_offer_id ON skipped_models(offer_id);`);
 
     // Одноразовое копирование исторических данных в активные таблицы, если они пусты
-    await database.exec(`
+    try {
+        // Одноразовое копирование исторических данных в активные таблицы, если они пусты
+        await database.exec(`
     CREATE TABLE IF NOT EXISTS app_settings (
         key TEXT PRIMARY KEY,
         value TEXT
     )
 `);
 
-    // Проверяем флаг initial_copy_done
-    const copyDone = await database.get("SELECT value FROM app_settings WHERE key = 'initial_copy_done'");
-    if (!copyDone) {
-        // Выполняем копирование
-        const activeEarningsCount = await database.get('SELECT COUNT(*) as count FROM employee_earnings_active');
-        if (activeEarningsCount.count === 0) {
-            const historyCount = await database.get('SELECT COUNT(*) as count FROM employee_earnings');
-            if (historyCount.count > 0) {
-                console.log('[DB] Копирование исторических заработков в активную таблицу...');
-                await database.run(`
+        // Проверяем флаг initial_copy_done
+        const copyDone = await database.get("SELECT value FROM app_settings WHERE key = 'initial_copy_done'");
+        if (!copyDone) {
+            console.log('[DB] Начинаем одноразовое копирование заработков...');
+            // Выполняем копирование
+            const activeEarningsCount = await database.get('SELECT COUNT(*) as count FROM employee_earnings_active');
+            if (activeEarningsCount.count === 0) {
+                const historyCount = await database.get('SELECT COUNT(*) as count FROM employee_earnings');
+                if (historyCount.count > 0) {
+                    console.log('[DB] Копирование исторических заработков в активную таблицу...');
+                    await database.run(`
                 INSERT INTO employee_earnings_active (employee_id, order_id, amount, calculated_at)
                 SELECT employee_id, order_id, amount, calculated_at FROM employee_earnings
             `);
+                    console.log('[DB] Копирование заработков завершено');
+                } else {
+                    console.log('[DB] Нет исторических заработков для копирования');
+                }
             }
-        }
-        const activeAdjCount = await database.get('SELECT COUNT(*) as count FROM employee_earnings_adjustments_active');
-        if (activeAdjCount.count === 0) {
-            const historyAdjCount = await database.get('SELECT COUNT(*) as count FROM employee_earnings_adjustments');
-            if (historyAdjCount.count > 0) {
-                console.log('[DB] Копирование исторических корректировок в активную таблицу...');
-                await database.run(`
+            const activeAdjCount = await database.get('SELECT COUNT(*) as count FROM employee_earnings_adjustments_active');
+            if (activeAdjCount.count === 0) {
+                const historyAdjCount = await database.get('SELECT COUNT(*) as count FROM employee_earnings_adjustments');
+                if (historyAdjCount.count > 0) {
+                    console.log('[DB] Копирование исторических корректировок в активную таблицу...');
+                    await database.run(`
                 INSERT INTO employee_earnings_adjustments_active (employee_id, amount, reason, adjusted_at)
                 SELECT employee_id, amount, reason, adjusted_at FROM employee_earnings_adjustments
             `);
+                    console.log('[DB] Копирование корректировок завершено');
+                } else {
+                    console.log('[DB] Нет исторических корректировок для копирования');
+                }
             }
+            // Устанавливаем флаг
+            await database.run("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('initial_copy_done', 'true')");
+            console.log('[DB] Одноразовое копирование завершено');
+        } else {
+            console.log('[DB] Одноразовое копирование уже выполнено ранее, пропускаем');
         }
-        // Устанавливаем флаг
-        await database.run("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('initial_copy_done', 'true')");
-        console.log('[DB] Одноразовое копирование завершено');
+    } catch (err) {
+        console.error('[DB] Ошибка при одноразовом копировании:', err);
+        // В случае ошибки всё равно пытаемся установить флаг, чтобы избежать повторных попыток
+        try {
+            await database.run("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('initial_copy_done', 'true')");
+            console.log('[DB] Флаг initial_copy_done установлен несмотря на ошибку');
+        } catch (setErr) {
+            console.error('[DB] Не удалось установить флаг initial_copy_done:', setErr);
+        }
+        // Не выбрасываем ошибку, чтобы бот продолжил работу
     }
 
     return database;

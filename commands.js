@@ -1011,13 +1011,18 @@ function registerCommands(
     // 9. Обработка подтверждения сброса заработка
     if (data === 'confirm_clear_earnings') {
       try {
-        await db.db.run('DELETE FROM employee_earnings');
-        await bot.editMessageText('✅ Все записи о заработке сотрудников удалены.', {
+        const dbConn = db.db;
+        await dbConn.run('BEGIN TRANSACTION');
+        await dbConn.run('DELETE FROM employee_earnings');
+        await dbConn.run('DELETE FROM employee_earnings_adjustments');
+        await dbConn.run('COMMIT');
+        await bot.editMessageText('✅ Все записи о заработке и корректировках сотрудников удалены.', {
           chat_id: msg.chat.id,
           message_id: msg.message_id
         });
         await bot.answerCallbackQuery(callbackQuery.id, { text: 'Сброс выполнен' });
       } catch (err) {
+        await dbConn.run('ROLLBACK');
         console.error('[CLEAR_EARNINGS] Ошибка:', err);
         await bot.editMessageText(`❌ Ошибка: ${err.message}`, {
           chat_id: msg.chat.id,
@@ -1642,8 +1647,9 @@ function registerCommands(
       adminMessage += `/cancel_fill_stats — отменить активный процесс заполнения статистики\n`;
       adminMessage += `/clear_product_stats <offer_id> — удалить статистику для продукта\n\n`;
 
+      adminMessage += `/edit_earnings <employee_id> <сумма> [причина] — изменение заработка сотрудника (опционально: причина изменения)\n`;
       adminMessage += `/export_earnings [YYYY-MM] — экспорт заработка всех сотрудников за месяц (по умолчанию текущий)\n`;
-      adminMessage += `/clear_earnings — удалить все записи о заработке сотрудников (с подтверждением)\n\n`;
+      adminMessage += `/clear_earnings — удалить все записи о заработке сотрудников и корректировки (с подтверждением)\n\n`;
 
       adminMessage += `/admin_assign_order <номер_заказа> [id_сотрудника] — назначить заказ сотруднику (если ID не указан – показать список сотрудников)\n\n`;
 
@@ -2718,7 +2724,7 @@ function registerCommands(
     await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'HTML' });
   });
 
-  // --- "/export_earnings" Команда для администратора: экспорт заработка сотрудников за месяц ---
+  // --- "/export_earnings" Команда для администратора: экспорт заработка сотрудников (с корректировками) за месяц ---
   bot.onText(/\/export_earnings(?: (.+))?/, async (msg, match) => {
     const userId = msg.from.id.toString();
     if (!isAdmin(userId)) {
@@ -2766,17 +2772,22 @@ function registerCommands(
     // Формируем массив для Excel
     const rows = [];
     for (const [empId, emp] of employeeMap) {
+      // Получаем сумму корректировок за период
+      const adjustments = await db.getEmployeeAdjustments(empId, fromDate, toDate);
+      const totalWithAdjustments = emp.totalAmount + adjustments;
       rows.push({
         'ID сотрудника': empId,
         'Сотрудник': emp.name,
         'Количество заказов': emp.orderCount,
-        'Сумма заработка (руб)': emp.totalAmount.toFixed(2),
-        'Средний чек (руб)': (emp.totalAmount / emp.orderCount).toFixed(2),
+        'Заработок (базовый)': emp.totalAmount.toFixed(2),
+        'Корректировки': adjustments.toFixed(2),
+        'Заработок (итоговый)': totalWithAdjustments.toFixed(2),
+        'Средний чек (итоговый)': (emp.orderCount > 0 ? (totalWithAdjustments / emp.orderCount).toFixed(2) : 0),
       });
     }
 
     // Сортируем по сумме
-    rows.sort((a, b) => b['Сумма заработка (руб)'] - a['Сумма заработка (руб)']);
+    rows.sort((a, b) => b['Заработок (итоговый)'] - a['Заработок (итоговый)']);
 
     // Создаём Excel
     try {
@@ -2812,7 +2823,63 @@ function registerCommands(
     }
   });
 
-  // --- "/clear_earnings" — сброс таблицы заработка сотрудников (с подтверждением) ---
+  // --- "/edit_earnings" Команда для администратора: изменение заработка сотрудника <employee_id> <сумма> [причина] ---
+  bot.onText(/\/edit_earnings\s+(\d+)\s+([+-]?\d+(?:\.\d+)?)(?:\s+(.+))?/, async (msg, match) => {
+    const userId = msg.from.id.toString();
+    if (!isAdmin(userId)) {
+      return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
+    }
+
+    const employeeId = parseInt(match[1]);
+    const amount = parseFloat(match[2]);
+    const reason = match[3] ? match[3].trim() : '';
+
+    if (isNaN(amount)) {
+      return bot.sendMessage(msg.chat.id, '❌ Некорректная сумма.');
+    }
+
+    const employee = await db.getEmployeeById(employeeId);
+    if (!employee) {
+      return bot.sendMessage(msg.chat.id, `❌ Сотрудник с ID ${employeeId} не найден.`);
+    }
+
+    // Добавляем корректировку
+    try {
+      await db.addEarningsAdjustment(employeeId, amount, reason);
+
+      // Отправляем уведомление сотруднику
+      const now = new Date();
+      const fromDate = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+      const toDate = new Date(now.getFullYear(), now.getMonth() + 1, 1).getTime() - 1;
+
+      const baseEarnings = await db.getEmployeeEarnings(employeeId, fromDate, toDate);
+      const baseTotal = baseEarnings.reduce((sum, e) => sum + e.amount, 0);
+      const adjustmentTotal = await db.getEmployeeAdjustments(employeeId, fromDate, toDate);
+      const total = baseTotal + adjustmentTotal;
+
+      let notifMsg = `💰 <b>Корректировка заработка</b>\n\n`;
+      notifMsg += `Администратор изменил ваш заработок на <b>${amount > 0 ? '+' : ''}${amount.toFixed(2)} руб.</b>\n`;
+      if (reason) notifMsg += `Причина: ${escapeHtml(reason)}\n`;
+      notifMsg += `\nТекущий заработок за месяц: <b>${total.toFixed(2)} руб.</b>\n`;
+      notifMsg += `(базовый: ${baseTotal.toFixed(2)} руб., корректировки: ${adjustmentTotal > 0 ? '+' : ''}${adjustmentTotal.toFixed(2)} руб.)`;
+
+      try {
+        await bot.sendMessage(employee.tg_user_id, notifMsg, { parse_mode: 'HTML' });
+      } catch (err) {
+        console.warn(`[EDIT_EARNINGS] Не удалось отправить уведомление сотруднику ${employee.name}:`, err.message);
+        // Продолжаем, уведомление не критично
+      }
+
+      await bot.sendMessage(msg.chat.id,
+        `✅ Корректировка для сотрудника ${escapeHtml(employee.name)} (ID ${employee.id}) на сумму ${amount > 0 ? '+' : ''}${amount.toFixed(2)} руб. добавлена.`
+      );
+    } catch (err) {
+      console.error('[EDIT_EARNINGS] Ошибка:', err);
+      await bot.sendMessage(msg.chat.id, `❌ Ошибка: ${err.message}`);
+    }
+  });
+
+  // --- "/clear_earnings" Команда для администратора: сброс таблицы заработка (и корректировок) сотрудников (с подтверждением) ---
   bot.onText(/\/clear_earnings/, async (msg) => {
     const userId = msg.from.id.toString();
     if (!isAdmin(userId)) return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
@@ -2828,7 +2895,7 @@ function registerCommands(
       }
     };
     await bot.sendMessage(msg.chat.id,
-      '⚠️ Вы уверены?\n\nБудут удалены ВСЕ записи о заработке сотрудников.\nЭто действие необратимо!',
+      '⚠️ Вы уверены?\n\nБудут удалены ВСЕ записи о заработке сотрудников и все корректировки.\nЭто действие необратимо!',
       keyboard
     );
   });
@@ -3609,17 +3676,21 @@ function registerCommands(
       return bot.sendMessage(msg.chat.id, `📭 Нет записей о заработке за указанный период.`);
     }
 
-    let total = 0;
-    let orderCount = earnings.length;
-    for (const e of earnings) {
-      total += e.amount;
-    }
-
     let monthDisplay = monthStr || `${new Date(fromDate).toLocaleString('ru-RU', { month: 'long', year: 'numeric' })}`;
-    const reply = `💰 <b>Ваш заработок за ${escapeHtml(monthDisplay)}</b>\n\n` +
-      `• Заказов: ${escapeHtml(orderCount)}\n` +
-      `• Сумма: ${escapeHtml(total.toFixed(2))} руб.\n` +
-      `• Средний чек: ${escapeHtml((total / orderCount).toFixed(2))} руб.`;
+
+    const adjustments = await db.getEmployeeAdjustments(employee.id, fromDate, toDate);
+    const totalBase = earnings.reduce((sum, e) => sum + e.amount, 0);
+    const totalWithAdjustments = totalBase + adjustments;
+    let orderCount = earnings.length;
+
+    let reply = `💰 <b>Ваш заработок за ${escapeHtml(monthDisplay)}</b>\n\n`;
+    reply += `• Базовый заработок: ${escapeHtml(totalBase.toFixed(2))} руб.\n`;
+    if (adjustments !== 0) {
+      reply += `• Корректировки: ${escapeHtml(adjustments > 0 ? '+' : '')}${escapeHtml(adjustments.toFixed(2))} руб.\n`;
+    }
+    reply += `• <b>Итого: ${escapeHtml(totalWithAdjustments.toFixed(2))} руб.</b>\n`;
+    reply += `• Заказов: ${escapeHtml(orderCount)}\n`;
+    reply += `• Средний чек: ${escapeHtml((totalWithAdjustments / orderCount).toFixed(2))} руб.`;
 
     await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'HTML' });
   });
@@ -3646,8 +3717,9 @@ function registerCommands(
       helpText += `/cancel_fill_stats — отменить активный процесс заполнения статистики\n`;
       helpText += `/clear_product_stats <offer_id> — удалить статистику для продукта\n\n`;
 
+      helpText += `/edit_earnings <employee_id> <сумма> [причина] — изменение заработка сотрудника (опционально: причина изменения)\n`;
       helpText += `/export_earnings [YYYY-MM] — экспорт заработка всех сотрудников за месяц (по умолчанию текущий)\n`;
-      helpText += `/clear_earnings — удалить все записи о заработке сотрудников (с подтверждением)\n\n`;
+      helpText += `/clear_earnings — удалить все записи о заработке сотрудников и корректировки (с подтверждением)\n\n`;
 
       helpText += `/admin_assign_order <номер_заказа> [id_сотрудника] — назначить заказ сотруднику (если ID не указан – показать список сотрудников)\n\n`;
 

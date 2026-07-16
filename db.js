@@ -109,6 +109,20 @@ async function initDB() {
 `);
     await database.exec(`CREATE INDEX IF NOT EXISTS idx_employee_earnings_employee_id ON employee_earnings(employee_id);`);
 
+    // Таблица корректировок заработка
+    await database.exec(`
+    CREATE TABLE IF NOT EXISTS employee_earnings_adjustments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        employee_id INTEGER NOT NULL,
+        amount REAL NOT NULL,
+        reason TEXT,
+        adjusted_at INTEGER NOT NULL,
+        FOREIGN KEY (employee_id) REFERENCES employees(id)
+    )
+`);
+    await database.exec(`CREATE INDEX IF NOT EXISTS idx_adjustments_employee_id ON employee_earnings_adjustments(employee_id);`);
+    await database.exec(`CREATE INDEX IF NOT EXISTS idx_adjustments_adjusted_at ON employee_earnings_adjustments(adjusted_at);`);
+
     // Таблица статистики по товарам product_stats
     await database.exec(`
     CREATE TABLE IF NOT EXISTS product_stats (
@@ -298,6 +312,43 @@ async function getAllEmployeeEarningsForPeriod(fromDate, toDate) {
         WHERE ee.calculated_at >= ? AND ee.calculated_at <= ?
         ORDER BY e.id, ee.calculated_at
     `, fromDate, toDate);
+}
+
+/**
+ * Добавляет корректировку заработка для сотрудника
+ */
+async function addEarningsAdjustment(employeeId, amount, reason = '') {
+    await database.run(
+        `INSERT INTO employee_earnings_adjustments (employee_id, amount, reason, adjusted_at)
+         VALUES (?, ?, ?, ?)`,
+        employeeId, amount, reason, Date.now()
+    );
+}
+
+/**
+ * Получает сумму корректировок за период для сотрудника
+ */
+async function getEmployeeAdjustments(employeeId, fromDate, toDate) {
+    const row = await database.get(
+        `SELECT COALESCE(SUM(amount), 0) as total FROM employee_earnings_adjustments
+         WHERE employee_id = ? AND adjusted_at >= ? AND adjusted_at <= ?`,
+        employeeId, fromDate, toDate
+    );
+    return row ? row.total : 0;
+}
+
+/**
+ * Получает все корректировки за период для всех сотрудников (для экспорта)
+ */
+async function getAllAdjustmentsForPeriod(fromDate, toDate) {
+    return database.all(
+        `SELECT e.id, e.name, a.amount, a.reason, a.adjusted_at
+         FROM employee_earnings_adjustments a
+         JOIN employees e ON a.employee_id = e.id
+         WHERE a.adjusted_at >= ? AND a.adjusted_at <= ?
+         ORDER BY e.id, a.adjusted_at`,
+        fromDate, toDate
+    );
 }
 
 /**
@@ -516,6 +567,9 @@ module.exports = {
     saveEmployeeEarnings,
     getEmployeeEarnings,
     getAllEmployeeEarningsForPeriod,
+    addEarningsAdjustment,
+    getEmployeeAdjustments,
+    getAllAdjustmentsForPeriod,
     syncWarehouses,
     getAllWarehouses,
     getWarehouseNameById,

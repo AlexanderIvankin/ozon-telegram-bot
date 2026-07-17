@@ -359,10 +359,11 @@ async function autoCancelOrder(orderId, employeeId) {
 
 // Завершить заказ
 async function completeOrder(orderId) {
-    await database.run(
-        `UPDATE assignments SET status = 'completed', completed_at = ? WHERE order_id = ?`,
+    const result = await database.run(
+        `UPDATE assignments SET status = 'completed', completed_at = ? WHERE order_id = ? AND status = 'assigned'`,
         Date.now(), orderId
     );
+    console.log(`[DB] completeOrder: заказ ${orderId}, изменено строк: ${result.changes || 0}`);
 }
 
 // Получить всех сотрудников со статистикой активных заказов (опицональный фильтр по приоритетным warehouse_id)

@@ -1390,23 +1390,12 @@ function registerCommands(
       }
 
       // 3. Внешние API-вызовы (подтверждение сборки, получение этикетки) – до транзакции
-      let actId = null;
       let labelBuffer = null;
       let isAlreadyConfirmed = false;
 
       try {
         const actResponse = await ozon.confirmPostingShip(postingNumber);
         console.log(`[FINISH] Ответ ship:`, JSON.stringify(actResponse, null, 2));
-        actId = actResponse?.result?.id || actResponse?.id;
-        if (!actId && actResponse?.additional_data) {
-          for (const item of actResponse.additional_data) {
-            if (item.posting_number === postingNumber && item.act_id) {
-              actId = item.act_id;
-              break;
-            }
-          }
-        }
-        console.log(`[FINISH] Получен actId: ${actId}`);
       } catch (shipError) {
         if (shipError.message && shipError.message.includes('не в статусе awaiting_packaging')) {
           console.warn(`[FINISH] Заказ ${postingNumber} уже подтверждён (статус не awaiting_packaging)`);
@@ -1417,16 +1406,12 @@ function registerCommands(
       }
 
       if (!isAlreadyConfirmed) {
+        // Ожидаем 15 секунд после успешного подтверждения, чтобы Ozon успел сгенерировать этикетку
         await new Promise(resolve => setTimeout(resolve, 15000));
       }
 
-      // Получаем этикетку
-      if (actId) {
-        labelBuffer = await ozon.getPackageLabel(null, actId);
-      }
-      if (!labelBuffer) {
-        labelBuffer = await ozon.getPackageLabel(postingNumber);
-      }
+      // Получаем этикетку (всегда по posting_number)
+      labelBuffer = await ozon.getPackageLabel(postingNumber);
 
       // ========== ТРАНЗАКЦИЯ БД ==========
       const dbConn = db.db;
@@ -1818,7 +1803,7 @@ function registerCommands(
       adminMessage += `/edit_earnings <id_сотрудника> <сумма> [причина] — изменение заработка сотрудника (опционально: причина изменения)\n`;
       adminMessage += `/export_earnings — экспорт активного заработка сотрудников (с корректировками)\n`;
       adminMessage += `/settle_earnings <id_сотрудника> — полный расчёт (с обнулением) активного заработка (с корректировками) сотрудника\n`;
-      adminMessage += `/monthly_earnings [YYYY-MM] — экспорт заработка всех сотрудников за месяц (по умолчанию текущий)\n\n`;
+      adminMessage += `/monthly_earnings [YYYY-MM] — экспорт заработка всех сотрудников за месяц (по умолчанию - текущий)\n\n`;
 
       adminMessage += `/full_reset_earnings — удалить ВСЕ записи из БД о заработке сотрудников и корректировках (с подтверждением)\n\n`;
 
@@ -1875,12 +1860,12 @@ function registerCommands(
       msgText += `Доступные команды:\n`;
       msgText += `/start — перезапустить бота\n`;
       msgText += `/my_orders — показать мои активные заказы\n`;
-      msgText += `my_monthly_earnings [YYYY-MM] — показать мой заработок за любой месяц (по умолчанию текущий)\n`;
-      msgText += `/my_active_earnings — показать мой полный активный заработок (до расчёта)\n`;
       msgText += `/finish_order <номер_заказа> — завершить заказ (получить этикетку)\n`;
       msgText += `/cancel_order <номер_заказа> — отменить заказ (если не можете выполнить)\n`;
       msgText += `/send_label <номер_заказа> — получить этикетку завершённого заказа (не чаще 1 раза в минуту)\n`;
       msgText += `/send_all_labels — получить этикетки всех завершённых заказов (не чаще 1 раза в час)\n`;
+      msgText += `/my_monthly_earnings [YYYY-MM] — показать мой заработок за ЛЮБОЙ месяц (по умолчанию - текущий)\n`;
+      msgText += `/my_active_earnings — показать мой полный активный заработок (с момента последнего расчёта)\n`;
       msgText += `/help — эта справка\n`;
       await bot.sendMessage(chatId, msgText);
       return;
@@ -3950,7 +3935,7 @@ function registerCommands(
       helpText += `/edit_earnings <id_сотрудника> <сумма> [причина] — изменение заработка сотрудника (опционально: причина изменения)\n`;
       helpText += `/export_earnings — экспорт активного заработка сотрудников (с корректировками)\n`;
       helpText += `/settle_earnings <id_сотрудника> — полный расчёт (с обнулением) активного заработка (с корректировками) сотрудника\n`;
-      helpText += `/monthly_earnings [YYYY-MM] — экспорт заработка всех сотрудников за месяц (по умолчанию текущий)\n`;
+      helpText += `/monthly_earnings [YYYY-MM] — экспорт заработка всех сотрудников за месяц (по умолчанию - текущий)\n`;
 
       helpText += `/full_reset_earnings — удалить ВСЕ записи из БД о заработке сотрудников и корректировках (с подтверждением)\n\n`;
 
@@ -4002,12 +3987,12 @@ function registerCommands(
       let helpText = `👋 Помощь сотрудника\n\n`;
       helpText += `/start — перезапустить бота\n`;
       helpText += `/my_orders — показать мои активные заказы\n`;
-      helpText += `my_monthly_earnings [YYYY-MM] — показать мой заработок за любой месяц (по умолчанию текущий)\n`;
-      helpText += `/my_active_earnings — показать мой полный активный заработок (до расчёта)\n`;
       helpText += `/finish_order <номер_заказа> — завершить заказ (получить этикетку)\n`;
       helpText += `/cancel_order <номер_заказа> — отменить заказ (если не можете выполнить)\n`;
       helpText += `/send_label <номер_заказа> — получить этикетку завершённого заказа (не чаще 1 раза в минуту)\n`;
       helpText += `/send_all_labels — получить этикетки всех завершённых заказов (не чаще 1 раза в час)\n`;
+      helpText += `/my_monthly_earnings [YYYY-MM] — показать мой заработок за ЛЮБОЙ месяц (по умолчанию - текущий)\n`;
+      helpText += `/my_active_earnings — показать мой полный активный заработок (с момента последнего расчёта )\n`;
       helpText += `/help — эта справка\n\n`;
       helpText += `Внимание: Новые заказы вам назначает Модератор.`;
       await bot.sendMessage(msg.chat.id, helpText);

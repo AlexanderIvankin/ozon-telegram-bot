@@ -1,4 +1,23 @@
 require('dotenv').config();
+
+// ============================================================
+//  ДОБАВЛЕНИЕ ВРЕМЕННЫХ МЕТОК КО ВСЕМ ЛОГАМ
+// ============================================================
+const originalLog = console.log;
+const originalError = console.error;
+const originalWarn = console.warn;
+
+function withTimestamp(originalFn) {
+    return function (...args) {
+        const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
+        originalFn(`[${timestamp}]`, ...args);
+    };
+}
+
+console.log = withTimestamp(originalLog);
+console.error = withTimestamp(originalError);
+console.warn = withTimestamp(originalWarn);
+
 const TelegramBot = require('node-telegram-bot-api');
 const db = require('./db');
 const ozon = require('./ozon');
@@ -6,6 +25,7 @@ const scheduler = require('./scheduler');
 const { syncEmployeesFromExcel } = require('./syncEmployees');
 const { registerCommands, restorePendingForms, clearOrderState, escapeHtml } = require('./commands');
 const debugMode = require('./debugMode');
+
 
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
@@ -24,13 +44,13 @@ process.on('unhandledRejection', (reason, promise) => {
 async function setCommandsWithRetry(retries = 3, delay = 5000) {
     const commands = [
         { command: 'start', description: 'Запустить бота' },
-        { command: 'my_monthly_earnings', description: 'Заработок за месяц (указать YYYY-MM)' },
-        { command: 'my_active_earnings', description: 'Полный активный заработок (до расчёта)' },
         { command: 'my_orders', description: 'Мои активные заказы' },
         { command: 'finish_order', description: 'Завершить заказ (указать номер)' },
         { command: 'cancel_order', description: 'Отменить заказ (указать номер)' },
         { command: 'send_label', description: 'Получить этикетку заказа (указать номер)' },
         { command: 'send_all_labels', description: 'Получить этикетки всех завершённых заказов (1 раз в час)' },
+        { command: 'my_monthly_earnings', description: 'Посмотреть заработок за ЛЮБОЙ (указать YYYY-MM) месяц (по умолчанию - текущий)' },
+        { command: 'my_active_earnings', description: 'Полный активный заработок (с момента последнего расчёта)' },
         { command: 'help', description: 'Помощь' },
     ];
 
@@ -238,46 +258,66 @@ async function cleanExpiredAssignments(activeOrderIds) {
     // activeOrderIds — множество posting_number из свежего списка
     const activeSet = new Set(activeOrderIds);
 
-    // Получаем все активные назначения
+    // Получаем все активные назначения (статус assigned) вместе с текущим статусом из БД
     const assignments = await db.db.all(
-        'SELECT a.order_id, a.employee_id, e.tg_user_id, e.name as employee_name ' +
+        'SELECT a.order_id, a.employee_id, e.tg_user_id, e.name as employee_name, a.status as local_status ' +
         'FROM assignments a JOIN employees e ON a.employee_id = e.id ' +
         'WHERE a.status = "assigned"'
     );
 
     for (const assignment of assignments) {
         const orderId = assignment.order_id;
-        if (!activeSet.has(orderId)) {
-            console.log(`[CLEAN] Заказ ${orderId} больше не в awaiting_packaging, отменяем назначение у ${assignment.employee_name}`);
 
-            // Отменяем назначение (обновляем статус в БД) - БЕЗ увеличения счётчика
-            await db.autoCancelOrder(orderId, assignment.employee_id);
+        // 1. Если заказ всё ещё есть в списке awaiting_packaging — пропускаем
+        if (activeSet.has(orderId)) {
+            continue;
+        }
 
-            await clearOrderState(bot, orderId, assignment.tg_user_id);
+        // 2. Если заказ уже помечен как completed — пропускаем (защита от race condition)
+        if (assignment.local_status === 'completed') {
+            console.log(`[CLEAN] Заказ ${orderId} уже завершён (status=completed), пропускаем очистку`);
+            continue;
+        }
 
-            // Если заказ был в очереди — удаляем
-            const idx = pendingNewOrders.findIndex(o => o.posting_number === orderId);
-            if (idx !== -1) pendingNewOrders.splice(idx, 1);
-            if (currentOrderProcessing && currentOrderProcessing.order.posting_number === orderId) {
-                currentOrderProcessing = null;
-            }
+        // 3. Дополнительная проверка свежего статуса из БД (на случай изменения после первого запроса)
+        const freshStatus = await db.db.get(
+            'SELECT status FROM assignments WHERE order_id = ?',
+            orderId
+        );
+        if (freshStatus && freshStatus.status === 'completed') {
+            console.log(`[CLEAN] Заказ ${orderId} уже завершён (повторная проверка), пропускаем очистку`);
+            continue;
+        }
 
-            // Уведомляем сотрудника
-            try {
-                await bot.sendMessage(
-                    assignment.tg_user_id,
-                    `❌ Заказ ${orderId} был отменён (или более не актуален). Он снят с вас.`
-                );
-            } catch (e) { /* игнорируем, если не можем отправить */ }
+        console.log(`[CLEAN] Заказ ${orderId} больше не в awaiting_packaging, отменяем назначение у ${assignment.employee_name}`);
 
-            // Уведомляем модератора
-            const moderatorId = process.env.MODERATOR_ID;
-            if (moderatorId) {
-                await bot.sendMessage(
-                    moderatorId,
-                    `🔄 Заказ ${orderId} автоматически снят с сотрудника ${assignment.employee_name}, так как он больше не в статусе awaiting_packaging.`
-                );
-            }
+        // Отменяем назначение (БЕЗ увеличения счётчика)
+        await db.autoCancelOrder(orderId, assignment.employee_id);
+
+        await clearOrderState(bot, orderId, assignment.tg_user_id);
+
+        // Если заказ был в очереди — удаляем
+        const idx = pendingNewOrders.findIndex(o => o.posting_number === orderId);
+        if (idx !== -1) pendingNewOrders.splice(idx, 1);
+        if (currentOrderProcessing && currentOrderProcessing.order.posting_number === orderId) {
+            currentOrderProcessing = null;
+        }
+
+        // Уведомляем сотрудника
+        try {
+            await bot.sendMessage(
+                assignment.tg_user_id,
+                `❌ Заказ ${orderId} был отменён (или более не актуален). Он снят с вас.`
+            );
+        } catch (e) { /* игнорируем, если не можем отправить */ }
+
+        // Уведомляем модератора
+        const moderatorId = process.env.MODERATOR_ID;
+        if (moderatorId) {
+            await bot.sendMessage(
+                moderatorId,
+                `🔄 Заказ ${orderId} автоматически снят с сотрудника ${assignment.employee_name}, так как он больше не в статусе awaiting_packaging.`
+            );
         }
     }
 }

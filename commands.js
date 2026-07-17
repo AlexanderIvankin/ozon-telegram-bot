@@ -22,8 +22,10 @@ let materialsData = null;
 let labelCooldowns = new Map(); // userId -> timestamp последнего вызова /send_label
 const LABEL_COOLDOWN_MS = 60 * 1000; // 1 минута
 
-let sendAllLabelsCooldowns = new Map();
+let sendAllLabelsCooldowns = new Map(); // длинный кулдаун (1 час)
 const SEND_ALL_LABELS_COOLDOWN_MS = 3600 * 1000; // 1 час
+let sendAllLabelsEmptyCooldowns = new Map(); // короткий кулдаун (1 минута)
+const SEND_ALL_LABELS_EMPTY_COOLDOWN_MS = 60 * 1000; // 1 минута для пустого ответа
 
 let MIN_EARNINGS = 250; // значение по умолчанию, перезаписывается при загрузке
 
@@ -3615,7 +3617,7 @@ function registerCommands(
     }
   });
 
-  // --- "/send_all_labels" – получить все этикетки к активным заказам сотрудинка в статусте awaiting_deliver (с куллдауном 1 час)  ---
+  // --- /send_all_labels – получить все этикетки к активным заказам сотрудника в статусе awaiting_deliver (с кулдаунами) ---
   bot.onText(/\/send_all_labels/, async (msg) => {
     const userId = msg.from.id.toString();
     const employee = await db.getEmployee(userId);
@@ -3623,53 +3625,63 @@ function registerCommands(
       return bot.sendMessage(msg.chat.id, '❌ Вы не зарегистрированы как сотрудник.');
     }
 
-    // Проверка кулдауна
     const now = Date.now();
-    const lastCall = sendAllLabelsCooldowns.get(userId);
-    if (lastCall && (now - lastCall) < SEND_ALL_LABELS_COOLDOWN_MS) {
-      const minutesLeft = Math.ceil((SEND_ALL_LABELS_COOLDOWN_MS - (now - lastCall)) / 60000);
+
+    // 1. Проверка длинного кулдауна (после успешной отправки)
+    const lastFullCall = sendAllLabelsCooldowns.get(userId);
+    if (lastFullCall && (now - lastFullCall) < SEND_ALL_LABELS_COOLDOWN_MS) {
+      const minutesLeft = Math.ceil((SEND_ALL_LABELS_COOLDOWN_MS - (now - lastFullCall)) / 60000);
       return bot.sendMessage(msg.chat.id, `⏳ Команда доступна раз в час. Подождите ${minutesLeft} мин.`);
     }
-    sendAllLabelsCooldowns.set(userId, now);
 
-    // 1. Получаем ВСЕ заказы в статусе awaiting_deliver (1 вызов API)
+    // 2. Проверка короткого кулдауна (после пустого ответа или ошибки)
+    const lastEmptyCall = sendAllLabelsEmptyCooldowns.get(userId);
+    if (lastEmptyCall && (now - lastEmptyCall) < SEND_ALL_LABELS_EMPTY_COOLDOWN_MS) {
+      const secondsLeft = Math.ceil((SEND_ALL_LABELS_EMPTY_COOLDOWN_MS - (now - lastEmptyCall)) / 1000);
+      return bot.sendMessage(msg.chat.id, `⏳ Подождите ${secondsLeft} секунд перед повторным запросом.`);
+    }
+
+    // 3. Получаем ВСЕ заказы в статусе awaiting_deliver (1 вызов API)
     let allAwaitingDeliver = [];
     try {
       allAwaitingDeliver = await ozon.fetchAwaitingDeliverOrders();
     } catch (err) {
       console.error('[SEND_ALL_LABELS] Ошибка получения заказов из Ozon:', err);
       await bot.sendMessage(msg.chat.id, `❌ Не удалось получить список заказов: ${escapeHtml(err.message)}`);
-      sendAllLabelsCooldowns.delete(userId);
+      // При ошибке API устанавливаем короткий кулдаун
+      sendAllLabelsEmptyCooldowns.set(userId, now);
       return;
     }
 
     if (!allAwaitingDeliver.length) {
       await bot.sendMessage(msg.chat.id, '📭 Нет заказов в статусе awaiting_deliver.');
-      sendAllLabelsCooldowns.delete(userId);
+      // Устанавливаем короткий кулдаун (можно будет повторить через минуту)
+      sendAllLabelsEmptyCooldowns.set(userId, now);
       return;
     }
 
-    // 2. Получаем список завершённых заказов сотрудника из БД
+    // 4. Получаем список завершённых заказов сотрудника из БД
     const completedOrders = await db.db.all(
       'SELECT order_id FROM assignments WHERE employee_id = ? AND status = "completed"',
       employee.id
     );
     const completedIds = new Set(completedOrders.map(o => o.order_id));
 
-    // 3. Фильтруем: только те, что есть в completedIds
+    // 5. Фильтруем: только те, что есть в completedIds (максимум 100)
     const activeOrders = allAwaitingDeliver
       .filter(order => completedIds.has(order.posting_number))
       .slice(0, 100);
 
     if (!activeOrders.length) {
       await bot.sendMessage(msg.chat.id, '📭 Нет завершённых заказов в статусе awaiting_deliver.');
-      sendAllLabelsCooldowns.delete(userId);
+      // Устанавливаем короткий кулдаун
+      sendAllLabelsEmptyCooldowns.set(userId, now);
       return;
     }
 
     await bot.sendMessage(msg.chat.id, `📦 Начинаю загрузку этикеток для ${activeOrders.length} активных заказов...`);
 
-    // 4. Собираем этикетки
+    // 6. Собираем этикетки
     const pdfBuffers = [];
     let errors = 0;
     let skipped = 0;
@@ -3729,10 +3741,12 @@ function registerCommands(
 
     if (!pdfBuffers.length) {
       await bot.sendMessage(msg.chat.id, '⚠️ Не удалось загрузить ни одной этикетки.');
+      // Устанавливаем короткий кулдаун, так как ничего не отправлено
+      sendAllLabelsEmptyCooldowns.set(userId, now);
       return;
     }
 
-    // 5. Разбиваем на части по размеру (не более 30 МБ каждая)
+    // 7. Разбиваем на части по размеру (не более 30 МБ каждая)
     const MAX_PART_SIZE = 30 * 1024 * 1024; // 30 МБ
     const parts = [];
     let currentPart = [];
@@ -3757,7 +3771,7 @@ function registerCommands(
 
     console.log(`[SEND_ALL_LABELS] Всего буферов: ${pdfBuffers.length}, разбито на ${parts.length} частей`);
 
-    // 6. Отправка частей
+    // 8. Отправка частей
     let sentCount = 0;
     const isSinglePart = parts.length === 1;
 
@@ -3828,6 +3842,9 @@ function registerCommands(
         await new Promise(resolve => setTimeout(resolve, 2000));
       }
     }
+
+    // Устанавливаем ДЛИННЫЙ кулдаун, так как этикетки успешно отправлены
+    sendAllLabelsCooldowns.set(userId, now);
 
     await bot.sendMessage(msg.chat.id, `✅ Отправлено этикеток: ${sentCount}.`);
   });

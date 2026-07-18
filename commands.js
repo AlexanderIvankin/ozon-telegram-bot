@@ -3885,7 +3885,7 @@ function registerCommands(
 
     let reply = `💰 <b>Ваш заработок за ${escapeHtml(monthDisplay)}</b>\n\n`;
     reply += `• Заказов: ${escapeHtml(orderCount)}\n`;
-    reply += `• Средний чек: ${escapeHtml((total / orderCount).toFixed(2))} руб.`;
+    reply += `• Средний чек: ${escapeHtml((total / orderCount).toFixed(2))} руб.\n`;
     reply += `• Заработок: ${escapeHtml(total.toFixed(2))} руб.\n`;
 
     await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'HTML' });
@@ -3910,13 +3910,13 @@ function registerCommands(
     const adjustments = await db.getActiveAdjustmentsSum(employee.id, 0, Date.now());
     const totalWithAdjustments = totalBase + adjustments;
 
-    let reply = `🪙 <b>Ваш активный заработок (с последнего расчёта)</b>\n\n`;
+    let reply = `🏦 <b>Ваш активный заработок (с последнего расчёта)</b>\n\n`;
     reply += `• Базовый заработок: ${escapeHtml(totalBase.toFixed(2))} руб.\n`;
     reply += `• Заказов: ${escapeHtml(orderCount)}\n`;
-    reply += `• Средний чек: ${escapeHtml((totalWithAdjustments / orderCount).toFixed(2))} руб.`;
     if (adjustments !== 0) {
       reply += `• Корректировки: ${escapeHtml(adjustments > 0 ? '+' : '')}${escapeHtml(adjustments.toFixed(2))} руб.\n`;
     }
+    reply += `• Средний заработок за заказ: ${escapeHtml((totalWithAdjustments / orderCount).toFixed(2))} руб.\n`;
     reply += `• <b>Итого: ${escapeHtml(totalWithAdjustments.toFixed(2))} руб.</b>\n`;
 
     await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'HTML' });

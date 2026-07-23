@@ -1,4 +1,4 @@
-const { exportMonthlyEarnings } = require('./commands');
+const { exportMonthlyEarnings, cleanCooldowns } = require('./commands');
 const debugMode = require('./debugMode');
 
 let checkInterval = null;
@@ -27,6 +27,26 @@ function stopOrderChecker() {
 function pauseChecker() { isPaused = true; }
 function resumeChecker() { isPaused = false; }
 function isCheckerPaused() { return isPaused; }
+
+let cooldownCleanInterval = null;
+
+function startCooldownCleaner() {
+    if (cooldownCleanInterval) clearInterval(cooldownCleanInterval);
+    cooldownCleanInterval = setInterval(() => {
+        try {
+            cleanCooldowns();
+        } catch (err) {
+            console.error('[SCHEDULER] Ошибка при очистке кулдаунов:', err);
+        }
+    }, 60 * 60 * 1000); // раз в час
+}
+
+function stopCooldownCleaner() {
+    if (cooldownCleanInterval) {
+        clearInterval(cooldownCleanInterval);
+        cooldownCleanInterval = null;
+    }
+}
 
 let monthlyExportInterval = null;
 
@@ -61,4 +81,14 @@ function stopMonthlyExportChecker() {
     }
 }
 
-module.exports = { startOrderChecker, stopOrderChecker, pauseChecker, resumeChecker, isCheckerPaused, startMonthlyExportChecker, stopMonthlyExportChecker };
+module.exports = {
+    startOrderChecker,
+    stopOrderChecker,
+    pauseChecker,
+    resumeChecker,
+    isCheckerPaused,
+    startCooldownCleaner,
+    stopCooldownCleaner,
+    startMonthlyExportChecker,
+    stopMonthlyExportChecker,
+};

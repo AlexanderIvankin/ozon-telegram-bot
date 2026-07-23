@@ -27,6 +27,9 @@ const SEND_ALL_LABELS_COOLDOWN_MS = 3600 * 1000; // 1 час
 let sendAllLabelsEmptyCooldowns = new Map(); // короткий кулдаун (1 минута)
 const SEND_ALL_LABELS_EMPTY_COOLDOWN_MS = 60 * 1000; // 1 минута для пустого ответа
 
+let toggleOrdersCooldowns = new Map(); // userId -> timestamp последнего вызова /toggle_orders
+const TOGGLE_ORDERS_COOLDOWN_MS = 60 * 1000; // 1 минута
+
 let MIN_EARNINGS = 250; // значение по умолчанию, перезаписывается при загрузке
 
 const TIMEZONE = process.env.TIMEZONE || 'Europe/Moscow'; // можно переопределить через .env
@@ -3440,11 +3443,21 @@ function registerCommands(
       return bot.sendMessage(msg.chat.id, '❌ Вы не зарегистрированы как сотрудник.');
     }
 
+    // Проверка кулдауна
+    const now = Date.now();
+    const lastCall = toggleOrdersCooldowns.get(userId);
+    if (lastCall && (now - lastCall) < TOGGLE_ORDERS_COOLDOWN_MS) {
+      const secondsLeft = Math.ceil((TOGGLE_ORDERS_COOLDOWN_MS - (now - lastCall)) / 1000);
+      return bot.sendMessage(msg.chat.id, `⏳ Подождите ${secondsLeft} сек. перед повторным изменением статуса.`);
+    }
+
     try {
       const newStatus = await db.toggleTakingOrders(employee.id);
       const statusText = newStatus === 1 ? '✅ Принимаю заказы' : '❌ Не принимаю заказы';
+      await bot.sendMessage(msg.chat.id, `ℹ️ Статус приёма заказов изменён:\n ${statusText}`);
 
-      await bot.sendMessage(msg.chat.id, `Статус приёма заказов изменён: ${statusText}`);
+      // Устанавливаем кулдаун после успешного изменения
+      toggleOrdersCooldowns.set(userId, now);
 
       // Уведомляем модератора
       const moderatorId = process.env.MODERATOR_ID;
@@ -4341,6 +4354,49 @@ async function clearOrderState(bot, orderId, userId = null) {
   console.log(`[CLEAR] Завершена очистка заказа ${orderId}`);
 }
 
+/**
+ * Очищает устаревшие записи из всех кулдаунов.
+ * Записи старше максимального кулдауна (1 час) удаляются.
+ */
+function cleanCooldowns() {
+  const now = Date.now();
+  const maxCooldown = Math.max(
+    LABEL_COOLDOWN_MS,                  // 1 минута
+    SEND_ALL_LABELS_COOLDOWN_MS,        // 1 час
+    SEND_ALL_LABELS_EMPTY_COOLDOWN_MS,  // 1 минута
+    TOGGLE_ORDERS_COOLDOWN_MS           // 1 минута
+  );
+
+  let deleted = 0;
+  for (const [key, time] of labelCooldowns) {
+    if (now - time > maxCooldown) {
+      labelCooldowns.delete(key);
+      deleted++;
+    }
+  }
+  for (const [key, time] of sendAllLabelsCooldowns) {
+    if (now - time > maxCooldown) {
+      sendAllLabelsCooldowns.delete(key);
+      deleted++;
+    }
+  }
+  for (const [key, time] of sendAllLabelsEmptyCooldowns) {
+    if (now - time > maxCooldown) {
+      sendAllLabelsEmptyCooldowns.delete(key);
+      deleted++;
+    }
+  }
+  for (const [key, time] of toggleOrdersCooldowns) {
+    if (now - time > maxCooldown) {
+      toggleOrdersCooldowns.delete(key);
+      deleted++;
+    }
+  }
+  if (deleted > 0) {
+    console.log(`[COOLDOWN] Удалено ${deleted} устаревших записей кулдаунов`);
+  }
+}
+
 // Экспорт
 module.exports = {
   registerCommands,
@@ -4348,4 +4404,5 @@ module.exports = {
   clearOrderState,
   escapeHtml,
   exportMonthlyEarnings,
+  cleanCooldowns,
 };

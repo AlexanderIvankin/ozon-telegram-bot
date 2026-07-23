@@ -532,6 +532,7 @@ process.on('SIGTERM', gracefulShutdown);
         checkAndOfferNewOrders();
         restorePendingForms(db, ozon, bot);
     }, 5000);
+    scheduler.startCooldownCleaner();
     // Eжемесячный экспорт статистики заработков в Excel
     scheduler.startMonthlyExportChecker(db, bot);
     console.log('Бот запущен...');

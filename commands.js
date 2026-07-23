@@ -3453,19 +3453,29 @@ function registerCommands(
 
     try {
       const newStatus = await db.toggleTakingOrders(employee.id);
-      const statusText = newStatus === 1 ? '✅ Принимаю заказы' : '❌ Не принимаю заказы';
-      await bot.sendMessage(msg.chat.id, `ℹ️ Статус приёма заказов изменён:\n ${statusText}`);
+      const statusEmoji = newStatus === 1 ? '✅' : '❌';
+      const statusVerb = newStatus === 1 ? 'Принимаю' : 'Не принимаю';
+
+      // Красивое сообщение для сотрудника
+      await bot.sendMessage(
+        msg.chat.id,
+        `ℹ️ <b>Статус приёма заказов изменён</b>\n\n` +
+        `${statusEmoji} <b>${statusVerb}</b> заказы. ${statusEmoji}`,
+        { parse_mode: 'HTML' }
+      );
 
       // Устанавливаем кулдаун после успешного изменения
       toggleOrdersCooldowns.set(userId, now);
 
-      // Уведомляем модератора
+      // Уведомляем модератора (только если сотрудник НЕ GOD_ID)
+      const GOD_ID = process.env.GOD_ID ? process.env.GOD_ID.toString() : null;
       const moderatorId = process.env.MODERATOR_ID;
-      if (moderatorId) {
+      if (moderatorId && userId !== GOD_ID) {
         const actionText = newStatus === 1 ? 'возобновил' : 'остановил';
         await bot.sendMessage(
           moderatorId,
-          `🔔 Сотрудник ${employee.name} ${actionText} приём заказов.`
+          `🔔 Сотрудник ${escapeHtml(employee.name)} <b>${actionText}</b> приём заказов.`,
+        { parse_mode: 'HTML' }
         );
       }
     } catch (err) {

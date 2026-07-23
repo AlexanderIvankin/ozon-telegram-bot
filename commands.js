@@ -1962,7 +1962,7 @@ function registerCommands(
       reply += `📦 Активных заказов: ${escapeHtml(emp.active_count)}\n`;
       if (emp.earnings_factor) reply += `📈 Коэффициент заработка: ${escapeHtml(emp.earnings_factor.toFixed(2))}\n`;
       reply += `🖨️ 3D-принтеров: ${escapeHtml(emp.capacity)}\n`;
-      reply += `📋 Приём заказов: ${emp.taking_orders === 1 ? '✅' : '❌'}\n\n`;
+      reply += `📋 Приём заказов: ${(GOD_ID && tgId === GOD_ID) ? '⚜️' : (emp.taking_orders === 1 ? '✅' : '❌')}\n\n`;
     }
     await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'HTML' });
   });

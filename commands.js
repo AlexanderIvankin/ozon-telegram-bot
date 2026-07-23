@@ -981,7 +981,7 @@ function registerCommands(
       const orderId = data.substring(9);
       const order = await ozon.fetchAwaitingOrdersById(orderId);
       const warehouseId = order?.warehouse_id || order?.delivery_method?.warehouse_id;
-      let employees = await db.getAllEmployeesWithStats(warehouseId ? String(warehouseId) : null);
+      let employees = await db.getAllEmployeesWithStats(warehouseId ? String(warehouseId) : null, false, false);
 
       // Исключаем GOD_ID, если он задан
       const GOD_ID = process.env.GOD_ID ? process.env.GOD_ID.toString() : null;
@@ -1015,7 +1015,7 @@ function registerCommands(
         return;
       }
       const orderId = data.substring(7);
-      let employees = await db.getAllEmployeesWithStats();
+      let employees = await db.getAllEmployeesWithStats(null, false, false);
 
       // Исключаем GOD_ID, если он задан
       const GOD_ID = process.env.GOD_ID ? process.env.GOD_ID.toString() : null;
@@ -1862,6 +1862,7 @@ function registerCommands(
       msgText += `Доступные команды:\n`;
       msgText += `/start — перезапустить бота\n`;
       msgText += `/my_orders — показать мои активные заказы\n`;
+      msgText += `/toggle_orders — приостановить/возобновить приём заказов\n`;
       msgText += `/finish_order <номер_заказа> — завершить заказ (получить этикетку)\n`;
       msgText += `/cancel_order <номер_заказа> — отменить заказ (если не можете выполнить)\n`;
       msgText += `/send_label <номер_заказа> — получить этикетку завершённого заказа (не чаще 1 раза в минуту)\n`;
@@ -1908,7 +1909,7 @@ function registerCommands(
     }
 
     const includeFired = match && match[1] === '--all';
-    const employees = await db.getAllEmployeesWithStats(null, includeFired);
+    const employees = await db.getAllEmployeesWithStats(null, true, includeFired);
     if (!employees.length) {
       return bot.sendMessage(msg.chat.id, includeFired ? 'Нет сотрудников (включая уволенных).' : 'Нет активных сотрудников.');
     }
@@ -1960,7 +1961,8 @@ function registerCommands(
       reply += `📞 Телефон: ${phoneFormatted ? escapeHtml(phoneFormatted) : '📵'}\n`;
       reply += `📦 Активных заказов: ${escapeHtml(emp.active_count)}\n`;
       if (emp.earnings_factor) reply += `📈 Коэффициент заработка: ${escapeHtml(emp.earnings_factor.toFixed(2))}\n`;
-      reply += `🖨️ 3D-принтеров: ${escapeHtml(emp.capacity)}\n\n`;
+      reply += `🖨️ 3D-принтеров: ${escapeHtml(emp.capacity)}\n`;
+      reply += `📋 Приём заказов: ${emp.taking_orders === 1 ? '✅ Да' : '❌ Нет'}\n\n`;
     }
     await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'HTML' });
   });
@@ -2107,14 +2109,17 @@ function registerCommands(
       }
     } else {
       // Показываем список всех сотрудников для выбора
-      const employees = await db.getAllEmployeesWithStats();
+      const employees = await db.getAllEmployeesWithStats(null, true, false); // includeAll = true, includeFired = false
       if (!employees.length) {
         return bot.sendMessage(msg.chat.id, '❌ Сотрудники не найдены.');
       }
-      const kb = employees.map(emp => ([{
-        text: `${emp.name} (активных: ${emp.active_count}, принтеры: ${emp.capacity})`,
-        callback_data: `assign_${postingNumber}_${emp.id}`
-      }]));
+      const kb = employees.map(emp => {
+        let label = `${emp.name} (активных: ${emp.active_count}, принтеры: ${emp.capacity})`;
+        if (emp.taking_orders === 0) {
+          label += ' 🚫 (не принимает заказы)';
+        }
+        return [{ text: label, callback_data: `assign_${postingNumber}_${emp.id}` }];
+      });
       kb.push([{ text: '❌ Отмена', callback_data: `cancel_assign_${postingNumber}` }]);
       await bot.sendMessage(msg.chat.id, `👥 Выберите сотрудника для заказа ${postingNumber}:`, {
         reply_markup: { inline_keyboard: kb }
@@ -3427,6 +3432,35 @@ function registerCommands(
     pendingOrderMessages.set(userId, sentMsg.message_id);
   });
 
+  // --- "/toggle_orders" – переключение статуса приёма заказов ---
+  bot.onText(/\/toggle_orders/, async (msg) => {
+    const userId = msg.from.id.toString();
+    const employee = await db.getEmployee(userId);
+    if (!employee) {
+      return bot.sendMessage(msg.chat.id, '❌ Вы не зарегистрированы как сотрудник.');
+    }
+
+    try {
+      const newStatus = await db.toggleTakingOrders(employee.id);
+      const statusText = newStatus === 1 ? '✅ Принимаю заказы' : '❌ Не принимаю заказы';
+
+      await bot.sendMessage(msg.chat.id, `Статус приёма заказов изменён: ${statusText}`);
+
+      // Уведомляем модератора
+      const moderatorId = process.env.MODERATOR_ID;
+      if (moderatorId) {
+        const actionText = newStatus === 1 ? 'возобновил' : 'остановил';
+        await bot.sendMessage(
+          moderatorId,
+          `🔔 Сотрудник ${employee.name} ${actionText} приём заказов.`
+        );
+      }
+    } catch (err) {
+      console.error('[TOGGLE_ORDERS] Ошибка:', err);
+      await bot.sendMessage(msg.chat.id, `❌ Ошибка: ${err.message}`);
+    }
+  });
+
   // Функция для безопасной эмуляции (только для отладки)
   async function safeDebugFinish(orderId, employeeId, employeeName, chatId, postingNumber) {
     if (debugMode.isDebugMode()) {
@@ -3567,7 +3601,7 @@ function registerCommands(
     const now = Date.now();
     if (lastCall && (now - lastCall) < LABEL_COOLDOWN_MS) {
       const secondsLeft = Math.ceil((LABEL_COOLDOWN_MS - (now - lastCall)) / 1000);
-      return bot.sendMessage(msg.chat.id, `⏳ Подождите ${secondsLeft} секунд перед повторным запросом этикетки.`);
+      return bot.sendMessage(msg.chat.id, `⏳ Подождите ${secondsLeft} сек. перед повторным запросом этикетки.`);
     }
 
     // 3. Проверяем, что заказ был назначен этому сотруднику и завершён (статус completed)
@@ -3638,7 +3672,7 @@ function registerCommands(
     const lastEmptyCall = sendAllLabelsEmptyCooldowns.get(userId);
     if (lastEmptyCall && (now - lastEmptyCall) < SEND_ALL_LABELS_EMPTY_COOLDOWN_MS) {
       const secondsLeft = Math.ceil((SEND_ALL_LABELS_EMPTY_COOLDOWN_MS - (now - lastEmptyCall)) / 1000);
-      return bot.sendMessage(msg.chat.id, `⏳ Подождите ${secondsLeft} секунд перед повторным запросом.`);
+      return bot.sendMessage(msg.chat.id, `⏳ Подождите ${secondsLeft} сек. перед повторным запросом.`);
     }
 
     // 3. Получаем ВСЕ заказы в статусе awaiting_deliver (1 вызов API)
@@ -4004,6 +4038,7 @@ function registerCommands(
       let helpText = `👋 Помощь сотрудника\n\n`;
       helpText += `/start — перезапустить бота\n`;
       helpText += `/my_orders — показать мои активные заказы\n`;
+      helpText += `/toggle_orders — приостановить/возобновить приём заказов\n`;
       helpText += `/finish_order <номер_заказа> — завершить заказ (получить этикетку)\n`;
       helpText += `/cancel_order <номер_заказа> — отменить заказ (если не можете выполнить)\n`;
       helpText += `/send_label <номер_заказа> — получить этикетку завершённого заказа (не чаще 1 раза в минуту)\n`;

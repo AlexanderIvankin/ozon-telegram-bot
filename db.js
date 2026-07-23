@@ -21,12 +21,13 @@ async function initDB() {
     )
 `);
 
-    // Проверяем наличие всех необходимых колонок (phone, is_fired, earnings_factor)
+    // Проверяем наличие всех необходимых колонок (phone, is_fired, earnings_factor, capacity, taking_orders)
     const tableInfo = await database.all("PRAGMA table_info(employees)");
     const hasPhone = tableInfo.some(col => col.name === 'phone');
     const hasIsFired = tableInfo.some(col => col.name === 'is_fired');
     const hasEarningsFactor = tableInfo.some(col => col.name === 'earnings_factor');
     const hasCapacity = tableInfo.some(col => col.name === 'capacity');
+    const hasTakingOrders = tableInfo.some(col => col.name === 'taking_orders');
 
     if (!hasPhone) {
         await database.run('ALTER TABLE employees ADD COLUMN phone TEXT');
@@ -43,6 +44,11 @@ async function initDB() {
     if (!hasCapacity) {
         await database.run('ALTER TABLE employees ADD COLUMN capacity INTEGER DEFAULT 1');
         console.log('[DB] Добавлена колонка capacity в employees');
+    }
+
+    if (!hasTakingOrders) {
+        await database.run('ALTER TABLE employees ADD COLUMN taking_orders INTEGER DEFAULT 1');
+        console.log('[DB] Добавлена колонка taking_orders в employees');
     }
 
     // Таблица назначенных заказов
@@ -366,27 +372,31 @@ async function completeOrder(orderId) {
     console.log(`[DB] completeOrder: заказ ${orderId}, изменено строк: ${result.changes || 0}`);
 }
 
-// Получить всех сотрудников со статистикой активных заказов (опицональный фильтр по приоритетным warehouse_id)
-async function getAllEmployeesWithStats(warehouseId = null, includeFired = false) {
+// Получить всех сотрудников со статистикой активных заказов (опицональный фильтр по: приоритетным warehouse_id, активным сотрудникам includeAll, уволенным сотрудникам includeFired)
+async function getAllEmployeesWithStats(warehouseId = null, includeAll = false, includeFired = false) {
     let sql = `
-        SELECT e.id, e.tg_user_id, e.name, e.phone, e.capacity, e.earnings_factor, e.is_fired,
+        SELECT e.id, e.tg_user_id, e.name, e.phone, e.capacity, e.earnings_factor, e.is_fired, e.taking_orders,
                (SELECT COUNT(*) FROM assignments a WHERE a.employee_id = e.id AND a.status = 'assigned') as active_count
         FROM employees e
     `;
     const params = [];
+    const conditions = [];
+
     if (!includeFired) {
-        sql += ` WHERE e.is_fired = 0`;
+        conditions.push('e.is_fired = 0');
+    }
+    if (!includeAll) {
+        conditions.push('e.taking_orders = 1');
     }
     if (warehouseId) {
-        if (!includeFired) {
-            sql += ` AND`;
-        } else {
-            sql += ` WHERE`;
-        }
-        sql += ` EXISTS (SELECT 1 FROM employee_warehouses ew WHERE ew.employee_id = e.id AND ew.warehouse_id = ?)`;
+        conditions.push('EXISTS (SELECT 1 FROM employee_warehouses ew WHERE ew.employee_id = e.id AND ew.warehouse_id = ?)');
         params.push(warehouseId);
     }
-    sql += ` ORDER BY e.id`;
+    if (conditions.length) {
+        sql += ' WHERE ' + conditions.join(' AND ');
+    }
+    sql += ' ORDER BY e.id';
+
     const rows = await database.all(sql, params);
     return rows;
 }
@@ -406,6 +416,40 @@ async function getEmployeeActiveOrdersCount(employeeId) {
         employeeId
     );
     return row ? row.count : 0;
+}
+
+/**
+ * Переключает статус приёма заказов у сотрудника
+ * @param {number} employeeId - ID сотрудника
+ * @returns {Promise<number>} - новое значение (1 - принимает, 0 - не принимает)
+ */
+async function toggleTakingOrders(employeeId) {
+    // Получаем текущее значение
+    const row = await database.get(
+        'SELECT taking_orders FROM employees WHERE id = ?',
+        employeeId
+    );
+    if (!row) throw new Error('Сотрудник не найден');
+
+    const newValue = row.taking_orders === 1 ? 0 : 1;
+    await database.run(
+        'UPDATE employees SET taking_orders = ? WHERE id = ?',
+        newValue, employeeId
+    );
+    return newValue;
+}
+
+/**
+ * Получить статус приёма заказов сотрудника
+ * @param {number} employeeId - ID сотрудника
+ * @returns {Promise<number>} - 1 - принимает, 0 - не принимает
+ */
+async function getTakingOrdersStatus(employeeId) {
+    const row = await database.get(
+        'SELECT taking_orders FROM employees WHERE id = ?',
+        employeeId
+    );
+    return row ? row.taking_orders : 1;
 }
 
 // Сохранить заработок сотрудника в employee_earnings
@@ -764,6 +808,8 @@ module.exports = {
     getAllEmployeesWithStats,
     getEmployeeActiveOrders,
     getEmployeeActiveOrdersCount,
+    toggleTakingOrders,
+    getTakingOrdersStatus,
     saveEmployeeEarnings,
     getEmployeeEarnings,
     getAllEmployeeEarningsForPeriod,

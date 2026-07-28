@@ -2185,7 +2185,8 @@ function registerCommands(
       // собираем offer_id для проверки выданных моделей
       const offerIds = orderDetails.products.map(p => p.offer_id).filter(Boolean);
 
-      const kb = employees.map(emp => {
+      const kb = [];
+      for (const emp of employees) {
         const hasModel = await db.hasAnyIssuedModel(emp.id, offerIds);
         const modelCount = await db.getIssuedCount(emp.id);
         let label = `${emp.name} активных заказов: ${emp.active_count}, принтеры: ${emp.capacity}\n`;
@@ -2193,9 +2194,11 @@ function registerCommands(
         if (emp.taking_orders === 0) {
           label += ' 🚫 Не принимает заказы 🚫';
         }
-        return [{ text: label, callback_data: `assign_${postingNumber}_${emp.id}` }];
-      });
+        kb.push([{ text: label, callback_data: `assign_${postingNumber}_${emp.id}` }]);
+      }
+      
       kb.push([{ text: '❌ Отмена', callback_data: `cancel_assign_${postingNumber}` }]);
+
       await bot.sendMessage(msg.chat.id, `👥 Выберите сотрудника для заказа ${postingNumber}:`, {
         reply_markup: { inline_keyboard: kb }
       });

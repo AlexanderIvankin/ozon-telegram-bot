@@ -1023,9 +1023,8 @@ function registerCommands(
       const kb = [];
       for (const emp of employees) {
         const hasModel = await db.hasAnyIssuedModel(emp.id, offerIds);
-        const modelCount = await db.getIssuedCount(emp.id);
-        let label = `${emp.name} активных заказов: ${emp.active_count}, принтеры: ${emp.capacity}\n`;
-        label += `выданных моделей: ${modelCount}` + `, ` + `модели: ` + (hasModel ? `🟢` : `🔴`);
+//        const modelCount = await db.getIssuedCount(emp.id);
+        let label = (hasModel ? `🟢 ` : `🔴 `) + `${emp.name} активных заказов: ${emp.active_count}, принтеры: ${emp.capacity}`;
         kb.push([{ text: label, callback_data: `assign_${orderId}_${emp.id}` }]);
       }
 
@@ -1082,9 +1081,8 @@ function registerCommands(
       const kb = [];
       for (const emp of employees) {
         const hasModel = await db.hasAnyIssuedModel(emp.id, offerIds);
-        const modelCount = await db.getIssuedCount(emp.id);
-        let label = `${emp.name} активных заказов: ${emp.active_count}, принтеры: ${emp.capacity}\n`;
-        label += `выданных моделей: ${modelCount}` + `, ` + `модели: ` + (hasModel ? `🟢` : `🔴`);
+//        const modelCount = await db.getIssuedCount(emp.id);
+        let label = (hasModel ? `🟢 ` : `🔴 `) + `${emp.name} активных заказов: ${emp.active_count}, принтеры: ${emp.capacity}`;
         kb.push([{ text: label, callback_data: `assign_${orderId}_${emp.id}` }]);
       }
 
@@ -2188,15 +2186,12 @@ function registerCommands(
       const kb = [];
       for (const emp of employees) {
         const hasModel = await db.hasAnyIssuedModel(emp.id, offerIds);
-        const modelCount = await db.getIssuedCount(emp.id);
-        let label = `${emp.name} активных заказов: ${emp.active_count}, принтеры: ${emp.capacity}\n`;
-        label += `выданных моделей: ${modelCount}` + `, ` + `модели: ` + (hasModel ? `🟢` : `🔴`) + `\n`;
-        if (emp.taking_orders === 0) {
-          label += ' 🚫 Не принимает заказы 🚫';
-        }
+//        const modelCount = await db.getIssuedCount(emp.id);
+        let label = (hasModel ? `🟢 ` : `🔴 `) + `${emp.name} активных заказов: ${emp.active_count}, принтеры: ${emp.capacity}`;
+        if (emp.taking_orders === 0) label += ' 🚫';
         kb.push([{ text: label, callback_data: `assign_${postingNumber}_${emp.id}` }]);
       }
-      
+
       kb.push([{ text: '❌ Отмена', callback_data: `cancel_assign_${postingNumber}` }]);
 
       await bot.sendMessage(msg.chat.id, `👥 Выберите сотрудника для заказа ${postingNumber}:`, {

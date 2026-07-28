@@ -180,6 +180,18 @@ async function initDB() {
 `);
     await database.exec(`CREATE INDEX IF NOT EXISTS idx_product_models_offer_id ON product_models(offer_id);`);
 
+    // Таблица выданных сотруднику 3D-моделей
+    await database.exec(`
+    CREATE TABLE IF NOT EXISTS issued_models (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        employee_id INTEGER NOT NULL,
+        offer_id TEXT NOT NULL,
+        issued_at INTEGER NOT NULL,
+        FOREIGN KEY (employee_id) REFERENCES employees(id)
+    )
+`);
+    await database.exec(`CREATE INDEX IF NOT EXISTS idx_issued_models_employee_offer ON issued_models(employee_id, offer_id);`);
+
     // Таблица пропущенных при заливке 3D-моделей
     await database.exec(`
     CREATE TABLE IF NOT EXISTS skipped_models (
@@ -793,6 +805,54 @@ async function addSkippedModel(offerId, fileName, reason, fileSizeMb) {
     );
 }
 
+// Записать факт выдачи модели сотруднику
+async function addIssuedModel(employeeId, offerId) {
+    // Проверяем, не выдавалась ли уже эта модель этому сотруднику
+    const existing = await database.get(
+        'SELECT id FROM issued_models WHERE employee_id = ? AND offer_id = ?',
+        employeeId, offerId
+    );
+    if (!existing) {
+        await database.run(
+            'INSERT INTO issued_models (employee_id, offer_id, issued_at) VALUES (?, ?, ?)',
+            employeeId, offerId, Date.now()
+        );
+        return true; // новая запись
+    }
+    return false; // уже выдавалась
+}
+
+// Получить список offer_id, выданных сотруднику
+async function getIssuedOfferIds(employeeId) {
+    const rows = await database.all(
+        'SELECT offer_id FROM issued_models WHERE employee_id = ?',
+        employeeId
+    );
+    return rows.map(r => r.offer_id);
+}
+
+// Проверить, выдавалась ли сотруднику хотя бы одна модель из списка offer_id
+async function hasAnyIssuedModel(employeeId, offerIds) {
+    if (!offerIds || !offerIds.length) return false;
+    const placeholders = offerIds.map(() => '?').join(',');
+    const row = await database.get(
+        `SELECT 1 FROM issued_models 
+         WHERE employee_id = ? AND offer_id IN (${placeholders}) 
+         LIMIT 1`,
+        [employeeId, ...offerIds]
+    );
+    return !!row;
+}
+
+// Число выданных Артиклов с моделями для сотрудника
+async function getIssuedCount(employeeId) {
+    const row = await database.get(
+        'SELECT COUNT(*) as count FROM issued_models WHERE employee_id = ?',
+        employeeId
+    );
+    return row ? row.count : 0;
+}
+
 
 
 module.exports = {
@@ -842,6 +902,10 @@ module.exports = {
     getTextFilesForOfferId,
     addSkippedModel,
     getSkippedModels,
+    addIssuedModel,
+    getIssuedOfferIds,
+    hasAnyIssuedModel,
+    getIssuedCount,
 };
 
 // Геттер для доступа к database через .db (для обратной совместимости с bot.js)

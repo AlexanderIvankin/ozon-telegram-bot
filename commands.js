@@ -982,9 +982,28 @@ function registerCommands(
         return;
       }
       const orderId = data.substring(9);
-      const order = await ozon.fetchAwaitingOrdersById(orderId);
-      const warehouseId = order?.warehouse_id || order?.delivery_method?.warehouse_id;
-      let employees = await db.getAllEmployeesWithStats(warehouseId ? String(warehouseId) : null, false, false);
+
+      // Получаем детали заказа (один вызов API)
+      let orderDetails;
+      try {
+        orderDetails = await ozon.getOrderDetails(orderId);
+      } catch (err) {
+        console.error(`[PRIORITY] Ошибка получения деталей заказа ${orderId}:`, err);
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Ошибка получения заказа' });
+        return;
+      }
+      if (!orderDetails || orderDetails.status !== 'awaiting_packaging') {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Заказ не в статусе awaiting_packaging' });
+        return;
+      }
+
+      // Извлекаем warehouse_id из delivery_method
+      const warehouseId = orderDetails.delivery_method?.warehouse_id
+        ? String(orderDetails.delivery_method.warehouse_id)
+        : null;
+
+      // Получаем АКТИВНЫХ сотрудников, привязанных к этому складу (или всех, если склад не определён)
+      let employees = await db.getAllEmployeesWithStats(warehouseId, false, false);
 
       // Исключаем GOD_ID, если он задан
       const GOD_ID = process.env.GOD_ID ? process.env.GOD_ID.toString() : null;
@@ -997,11 +1016,21 @@ function registerCommands(
         await bot.answerCallbackQuery(callbackQuery.id, { text: 'Нет доступных сотрудников' });
         return;
       }
-      const kb = employees.map(emp => ([{
-        text: `${emp.name} (активных: ${emp.active_count}, принтеры: ${emp.capacity})`,
-        callback_data: `assign_${orderId}_${emp.id}`
-      }]));
+
+      // собираем offer_id для проверки выданных моделей
+      const offerIds = orderDetails.products.map(p => p.offer_id).filter(Boolean);
+
+      const kb = [];
+      for (const emp of employees) {
+        const hasModel = await db.hasAnyIssuedModel(emp.id, offerIds);
+        const modelCount = await db.getIssuedCount(emp.id);
+        let label = `${emp.name} активных заказов: ${emp.active_count}, принтеры: ${emp.capacity}\n`;
+        label += `выданных моделей: ${modelCount}` + `, ` + `модели: ` + (hasModel ? `🟢` : `🔴`);
+        kb.push([{ text: label, callback_data: `assign_${orderId}_${emp.id}` }]);
+      }
+
       kb.push([{ text: '🔙 Назад', callback_data: `back_${orderId}` }]);
+
       await bot.editMessageText(header, {
         chat_id: msg.chat.id,
         message_id: msg.message_id,
@@ -1018,6 +1047,22 @@ function registerCommands(
         return;
       }
       const orderId = data.substring(7);
+
+      // Получаем детали заказа (один вызов API)
+      let orderDetails;
+      try {
+        orderDetails = await ozon.getOrderDetails(orderId);
+      } catch (err) {
+        console.error(`[OTHERS] Ошибка получения деталей заказа ${orderId}:`, err);
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Ошибка получения заказа' });
+        return;
+      }
+      if (!orderDetails || orderDetails.status !== 'awaiting_packaging') {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Заказ не в статусе awaiting_packaging' });
+        return;
+      }
+
+      // Получаем список всех АКТИВНЫХ сотрудников
       let employees = await db.getAllEmployeesWithStats(null, false, false);
 
       // Исключаем GOD_ID, если он задан
@@ -1031,10 +1076,18 @@ function registerCommands(
         await bot.answerCallbackQuery(callbackQuery.id, { text: 'Нет доступных сотрудников' });
         return;
       }
-      const kb = employees.map(emp => ([{
-        text: `${emp.name} (активных: ${emp.active_count}, принтеры: ${emp.capacity})`,
-        callback_data: `assign_${orderId}_${emp.id}`
-      }]));
+      // собираем offer_id для проверки выданных моделей
+      const offerIds = orderDetails.products.map(p => p.offer_id).filter(Boolean);
+
+      const kb = [];
+      for (const emp of employees) {
+        const hasModel = await db.hasAnyIssuedModel(emp.id, offerIds);
+        const modelCount = await db.getIssuedCount(emp.id);
+        let label = `${emp.name} активных заказов: ${emp.active_count}, принтеры: ${emp.capacity}\n`;
+        label += `выданных моделей: ${modelCount}` + `, ` + `модели: ` + (hasModel ? `🟢` : `🔴`);
+        kb.push([{ text: label, callback_data: `assign_${orderId}_${emp.id}` }]);
+      }
+
       kb.push([{ text: '🔙 Назад', callback_data: `back_${orderId}` }]);
       await bot.editMessageText(header, {
         chat_id: msg.chat.id,
@@ -1679,6 +1732,8 @@ function registerCommands(
             }
             caption += `\nФайл: ${model.file_name}`;
             await bot.sendDocument(employee.tg_user_id, model.file_id, { caption });
+            // Записываем выдачу моделей для сотрудника к данному offerId
+            await db.addIssuedModel(employee.id, originalOfferId);
             await new Promise(resolve => setTimeout(resolve, 500));
           }
 
@@ -1958,6 +2013,9 @@ function registerCommands(
         roleText = 'Уволен';
       }
 
+      // Получаем количество выданных моделей для сотрудника
+      const issuedCount = await db.getIssuedCount(emp.id);
+
       reply += `${roleEmoji} ${escapeHtml(emp.name)} — <b>${escapeHtml(roleText)}</b>\n`;
       reply += `🆔 <b>ID сотрудника:</b> <code>${escapeHtml(emp.id)}</code>\n`;
       const phoneFormatted = formatPhone(emp.phone);
@@ -1965,6 +2023,7 @@ function registerCommands(
       reply += `📦 Активных заказов: ${escapeHtml(emp.active_count)}\n`;
       if (emp.earnings_factor) reply += `📈 Коэффициент заработка: ${escapeHtml(emp.earnings_factor.toFixed(2))}\n`;
       reply += `🖨️ 3D-принтеров: ${escapeHtml(emp.capacity)}\n`;
+      reply += `🗃️ Выданных моделей: ${(GOD_ID && tgId === GOD_ID) ? '♾️' : escapeHtml(issuedCount)}\n`;
       reply += `📋 Приём заказов: ${(GOD_ID && tgId === GOD_ID) ? '⚜️' : (emp.taking_orders === 1 ? '✅' : '❌')}\n\n`;
     }
     await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'HTML' });
@@ -2097,10 +2156,16 @@ function registerCommands(
     const postingNumber = match[1];
     const employeeId = match[2] ? parseInt(match[2]) : null;
 
-    // Проверяем, существует ли заказ в статусе awaiting_packaging
-    const order = await ozon.fetchAwaitingOrdersById(postingNumber);
-    if (!order) {
-      return bot.sendMessage(msg.chat.id, `❌ Заказ ${postingNumber} не найден в статусе "awaiting_packaging".`);
+    // Получаем детали заказа (один вызов API)
+    let orderDetails;
+    try {
+      orderDetails = await ozon.getOrderDetails(postingNumber);
+    } catch (err) {
+      console.error(`[ADMIN_ASSIGN] Ошибка получения деталей заказа ${postingNumber}:`, err);
+      return bot.sendMessage(msg.chat.id, `❌ Ошибка получения заказа: ${err.message}`);
+    }
+    if (!orderDetails || orderDetails.status !== 'awaiting_packaging') {
+      return bot.sendMessage(msg.chat.id, `❌ Заказ ${postingNumber} не в статусе "awaiting_packaging".`);
     }
 
     if (employeeId) {
@@ -2111,15 +2176,22 @@ function registerCommands(
         // Ошибка уже обработана внутри assignOrder
       }
     } else {
-      // Показываем список всех сотрудников для выбора
+      // Показываем список ВСЕХ (НЕ УВОЛЕННЫХ) сотрудников для выбора
       const employees = await db.getAllEmployeesWithStats(null, true, false); // includeAll = true, includeFired = false
       if (!employees.length) {
         return bot.sendMessage(msg.chat.id, '❌ Сотрудники не найдены.');
       }
+
+      // собираем offer_id для проверки выданных моделей
+      const offerIds = orderDetails.products.map(p => p.offer_id).filter(Boolean);
+
       const kb = employees.map(emp => {
-        let label = `${emp.name} (активных: ${emp.active_count}, принтеры: ${emp.capacity})`;
+        const hasModel = await db.hasAnyIssuedModel(emp.id, offerIds);
+        const modelCount = await db.getIssuedCount(emp.id);
+        let label = `${emp.name} активных заказов: ${emp.active_count}, принтеры: ${emp.capacity}\n`;
+        label += `выданных моделей: ${modelCount}` + `, ` + `модели: ` + (hasModel ? `🟢` : `🔴`) + `\n`;
         if (emp.taking_orders === 0) {
-          label += ' 🚫 (не принимает заказы)';
+          label += ' 🚫 Не принимает заказы 🚫';
         }
         return [{ text: label, callback_data: `assign_${postingNumber}_${emp.id}` }];
       });
@@ -2629,6 +2701,10 @@ function registerCommands(
         const caption = `📁 Модель для offer_id: ${offerId}\nФайл: ${model.file_name}`;
         await bot.sendDocument(targetChatId, model.file_id, { caption });
         sentCount++;
+        // Записываем выдачу моделей для сотрудника к данному offerId
+        if (targetEmployeeId) {
+          await db.addIssuedModel(targetEmployeeId, offerId);
+        }
         // Небольшая задержка, чтобы избежать флуда
         await new Promise(resolve => setTimeout(resolve, 300));
       } catch (err) {
@@ -2878,10 +2954,14 @@ function registerCommands(
       stats = await db.getEmployeeStats(employeeId);
     }
 
+    // Получаем количество выданных моделей для сотрудника
+    const issuedCount = await db.getIssuedCount(employeeId);
+
     const reply = `📊 <b>Статистика сотрудника ${escapeHtml(emp.name)}</b>\n\n` +
       `✅ Завершённых заказов: ${escapeHtml(stats.total_orders)}\n` +
       `❌ Отменённых заказов: ${escapeHtml(stats.canceled_orders || 0)}\n` +
-      `💰 Общая сумма: ` + (isGod ? `<b>${escapeHtml(stats.total_amount.toLocaleString('en-US', { style: 'currency', currency: 'USD' }))} USD</b>` : `${escapeHtml(stats.total_amount.toFixed(2))} ₽`) +
+      `🗃️ Выданных моделей: ${isGod ? '♾️' : escapeHtml(issuedCount)}\n` +
+      `💰 Общая сумма: ${isGod ? `<b>${escapeHtml(stats.total_amount.toLocaleString('en-US', { style: 'currency', currency: 'USD' }))} USD</b>` : `${escapeHtml(stats.total_amount.toFixed(2))} ₽`}` +
       (isGod ? '\n\n👻 <b>Создатель!</b>' : '');
 
     await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'HTML' });
@@ -3459,8 +3539,8 @@ function registerCommands(
       // Красивое сообщение для сотрудника
       await bot.sendMessage(
         msg.chat.id,
-        `ℹ️ <b>Статус приёма заказов изменён</b>\n\n` +
-        `${statusEmoji} <b>${statusVerb}</b> заказы. ${statusEmoji}`,
+        `ℹ️ <b>Статус приёма заказов изменён:</b>\n\n` +
+        `${statusEmoji} <b>${statusVerb}</b> заказы ${statusEmoji}`,
         { parse_mode: 'HTML' }
       );
 
@@ -3475,7 +3555,7 @@ function registerCommands(
         await bot.sendMessage(
           moderatorId,
           `🔔 Сотрудник ${escapeHtml(employee.name)} <b>${actionText}</b> приём заказов.`,
-        { parse_mode: 'HTML' }
+          { parse_mode: 'HTML' }
         );
       }
     } catch (err) {

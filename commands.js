@@ -1023,8 +1023,8 @@ function registerCommands(
       const kb = [];
       for (const emp of employees) {
         const hasModel = await db.hasAnyIssuedModel(emp.id, offerIds);
-//        const modelCount = await db.getIssuedCount(emp.id);
-        let label = (hasModel ? `🟢 ` : `🔴 `) + `${emp.name} активных заказов: ${emp.active_count}, принтеры: ${emp.capacity}`;
+        const modelCount = await db.getIssuedCount(emp.id);
+        let label = (hasModel ? `🟢 ` : `🔴 `) + `${emp.name} | 📦: ${emp.active_count} | 🖨️: ${emp.capacity} | 🗃️: ${modelCount}`;
         kb.push([{ text: label, callback_data: `assign_${orderId}_${emp.id}` }]);
       }
 
@@ -1081,8 +1081,8 @@ function registerCommands(
       const kb = [];
       for (const emp of employees) {
         const hasModel = await db.hasAnyIssuedModel(emp.id, offerIds);
-//        const modelCount = await db.getIssuedCount(emp.id);
-        let label = (hasModel ? `🟢 ` : `🔴 `) + `${emp.name} активных заказов: ${emp.active_count}, принтеры: ${emp.capacity}`;
+        const modelCount = await db.getIssuedCount(emp.id);
+        let label = (hasModel ? `🟢 ` : `🔴 `) + `${emp.name} | 📦: ${emp.active_count} | 🖨️: ${emp.capacity} | 🗃️: ${modelCount}`;
         kb.push([{ text: label, callback_data: `assign_${orderId}_${emp.id}` }]);
       }
 
@@ -2186,8 +2186,8 @@ function registerCommands(
       const kb = [];
       for (const emp of employees) {
         const hasModel = await db.hasAnyIssuedModel(emp.id, offerIds);
-//        const modelCount = await db.getIssuedCount(emp.id);
-        let label = (hasModel ? `🟢 ` : `🔴 `) + `${emp.name} активных заказов: ${emp.active_count}, принтеры: ${emp.capacity}`;
+        const modelCount = await db.getIssuedCount(emp.id);
+        let label = (hasModel ? `🟢 ` : `🔴 `) + `${emp.name} | 📦: ${emp.active_count} | 🖨️: ${emp.capacity} | 🗃️: ${modelCount}`;
         if (emp.taking_orders === 0) label += ' 🚫';
         kb.push([{ text: label, callback_data: `assign_${postingNumber}_${emp.id}` }]);
       }

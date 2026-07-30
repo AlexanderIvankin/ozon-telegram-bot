@@ -1022,9 +1022,13 @@ function registerCommands(
 
       const kb = [];
       for (const emp of employees) {
-        const hasModel = await db.hasAnyIssuedModel(emp.id, offerIds);
+        const issuedOfferIds = await db.getIssuedOfferIds(emp.id);
+        const issuedSet = new Set(issuedOfferIds);
+        const hasAll = offerIds.every(id => issuedSet.has(id));
+        const hasAny = offerIds.some(id => issuedSet.has(id));
+        const indicator = hasAll ? '🟢' : (hasAny ? '🟡' : '🔴');
         const modelCount = await db.getIssuedCount(emp.id);
-        let label = (hasModel ? `🟢 ` : `🔴 `) + `${emp.name} | 📦: ${emp.active_count} | 🖨️: ${emp.capacity} | 🗃️: ${modelCount} |`;
+        let label = `${indicator} ${emp.name} | 📦: ${emp.active_count} | 🖨️: ${emp.capacity} | 🗃️: ${modelCount} |`;
         kb.push([{ text: label, callback_data: `assign_${orderId}_${emp.id}` }]);
       }
 
@@ -1080,9 +1084,13 @@ function registerCommands(
 
       const kb = [];
       for (const emp of employees) {
-        const hasModel = await db.hasAnyIssuedModel(emp.id, offerIds);
+        const issuedOfferIds = await db.getIssuedOfferIds(emp.id);
+        const issuedSet = new Set(issuedOfferIds);
+        const hasAll = offerIds.every(id => issuedSet.has(id));
+        const hasAny = offerIds.some(id => issuedSet.has(id));
+        const indicator = hasAll ? '🟢' : (hasAny ? '🟡' : '🔴');
         const modelCount = await db.getIssuedCount(emp.id);
-        let label = (hasModel ? `🟢 ` : `🔴 `) + `${emp.name} | 📦: ${emp.active_count} | 🖨️: ${emp.capacity} | 🗃️: ${modelCount} |`;
+        let label = `${indicator} ${emp.name} | 📦: ${emp.active_count} | 🖨️: ${emp.capacity} | 🗃️: ${modelCount} |`;
         kb.push([{ text: label, callback_data: `assign_${orderId}_${emp.id}` }]);
       }
 
@@ -2185,9 +2193,13 @@ function registerCommands(
 
       const kb = [];
       for (const emp of employees) {
-        const hasModel = await db.hasAnyIssuedModel(emp.id, offerIds);
+        const issuedOfferIds = await db.getIssuedOfferIds(emp.id);
+        const issuedSet = new Set(issuedOfferIds);
+        const hasAll = offerIds.every(id => issuedSet.has(id));
+        const hasAny = offerIds.some(id => issuedSet.has(id));
+        const indicator = hasAll ? '🟢' : (hasAny ? '🟡' : '🔴');
         const modelCount = await db.getIssuedCount(emp.id);
-        let label = (hasModel ? `🟢 ` : `🔴 `) + `${emp.name} | 📦: ${emp.active_count} | 🖨️: ${emp.capacity} | 🗃️: ${modelCount} |`;
+        let label = `${indicator} ${emp.name} | 📦: ${emp.active_count} | 🖨️: ${emp.capacity} | 🗃️: ${modelCount} |`;
         if (emp.taking_orders === 0) label += ' 🚫';
         kb.push([{ text: label, callback_data: `assign_${postingNumber}_${emp.id}` }]);
       }

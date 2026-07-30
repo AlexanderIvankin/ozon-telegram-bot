@@ -533,7 +533,10 @@ process.on('SIGTERM', gracefulShutdown);
         restorePendingForms(db, ozon, bot);
     }, 5000);
     scheduler.startCooldownCleaner();
+    // Ежедневный бэкап базы данных bot.bd
+    scheduler.startDailyBackupChecker(db, bot);
     // Eжемесячный экспорт статистики заработков в Excel
     scheduler.startMonthlyExportChecker(db, bot);
+    
     console.log('Бот запущен...');
 })();

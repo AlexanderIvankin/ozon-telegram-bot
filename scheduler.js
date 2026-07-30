@@ -1,4 +1,5 @@
 const { exportMonthlyEarnings, cleanCooldowns } = require('./commands');
+const { createDbBackup } = require('./db');
 const debugMode = require('./debugMode');
 
 let checkInterval = null;
@@ -48,6 +49,36 @@ function stopCooldownCleaner() {
     }
 }
 
+let backupInterval = null;
+
+function startDailyBackupChecker(db, bot = null) {
+    if (backupInterval) clearInterval(backupInterval);
+    backupInterval = setInterval(async () => {
+        try {
+            const now = new Date();
+            if (now.getHours() === 0 && now.getMinutes() === 0) {
+                console.log('[SCHEDULER] Запуск ежедневного автобэкапа БД...');
+                await createDbBackup(db);
+                if (bot) {
+                    const moderatorId = process.env.MODERATOR_ID;
+                    if (moderatorId) {
+                        await bot.sendMessage(moderatorId, '🗄️ Ежедневный бэкап БД создан.');
+                    }
+                }
+            }
+        } catch (err) {
+            console.error('[SCHEDULER] Ошибка автобэкапа:', err);
+        }
+    }, 60 * 60 * 1000); // проверяем каждый час
+}
+
+function stopDailyBackupChecker() {
+    if (backupInterval) {
+        clearInterval(backupInterval);
+        backupInterval = null;
+    }
+}
+
 let monthlyExportInterval = null;
 
 function startMonthlyExportChecker(db, bot = null) {
@@ -89,6 +120,8 @@ module.exports = {
     isCheckerPaused,
     startCooldownCleaner,
     stopCooldownCleaner,
+    startDailyBackupChecker,
+    stopDailyBackupChecker,
     startMonthlyExportChecker,
     stopMonthlyExportChecker,
 };

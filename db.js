@@ -1,5 +1,6 @@
 const sqlite3 = require('sqlite3').verbose();
 const { open } = require('sqlite');
+const fs = require('fs');
 const path = require('path');
 
 let database; // внутреннее хранилище соединения
@@ -853,7 +854,30 @@ async function getIssuedCount(employeeId) {
     return row ? row.count : 0;
 }
 
+/**
+ * Создаёт ежедневный бэкап базы данных в папку backups.
+ * Если бэкап за сегодня уже существует — пропускает.
+ */
+async function createDbBackup() {
+    const dbPath = path.join(__dirname, 'bot.db');
+    const backupDir = path.join(__dirname, 'backups');
+    if (!fs.existsSync(backupDir)) {
+        fs.mkdirSync(backupDir, { recursive: true });
+    }
+    const dateStr = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    const backupPath = path.join(backupDir, `bot_${dateStr}.db`);
 
+    if (fs.existsSync(backupPath)) {
+        console.log('[DB] Бэкап за сегодня уже существует, пропускаем');
+        return;
+    }
+
+    // Принудительно синхронизируем WAL в основной файл
+    await database.run('PRAGMA wal_checkpoint;');
+
+    fs.copyFileSync(dbPath, backupPath);
+    console.log(`[DB] Бэкап создан: ${backupPath}`);
+}
 
 module.exports = {
     initDB,
@@ -906,6 +930,7 @@ module.exports = {
     getIssuedOfferIds,
     hasAnyIssuedModel,
     getIssuedCount,
+    createDbBackup,
 };
 
 // Геттер для доступа к database через .db (для обратной совместимости с bot.js)

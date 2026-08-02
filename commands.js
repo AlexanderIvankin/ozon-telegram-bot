@@ -1543,7 +1543,7 @@ function registerCommands(
 
       console.log(`[FINISH] Заказ ${postingNumber} успешно завершён, вызываем очистку состояний`);
       await clearOrderState(bot, postingNumber, employee.tg_user_id);
-      console.log(`[FINISH] === Завершено завершение заказа ${postingNumber} ===`);
+      console.log(`[FINISH] === Выполнено завершение заказа ${postingNumber} ===`);
 
     } catch (err) {
       console.error(`[FINISH] Ошибка при завершении заказа ${postingNumber}:`, err);

@@ -5,10 +5,9 @@ const axios = require('axios');
 const bwipjs = require('bwip-js');
 const { PDFDocument } = require('pdf-lib');
 const { syncEmployeesFromExcel, exportTeamInfoXlsx } = require('./syncEmployees');
+const { finishingOrders, pendingFinishConfirmations } = require('./state');
 
 // Локальные хранилища для состояний
-let pendingFinishConfirmations = new Map(); // key: orderId, value: { originalChatId, originalMessageId }
-let finishingOrders = new Map(); // key: orderId, value: true
 let pendingEmployeeUpload = new Map(); // userId -> { step: 'waiting_file' }
 let pendingMaterialsUpload = new Map(); // userId -> { step: 'waiting_file' }
 let pendingUploadModel = new Map(); // userId -> { step: 'waiting_file' }
@@ -1845,7 +1844,8 @@ function registerCommands(
         const activeCount = await db.getEmployeeActiveOrdersCount(employee.id);
         adminMessage += `Вы зарегистрированы как ${employee.name}\nАктивных Заказов: ${activeCount}\n3D-принтеров: ${employee.capacity}\n\n`;
       }
-      adminMessage += `🔧 Доступные административные команды:\n`;
+      adminMessage += `🔧 Доступные административные команды:\n\n`;
+      
       adminMessage += `/status_all [--all] — показать всех сотрудников (опционально включить уволенных)\n`;
       adminMessage += `/active_orders — активные заказы\n`;
       adminMessage += `/warehouses — список складов Ozon\n`;

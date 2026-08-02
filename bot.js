@@ -23,6 +23,7 @@ const db = require('./db');
 const ozon = require('./ozon');
 const scheduler = require('./scheduler');
 const { syncEmployeesFromExcel } = require('./syncEmployees');
+const { finishingOrders, pendingFinishConfirmations } = require('./state');
 const { registerCommands, restorePendingForms, clearOrderState, escapeHtml } = require('./commands');
 const debugMode = require('./debugMode');
 
@@ -268,6 +269,12 @@ async function cleanExpiredAssignments(activeOrderIds) {
 
     for (const assignment of assignments) {
         const orderId = assignment.order_id;
+
+        // 0. Если заказ сейчас завершается – пропускаем
+        if (finishingOrders.has(orderId) || pendingFinishConfirmations.has(orderId)) {
+            console.log(`[CLEAN] Заказ ${orderId} в процессе завершения, пропускаем очистку`);
+            continue;
+        }
 
         // 1. Если заказ всё ещё есть в списке awaiting_packaging — пропускаем
         if (activeSet.has(orderId)) {
@@ -533,10 +540,10 @@ process.on('SIGTERM', gracefulShutdown);
         restorePendingForms(db, ozon, bot);
     }, 5000);
     scheduler.startCooldownCleaner();
-    // Ежедневный бэкап базы данных bot.bd
+    // Ежедневный бэкап базы данных bot.db
     scheduler.startDailyBackupChecker(db, bot);
     // Eжемесячный экспорт статистики заработков в Excel
     scheduler.startMonthlyExportChecker(db, bot);
-    
+
     console.log('Бот запущен...');
 })();

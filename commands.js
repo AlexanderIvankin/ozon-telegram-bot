@@ -1963,7 +1963,7 @@ function registerCommands(
   });
 
   // --- "/status_all" Команда для администратора: статус всех сотрудников ---
-  bot.onText(/\/status_all(?:\s+(--include_fired))?/, async (msg, match) => {
+  bot.onText(/\/status_all(?:\s+(.+))?/, async (msg, match) => {
     const userId = msg.from.id.toString();
     if (!isAdmin(userId)) {
       return bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
@@ -1972,7 +1972,12 @@ function registerCommands(
       updateModeratorActivity();
     }
 
-    const includeFired = match && match[1] === '--include_fired';
+    // Строгое совпадение с "include_fired" или "fired" после любого дефиса
+    const includeFired = match && match[1] && (
+      /[—–-]include_fired/.test(match[1]) ||
+      /[—–-]fired/.test(match[1])
+    );
+
     const employees = await db.getAllEmployeesWithStats(null, true, includeFired);
     if (!employees.length) {
       return bot.sendMessage(msg.chat.id, includeFired ? 'Нет сотрудников (включая уволенных).' : 'Нет активных сотрудников.');

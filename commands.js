@@ -1845,8 +1845,8 @@ function registerCommands(
         adminMessage += `Вы зарегистрированы как ${employee.name}\nАктивных Заказов: ${activeCount}\n3D-принтеров: ${employee.capacity}\n\n`;
       }
       adminMessage += `🔧 Доступные административные команды:\n\n`;
-      
-      adminMessage += `/status_all [--all] — показать всех сотрудников (опционально включить уволенных)\n`;
+
+      adminMessage += `/status_all [--include_fired] — показать всех сотрудников (опционально включить уволенных)\n`;
       adminMessage += `/active_orders — активные заказы\n`;
       adminMessage += `/warehouses — список складов Ozon\n`;
       adminMessage += `/orders [warehouse_id] — показать очередь заказов из API (с фильтром по складу)\n`;
@@ -1963,7 +1963,7 @@ function registerCommands(
   });
 
   // --- "/status_all" Команда для администратора: статус всех сотрудников ---
-  bot.onText(/\/status_all(?:\s+(--all))?/, async (msg, match) => {
+  bot.onText(/\/status_all(?:\s+(--include_fired))?/, async (msg, match) => {
     const userId = msg.from.id.toString();
     if (!isAdmin(userId)) {
       return bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
@@ -1972,7 +1972,7 @@ function registerCommands(
       updateModeratorActivity();
     }
 
-    const includeFired = match && match[1] === '--all';
+    const includeFired = match && match[1] === '--include_fired';
     const employees = await db.getAllEmployeesWithStats(null, true, includeFired);
     if (!employees.length) {
       return bot.sendMessage(msg.chat.id, includeFired ? 'Нет сотрудников (включая уволенных).' : 'Нет активных сотрудников.');
@@ -1999,40 +1999,64 @@ function registerCommands(
       return a.id - b.id;
     });
 
-    let reply = '🪪 <b>Статус сотрудников:</b>\n\n';
-    for (const emp of employees) {
-      let roleEmoji = '👷';
-      let roleText = 'Сотрудник';
+    // Функция для генерации текста для одной группы сотрудников
+    function buildStatusMessage(empList) {
+      let reply = '🪪 <b>Статус сотрудников:</b>\n\n';
+      for (const emp of empList) {
+        let roleEmoji = '👷';
+        let roleText = 'Сотрудник';
 
-      const tgId = emp.tg_user_id;
-      if (GOD_ID && tgId === GOD_ID) {
-        roleEmoji = '👻';
-        roleText = 'Создатель';
-      } else if (moderatorId && tgId === moderatorId) {
-        roleEmoji = '🕵️';
-        roleText = 'Модератор';
-      } else if (isAdmin(tgId)) {
-        roleEmoji = '🧑‍💻';
-        roleText = 'Администратор';
-      } else if (emp.is_fired) {
-        roleEmoji = '👤';
-        roleText = 'Уволен';
+        const tgId = emp.tg_user_id;
+        if (GOD_ID && tgId === GOD_ID) {
+          roleEmoji = '👻';
+          roleText = 'Создатель';
+        } else if (moderatorId && tgId === moderatorId) {
+          roleEmoji = '🕵️';
+          roleText = 'Модератор';
+        } else if (isAdmin(tgId)) {
+          roleEmoji = '🧑‍💻';
+          roleText = 'Администратор';
+        } else if (emp.is_fired) {
+          roleEmoji = '👤';
+          roleText = 'Уволен';
+        }
+
+        const issuedCount = await db.getIssuedCount(emp.id);
+
+        reply += `${roleEmoji} ${escapeHtml(emp.name)} — <b>${escapeHtml(roleText)}</b>\n`;
+        reply += `🆔 <b>ID сотрудника:</b> <code>${escapeHtml(emp.id)}</code>\n`;
+        const phoneFormatted = formatPhone(emp.phone);
+        reply += `📞 Телефон: ${phoneFormatted ? escapeHtml(phoneFormatted) : '📵'}\n`;
+        reply += `📦 Активных заказов: ${escapeHtml(emp.active_count)}\n`;
+        if (emp.earnings_factor) reply += `📈 Коэффициент заработка: ${escapeHtml(emp.earnings_factor.toFixed(2))}\n`;
+        reply += `🖨️ 3D-принтеров: ${escapeHtml(emp.capacity)}\n`;
+        reply += `🗃️ Выданных моделей: ${(GOD_ID && tgId === GOD_ID) ? '♾️' : escapeHtml(issuedCount)}\n`;
+        reply += `📋 Приём заказов: ${(GOD_ID && tgId === GOD_ID) ? '⚜️' : (emp.taking_orders === 1 ? '✅' : '❌')}\n\n`;
       }
-
-      // Получаем количество выданных моделей для сотрудника
-      const issuedCount = await db.getIssuedCount(emp.id);
-
-      reply += `${roleEmoji} ${escapeHtml(emp.name)} — <b>${escapeHtml(roleText)}</b>\n`;
-      reply += `🆔 <b>ID сотрудника:</b> <code>${escapeHtml(emp.id)}</code>\n`;
-      const phoneFormatted = formatPhone(emp.phone);
-      reply += `📞 Телефон: ${phoneFormatted ? escapeHtml(phoneFormatted) : '📵'}\n`;
-      reply += `📦 Активных заказов: ${escapeHtml(emp.active_count)}\n`;
-      if (emp.earnings_factor) reply += `📈 Коэффициент заработка: ${escapeHtml(emp.earnings_factor.toFixed(2))}\n`;
-      reply += `🖨️ 3D-принтеров: ${escapeHtml(emp.capacity)}\n`;
-      reply += `🗃️ Выданных моделей: ${(GOD_ID && tgId === GOD_ID) ? '♾️' : escapeHtml(issuedCount)}\n`;
-      reply += `📋 Приём заказов: ${(GOD_ID && tgId === GOD_ID) ? '⚜️' : (emp.taking_orders === 1 ? '✅' : '❌')}\n\n`;
+      return reply;
     }
-    await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'HTML' });
+
+    // Разбиваем сотрудников на части по 10 человек
+    const chunkSize = 10;
+    let totalSent = 0;
+    for (let i = 0; i < employees.length; i += chunkSize) {
+      const chunk = employees.slice(i, i + chunkSize);
+      const message = buildStatusMessage(chunk);
+      await bot.sendMessage(msg.chat.id, message, { parse_mode: 'HTML' });
+      totalSent += chunk.length;
+      // Если это не последняя часть, делаем небольшую задержку
+      if (i + chunkSize < employees.length) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+    }
+
+    // Опционально: отправляем итоговое сообщение о количестве выведенных сотрудников
+    if (employees.length > chunkSize) {
+      await bot.sendMessage(
+        msg.chat.id,
+        `✅ Выведено ${totalSent} сотрудников (${includeFired ? 'включая уволенных' : 'только активные'}).`
+      );
+    }
   });
 
   // --- "/active_orders" Команда для администратора: список активных (взятых) заказов ---
@@ -4076,7 +4100,7 @@ function registerCommands(
     const employee = await db.getEmployee(userId);
     if (isAdministrator) {
       let helpText = `👋 Помощь администратора\n\n`;
-      helpText += `/status_all [--all] — показать всех сотрудников (опционально включить уволенных)\n`;
+      helpText += `/status_all [--include_fired] — показать всех сотрудников (опционально включить уволенных)\n`;
       helpText += `/active_orders — список активных заказов\n`;
       helpText += `/warehouses — список складов Ozon\n`;
       helpText += `/orders [warehouse_id] — показать очередь заказов из API (с фильтром по складу)\n`;

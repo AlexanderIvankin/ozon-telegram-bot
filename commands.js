@@ -1987,11 +1987,10 @@ function registerCommands(
       if (GOD_ID && tgId === GOD_ID) return 0;
       if (moderatorId && tgId === moderatorId) return 1;
       if (isAdmin(tgId)) return 2;
-      if (emp.is_fired) return 4; // уволенные – низший приоритет
+      if (emp.is_fired) return 4;
       return 3;
     };
 
-    // Сортировка: по приоритету роли, затем по id (числовое)
     employees.sort((a, b) => {
       const priorityA = getRolePriority(a);
       const priorityB = getRolePriority(b);
@@ -1999,7 +1998,13 @@ function registerCommands(
       return a.id - b.id;
     });
 
-    // Функция для генерации текста для одной группы сотрудников
+    // Для каждого сотрудника заранее получим issuedCount, чтобы не делать await внутри цикла построения сообщения
+    const employeesWithIssued = await Promise.all(employees.map(async (emp) => {
+      const issuedCount = await db.getIssuedCount(emp.id);
+      return { ...emp, issuedCount };
+    }));
+
+    // Функция для генерации текста для одной группы сотрудников (синхронная)
     function buildStatusMessage(empList) {
       let reply = '🪪 <b>Статус сотрудников:</b>\n\n';
       for (const emp of empList) {
@@ -2021,8 +2026,6 @@ function registerCommands(
           roleText = 'Уволен';
         }
 
-        const issuedCount = await db.getIssuedCount(emp.id);
-
         reply += `${roleEmoji} ${escapeHtml(emp.name)} — <b>${escapeHtml(roleText)}</b>\n`;
         reply += `🆔 <b>ID сотрудника:</b> <code>${escapeHtml(emp.id)}</code>\n`;
         const phoneFormatted = formatPhone(emp.phone);
@@ -2030,7 +2033,7 @@ function registerCommands(
         reply += `📦 Активных заказов: ${escapeHtml(emp.active_count)}\n`;
         if (emp.earnings_factor) reply += `📈 Коэффициент заработка: ${escapeHtml(emp.earnings_factor.toFixed(2))}\n`;
         reply += `🖨️ 3D-принтеров: ${escapeHtml(emp.capacity)}\n`;
-        reply += `🗃️ Выданных моделей: ${(GOD_ID && tgId === GOD_ID) ? '♾️' : escapeHtml(issuedCount)}\n`;
+        reply += `🗃️ Выданных моделей: ${(GOD_ID && tgId === GOD_ID) ? '♾️' : escapeHtml(emp.issuedCount)}\n`;
         reply += `📋 Приём заказов: ${(GOD_ID && tgId === GOD_ID) ? '⚜️' : (emp.taking_orders === 1 ? '✅' : '❌')}\n\n`;
       }
       return reply;
@@ -2039,19 +2042,17 @@ function registerCommands(
     // Разбиваем сотрудников на части по 10 человек
     const chunkSize = 10;
     let totalSent = 0;
-    for (let i = 0; i < employees.length; i += chunkSize) {
-      const chunk = employees.slice(i, i + chunkSize);
+    for (let i = 0; i < employeesWithIssued.length; i += chunkSize) {
+      const chunk = employeesWithIssued.slice(i, i + chunkSize);
       const message = buildStatusMessage(chunk);
       await bot.sendMessage(msg.chat.id, message, { parse_mode: 'HTML' });
       totalSent += chunk.length;
-      // Если это не последняя часть, делаем небольшую задержку
-      if (i + chunkSize < employees.length) {
+      if (i + chunkSize < employeesWithIssued.length) {
         await new Promise(resolve => setTimeout(resolve, 500));
       }
     }
 
-    // Опционально: отправляем итоговое сообщение о количестве выведенных сотрудников
-    if (employees.length > chunkSize) {
+    if (employeesWithIssued.length > chunkSize) {
       await bot.sendMessage(
         msg.chat.id,
         `✅ Выведено ${totalSent} сотрудников (${includeFired ? 'включая уволенных' : 'только активные'}).`

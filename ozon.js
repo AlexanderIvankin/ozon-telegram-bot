@@ -626,61 +626,6 @@ async function getActionProducts(actionId, limit = 100, lastId = null) {
 }
 
 /**
- * Получить список товаров-кандидатов для акции с пагинацией.
- * POST /v1/actions/candidates
- * @param {number} actionId - ID акции
- * @param {number} limit - количество товаров на страницу (макс 100)
- * @param {string|null} lastId - идентификатор последнего товара для пагинации
- * @returns {Promise<{products: Array, total: number, lastId: string|null}>}
- */
-async function getActionCandidates(actionId, limit = 100, lastId = null) {
-    if (MOCK_MODE) {
-        console.log(`[Ozon MOCK] Возвращаем тестовых кандидатов для акции ${actionId}`);
-        const mockProducts = [];
-        const count = 3;
-        for (let i = 0; i < count; i++) {
-            mockProducts.push({
-                id: 2000 + i,
-                price: 150 + i,
-                action_price: 70 + i,
-                stock: 5,
-                min_stock: 2
-            });
-        }
-        return {
-            products: mockProducts,
-            total: count,
-            lastId: null
-        };
-    }
-
-    try {
-        const requestBody = {
-            action_id: actionId,
-            limit: Math.min(limit, 100)
-        };
-        if (lastId) {
-            requestBody.last_id = lastId;
-        }
-
-        const response = await requestWithRetry(
-            () => apiClient.post('/v1/actions/candidates', requestBody),
-            { context: `getActionCandidates_${actionId}` }
-        );
-
-        const result = response.data.result || {};
-        return {
-            products: result.products || [],
-            total: result.total || 0,
-            lastId: result.last_id || null
-        };
-    } catch (error) {
-        console.error(`[Ozon] Ошибка получения кандидатов для акции ${actionId}:`, error.message);
-        throw new Error(`Ошибка получения кандидатов: ${error.message}`);
-    }
-}
-
-/**
  * Удалить товары из акции.
  * POST /v1/actions/products/deactivate
  * @param {number} actionId - ID акции
@@ -743,19 +688,18 @@ async function deactivateActionProducts(actionId, productIds) {
  * @returns {Promise<{actionsProcessed: number, totalProductsRemoved: number}>}
  */
 async function removeAllPromotions(progressCallback) {
-    // 0. Получаем список акций
+    // 1. Получаем список акций
     const actions = await getActions();
     const activeActions = actions.filter(a =>
-        (a.potential_products_count && a.potential_products_count > 0) ||
         (a.participating_products_count && a.participating_products_count > 0)
     );
 
     if (!activeActions.length) {
-        await progressCallback('📭 Нет акций с товарами (участвующими или потенциальными).');
+        await progressCallback('📭 Нет акций с активным участием товаров.');
         return { actionsProcessed: 0, totalProductsRemoved: 0 };
     }
 
-    await progressCallback(`📊 Найдено акций с товарами: ${activeActions.length}`);
+    await progressCallback(`📊 Найдено акций с участием: ${activeActions.length}`);
 
     let totalProductsRemoved = 0;
     let actionsProcessed = 0;
@@ -765,63 +709,37 @@ async function removeAllPromotions(progressCallback) {
         const actionTitle = action.title || `ID: ${actionId}`;
         await progressCallback(`🔄 Обработка акции: "${actionTitle}" (ID: ${actionId})`);
 
-        // --- Сбор всех ID товаров (участвующие + кандидаты) ---
-        const allProductIds = new Set();
-
-        // 1. Получаем участвующие товары (products)
+        // Получаем все товары с пагинацией
+        let allProductIds = [];
         let lastId = null;
         let hasMore = true;
         let page = 0;
+
         while (hasMore) {
             page++;
             try {
                 const { products, lastId: newLastId } = await getActionProducts(actionId, 100, lastId);
-                for (const p of products) {
-                    allProductIds.add(p.id);
-                }
+                const productIds = products.map(p => p.id);
+                allProductIds = allProductIds.concat(productIds);
                 lastId = newLastId;
                 hasMore = !!lastId && products.length === 100;
                 if (products.length === 0) hasMore = false;
             } catch (err) {
-                await progressCallback(`⚠️ Ошибка получения участвующих товаров: ${err.message}`);
+                await progressCallback(`⚠️ Ошибка получения товаров: ${err.message}`);
                 hasMore = false;
             }
         }
 
-        // Небольшая задержка перед запросом кандидатов (чтобы не флудить API)
-        await new Promise(resolve => setTimeout(resolve, 500));
-
-        // 2. Получаем кандидатов (candidates)
-        lastId = null;
-        hasMore = true;
-        page = 0;
-        while (hasMore) {
-            page++;
-            try {
-                const { products, lastId: newLastId } = await getActionCandidates(actionId, 100, lastId);
-                for (const p of products) {
-                    allProductIds.add(p.id);
-                }
-                lastId = newLastId;
-                hasMore = !!lastId && products.length === 100;
-                if (products.length === 0) hasMore = false;
-            } catch (err) {
-                await progressCallback(`⚠️ Ошибка получения кандидатов: ${err.message}`);
-                hasMore = false;
-            }
-        }
-
-        const productIdsArray = Array.from(allProductIds);
-        if (!productIdsArray.length) {
-            await progressCallback(`ℹ️ В акции "${actionTitle}" нет товаров (ни участвующих, ни кандидатов).`);
+        if (!allProductIds.length) {
+            await progressCallback(`ℹ️ В акции "${actionTitle}" нет товаров для удаления.`);
             continue;
         }
 
-        await progressCallback(`📦 Найдено ${productIdsArray.length} товаров (участвующих + кандидатов). Удаление...`);
+        await progressCallback(`📦 Найдено ${allProductIds.length} товаров. Удаление...`);
 
         // Удаляем товары (пакетно)
         try {
-            const result = await deactivateActionProducts(actionId, productIdsArray);
+            const result = await deactivateActionProducts(actionId, allProductIds);
             const removed = result.product_ids.length;
             totalProductsRemoved += removed;
             actionsProcessed++;
@@ -848,7 +766,6 @@ module.exports = {
     getOrderTotalAmount,
     getActions,
     getActionProducts,
-    getActionCandidates,
     deactivateActionProducts,
     removeAllPromotions,
 };

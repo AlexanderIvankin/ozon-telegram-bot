@@ -1265,6 +1265,50 @@ function registerCommands(
       return;
     }
 
+    // Подтверждение удаления из акций
+    if (data === 'confirm_remove_promotions') {
+      if (!isAdmin(userId)) {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '⛔ Нет прав' });
+        return;
+      }
+
+      await bot.answerCallbackQuery(callbackQuery.id, { text: '⏳ Начинаю обработку...' });
+      await bot.editMessageText('🔄 Начинаю удаление товаров из всех акций...', {
+        chat_id: msg.chat.id,
+        message_id: msg.message_id
+      });
+
+      try {
+        // Функция для отправки сообщений о прогрессе
+        const progressCallback = async (text) => {
+          await bot.sendMessage(msg.chat.id, text);
+        };
+
+        const result = await ozon.removeAllPromotions(progressCallback);
+        await bot.editMessageText(
+          `✅ Готово!\n\nОбработано акций: ${result.actionsProcessed}\nУдалено товаров: ${result.totalProductsRemoved}`,
+          {
+            chat_id: msg.chat.id,
+            message_id: msg.message_id
+          }
+        );
+      } catch (err) {
+        console.error('[REMOVE_PROMOTIONS] Ошибка:', err);
+        await bot.editMessageText(`❌ Ошибка: ${err.message}`, {
+          chat_id: msg.chat.id,
+          message_id: msg.message_id
+        });
+      }
+      return;
+    }
+
+    // Отмена удаления из акций
+    if (data === 'cancel_remove_promotions') {
+      await bot.answerCallbackQuery(callbackQuery.id, { text: 'Операция отменена' });
+      await bot.deleteMessage(msg.chat.id, msg.message_id);
+      return;
+    }
+
     // Сброс всех данных (кроме моделей и сотрудников) и синхронизация — подтверждение
     if (data === 'confirm_full_reset_sync') {
       try {
@@ -1910,6 +1954,8 @@ function registerCommands(
       adminMessage += `/upload_materials — загрузить новый файл "materials-prices.json" с ценами материалов\n\n`;
 
       adminMessage += `/backup_db — создать бэкап базы данных "bot.db"\n\n`;
+
+      adminMessage += `/remove_all_promotions — удаление ВСЕХ товаров из ВСЕХ акций Ozon (с подтверждением)\n\n`;
 
       adminMessage += `/full_reset_and_sync — сброс ВСЕХ данных в БД (сотрудники, склады, назначения), кроме 3D-моделей, статистики товаров и заработка сотрудников, синхронизация складов/сотрудников\n\n`;
 
@@ -3264,6 +3310,33 @@ function registerCommands(
     }
   });
 
+  // --- "/remove_all_promotions" Команда для администратора: Удаление всех товаров из всех акций ---
+  bot.onText(/\/remove_all_promotions/, async (msg) => {
+    const userId = msg.from.id.toString();
+    if (!isAdmin(userId)) {
+      return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
+    }
+
+    const confirmKeyboard = {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: '⚠️ ДА, удалить все товары из всех акций', callback_data: 'confirm_remove_promotions' },
+            { text: '❌ Отмена', callback_data: 'cancel_remove_promotions' }
+          ]
+        ]
+      }
+    };
+
+    await bot.sendMessage(
+      msg.chat.id,
+      '⚠️ ВНИМАНИЕ! Вы собираетесь удалить ВСЕ товары из ВСЕХ акций Ozon.\n' +
+      'Это действие необратимо и может занять длительное время.\n\n' +
+      'Продолжить?',
+      confirmKeyboard
+    );
+  });
+
   // --- "/pause" Команда для администратора: Пауза работы бота ---
   bot.onText(/\/pause/, async (msg) => {
     const userId = msg.from.id.toString();
@@ -4170,6 +4243,8 @@ function registerCommands(
       helpText += `/upload_materials — загрузить новый файл "materials-prices.json" с ценами материалов\n\n`;
 
       helpText += `/backup_db — создать бэкап базы данных "bot.db"\n\n`;
+
+      helpText += `/remove_all_promotions — удаление ВСЕХ товаров из ВСЕХ акций Ozon (с подтверждением)\n\n`;
 
       helpText += `/full_reset_and_sync — сброс ВСЕХ данных в БД (сотрудники, склады, назначения), кроме 3D-моделей, статистики товаров и заработка сотрудников, синхронизация складов/сотрудников\n\n`;
 

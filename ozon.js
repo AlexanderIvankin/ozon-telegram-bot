@@ -542,6 +542,214 @@ async function getOrderTotalAmount(orderId) {
     return total;
 }
 
+// ---------------------- РАБОТА С АКЦИЯМИ ----------------------
+
+/**
+ * Получить список всех акций, доступных для участия.
+ * GET /v1/actions
+ * @returns {Promise<Array>} - массив объектов акций
+ */
+async function getActions() {
+    if (MOCK_MODE) {
+        console.log('[Ozon MOCK] Возвращаем тестовые акции');
+        return [
+            { id: 71342, title: 'test voucher #2', is_participating: true, participating_products_count: 5 },
+            { id: 71343, title: 'test voucher #3', is_participating: false, participating_products_count: 0 }
+        ];
+    }
+
+    try {
+        const response = await requestWithRetry(
+            () => apiClient.get('/v1/actions'),
+            { context: 'getActions' }
+        );
+        return response.data.result || [];
+    } catch (error) {
+        console.error('[Ozon] Ошибка получения списка акций:', error.message);
+        throw new Error(`Ошибка получения акций: ${error.message}`);
+    }
+}
+
+/**
+ * Получить список товаров в акции с пагинацией.
+ * POST /v1/actions/products
+ * @param {number} actionId - ID акции
+ * @param {number} limit - количество товаров на страницу (макс 100)
+ * @param {string|null} lastId - идентификатор последнего товара для пагинации
+ * @returns {Promise<{products: Array, total: number, lastId: string|null}>}
+ */
+async function getActionProducts(actionId, limit = 100, lastId = null) {
+    if (MOCK_MODE) {
+        console.log(`[Ozon MOCK] Возвращаем тестовые товары для акции ${actionId}`);
+        const mockProducts = [];
+        const count = 5;
+        for (let i = 0; i < count; i++) {
+            mockProducts.push({
+                id: 1000 + i,
+                price: 100 + i,
+                action_price: 50 + i,
+                stock: 20,
+                min_stock: 3
+            });
+        }
+        return {
+            products: mockProducts,
+            total: count,
+            lastId: null
+        };
+    }
+
+    try {
+        const requestBody = {
+            action_id: actionId,
+            limit: Math.min(limit, 100)
+        };
+        if (lastId) {
+            requestBody.last_id = lastId;
+        }
+
+        const response = await requestWithRetry(
+            () => apiClient.post('/v1/actions/products', requestBody),
+            { context: `getActionProducts_${actionId}` }
+        );
+
+        const result = response.data.result || {};
+        return {
+            products: result.products || [],
+            total: result.total || 0,
+            lastId: result.last_id || null
+        };
+    } catch (error) {
+        console.error(`[Ozon] Ошибка получения товаров для акции ${actionId}:`, error.message);
+        throw new Error(`Ошибка получения товаров: ${error.message}`);
+    }
+}
+
+/**
+ * Удалить товары из акции.
+ * POST /v1/actions/products/deactivate
+ * @param {number} actionId - ID акции
+ * @param {Array<number>} productIds - массив ID товаров (макс 100 за раз)
+ * @returns {Promise<{product_ids: Array, rejected: Array}>}
+ */
+async function deactivateActionProducts(actionId, productIds) {
+    if (MOCK_MODE) {
+        console.log(`[Ozon MOCK] Удаление товаров из акции ${actionId}:`, productIds);
+        return {
+            product_ids: productIds,
+            rejected: []
+        };
+    }
+
+    try {
+        // Разбиваем на батчи по 100 (API ограничение)
+        const batches = [];
+        for (let i = 0; i < productIds.length; i += 100) {
+            batches.push(productIds.slice(i, i + 100));
+        }
+
+        const allResults = [];
+        for (const batch of batches) {
+            const response = await requestWithRetry(
+                () => apiClient.post('/v1/actions/products/deactivate', {
+                    action_id: actionId,
+                    product_ids: batch
+                }),
+                { context: `deactivateActionProducts_${actionId}` }
+            );
+            allResults.push(response.data.result);
+            // Небольшая задержка между батчами, чтобы не превысить лимиты
+            if (batches.length > 1) {
+                await new Promise(resolve => setTimeout(resolve, 300));
+            }
+        }
+
+        // Объединяем результаты
+        const combined = {
+            product_ids: [],
+            rejected: []
+        };
+        for (const res of allResults) {
+            if (res) {
+                combined.product_ids = combined.product_ids.concat(res.product_ids || []);
+                combined.rejected = combined.rejected.concat(res.rejected || []);
+            }
+        }
+        return combined;
+    } catch (error) {
+        console.error(`[Ozon] Ошибка удаления товаров из акции ${actionId}:`, error.message);
+        throw new Error(`Ошибка удаления товаров: ${error.message}`);
+    }
+}
+
+/**
+ * Удалить все товары из всех акций, в которых есть участие.
+ * @param {Function} progressCallback - функция для отправки сообщений о прогрессе (принимает текст)
+ * @returns {Promise<{actionsProcessed: number, totalProductsRemoved: number}>}
+ */
+async function removeAllPromotions(progressCallback) {
+    // 1. Получаем список акций
+    const actions = await getActions();
+    const activeActions = actions.filter(a => a.is_participating && a.participating_products_count > 0);
+
+    if (!activeActions.length) {
+        await progressCallback('📭 Нет акций с активным участием товаров.');
+        return { actionsProcessed: 0, totalProductsRemoved: 0 };
+    }
+
+    await progressCallback(`📊 Найдено акций с участием: ${activeActions.length}`);
+
+    let totalProductsRemoved = 0;
+    let actionsProcessed = 0;
+
+    for (const action of activeActions) {
+        const actionId = action.id;
+        const actionTitle = action.title || `ID: ${actionId}`;
+        await progressCallback(`🔄 Обработка акции: "${actionTitle}" (ID: ${actionId})`);
+
+        // Получаем все товары с пагинацией
+        let allProductIds = [];
+        let lastId = null;
+        let hasMore = true;
+        let page = 0;
+
+        while (hasMore) {
+            page++;
+            try {
+                const { products, lastId: newLastId } = await getActionProducts(actionId, 100, lastId);
+                const productIds = products.map(p => p.id);
+                allProductIds = allProductIds.concat(productIds);
+                lastId = newLastId;
+                hasMore = !!lastId && products.length === 100;
+                if (products.length === 0) hasMore = false;
+            } catch (err) {
+                await progressCallback(`⚠️ Ошибка получения товаров: ${err.message}`);
+                hasMore = false;
+            }
+        }
+
+        if (!allProductIds.length) {
+            await progressCallback(`ℹ️ В акции "${actionTitle}" нет товаров для удаления.`);
+            continue;
+        }
+
+        await progressCallback(`📦 Найдено ${allProductIds.length} товаров. Удаление...`);
+
+        // Удаляем товары (пакетно)
+        try {
+            const result = await deactivateActionProducts(actionId, allProductIds);
+            const removed = result.product_ids.length;
+            totalProductsRemoved += removed;
+            actionsProcessed++;
+            await progressCallback(`✅ Из акции "${actionTitle}" удалено ${removed} товаров.`);
+        } catch (err) {
+            await progressCallback(`❌ Ошибка удаления: ${err.message}`);
+        }
+    }
+
+    return { actionsProcessed, totalProductsRemoved };
+}
+
 module.exports = {
     fetchAwaitingOrders,
     fetchAwaitingOrdersById,
@@ -553,5 +761,9 @@ module.exports = {
     confirmPostingShip,
     awaitingDelivery,
     getPackageLabel,
-    getOrderTotalAmount
+    getOrderTotalAmount,
+    getActions,
+    getActionProducts,
+    deactivateActionProducts,
+    removeAllPromotions,
 };

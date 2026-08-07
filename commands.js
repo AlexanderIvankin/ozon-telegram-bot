@@ -1172,14 +1172,27 @@ function registerCommands(
       const orderId = data.substring(21);
       // Находим сотрудника, у которого был этот заказ
       const assignment = await db.db.get('SELECT employee_id FROM assignments WHERE order_id = ? AND status = "assigned"', orderId);
+      let employee = null;
       if (assignment) {
-        const employee = await db.getEmployeeById(assignment.employee_id);
+        employee = await db.getEmployeeById(assignment.employee_id);
         // Очищаем pendingForms и удаляем сообщения перед завершением
         await clearOrderState(bot, orderId, employee.tg_user_id);
       }
       // Удаляем назначение
       await db.db.run('DELETE FROM assignments WHERE order_id = ? AND status = "assigned"', orderId);
       console.log(`[ADMIN] Снят заказ ${orderId} с сотрудника`);
+
+      // Уведомляем сотрудника о снятии заказа
+      if (employee) {
+        try {
+          await bot.sendMessage(
+            employee.tg_user_id,
+            `⛔ Заказ ${orderId} был снят с вас администратором.`
+          );
+        } catch (e) {
+          console.warn(`[ADMIN_CANCEL] Не удалось уведомить сотрудника ${employee.tg_user_id}:`, e.message);
+        }
+      }
 
       // Если этот заказ сейчас в обработке у админа – сбрасываем currentOrderProcessing
       const idx = pendingNewOrders.findIndex(o => o.posting_number === orderId);

@@ -690,7 +690,10 @@ async function deactivateActionProducts(actionId, productIds) {
 async function removeAllPromotions(progressCallback) {
     // 1. Получаем список акций
     const actions = await getActions();
-    const activeActions = actions.filter(a => a.is_participating && a.participating_products_count > 0);
+    const activeActions = actions.filter(a =>
+        (a.potential_products_count && a.potential_products_count > 0) ||
+        (a.participating_products_count && a.participating_products_count > 0)
+    );
 
     if (!activeActions.length) {
         await progressCallback('📭 Нет акций с активным участием товаров.');

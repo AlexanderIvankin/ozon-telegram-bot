@@ -24,7 +24,8 @@ const ozon = require('./ozon');
 const scheduler = require('./scheduler');
 const { syncEmployeesFromExcel } = require('./syncEmployees');
 const { finishingOrders, pendingFinishConfirmations } = require('./state');
-const { registerCommands, restorePendingForms, clearOrderState, escapeHtml } = require('./commands');
+const { registerCommands, restorePendingForms, clearOrderState } = require('./commands');
+const { escapeHtml } = require('./utils');
 const debugMode = require('./debugMode');
 
 

@@ -150,12 +150,13 @@ async function syncEmployeesFromExcel(db) {
 async function exportTeamInfoXlsx(db) {
     const dbConn = db.db;
 
-    // 1. Получаем всех сотрудников (включая уволенных, чтобы можно было выгрузить полный список)
+    // 1. Получаем ТОЛЬКО АКТИВНЫХ сотрудников (не уволенных)
     const employees = await dbConn.all(`
-    SELECT id, tg_user_id, name, phone, capacity, earnings_factor, is_fired
-    FROM employees
-    ORDER BY id
-`);
+        SELECT id, tg_user_id, name, phone, capacity, earnings_factor, is_fired
+        FROM employees
+        WHERE is_fired = 0
+        ORDER BY id
+    `);
 
     // 2. Получаем все склады
     const warehouses = await dbConn.all('SELECT warehouse_id, name FROM warehouses ORDER BY name');

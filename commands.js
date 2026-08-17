@@ -1889,7 +1889,7 @@ function registerCommands(
       if (employee) {
         activeCount = await db.getEmployeeActiveOrdersCount(employee.id);
       }
-      const { welcome, commandsPart1, commandsPart2 } = getAdminStartMessage(employee, activeCount, debugMode.isDebugMode());
+      const { welcome, adminMessagePart1, adminMessagePart2 } = getAdminStartMessage(employee, activeCount, debugMode.isDebugMode());
 
       // Отправляем приветствие с HTML
       await bot.sendMessage(chatId, welcome, { parse_mode: 'HTML' });

@@ -100,8 +100,8 @@ function getAdminStartMessage(employee, activeCount, debugMode) {
   const commands = getAdminCommandsOnly(debugMode);
   return {
     welcome, // с HTML
-    commandsPart1: commands.adminMessagePart1,  // без HTML
-    commandsPart2: commands.adminMessagePart2   // без HTML
+    adminMessagePart1: commands.adminMessagePart1,  // без HTML
+    adminMessagePart2: commands.adminMessagePart2   // без HTML
   };
 }
 

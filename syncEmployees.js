@@ -144,17 +144,21 @@ async function syncEmployeesFromExcel(db) {
 }
 
 /**
- * Экспортирует текущий список сотрудников и складов в team-info.xlsx с форматированием.
- * @param {Object} db - объект базы данных (с полем .db для доступа к sqlite)
+ * Экспортирует список сотрудников в team-info.xlsx (активные) или team-db.xlsx (все).
+ * @param {Object} db - объект базы данных (с полем .db)
+ * @param {boolean} includeFired - включать ли уволенных
+ * @param {string} outputFileName - имя файла (по умолчанию team-info.xlsx)
+ * @returns {Promise<string>} - путь к созданному файлу
  */
-async function exportTeamInfoXlsx(db) {
+async function exportTeamInfoXlsx(db, includeFired = false, outputFileName = 'team-info.xlsx') {
     const dbConn = db.db;
 
-    // 1. Получаем ТОЛЬКО АКТИВНЫХ сотрудников (не уволенных)
+    // 1. Получаем список сотрудников (только активных или включая уволенных)
+    const firedCondition = includeFired ? '' : 'WHERE is_fired = 0';
     const employees = await dbConn.all(`
         SELECT id, tg_user_id, name, phone, capacity, earnings_factor, is_fired
         FROM employees
-        WHERE is_fired = 0
+        ${firedCondition}
         ORDER BY id
     `);
 
@@ -267,10 +271,14 @@ async function exportTeamInfoXlsx(db) {
     }
 
     // 10. Сохраняем файл
-    const outputPath = path.join(__dirname, 'team-info.xlsx');
+    const outputPath = path.join(__dirname, outputFileName);
     await workbook.xlsx.writeFile(outputPath);
-    console.log('[EXPORT] team-info.xlsx успешно создан с форматированием.');
+    console.log(`[EXPORT] ${outputFileName} успешно создан с форматированием.`);
     return outputPath;
 }
 
-module.exports = { syncEmployeesFromExcel, exportTeamInfoXlsx };
+async function exportTeamInfoXlsxAll(db) {
+    return exportTeamInfoXlsx(db, true, 'team-db.xlsx');
+}
+
+module.exports = { syncEmployeesFromExcel, exportTeamInfoXlsx, exportTeamInfoXlsxAll };

@@ -90,19 +90,19 @@ function getAdminCommandsOnly(debugMode) {
  * @returns {Object} { adminMessagePart1, adminMessagePart2 }
  */
 function getAdminStartMessage(employee, activeCount, debugMode) {
-  let part1 = `👋 Добро пожаловать, Администратор!\n\n`;
+  let welcome = `👋 Добро пожаловать, Администратор!\n\n`;
   if (!employee) {
-    part1 += `⚠️ Вы ещё не добавлены в базу сотрудников.\n`;
-    part1 += `Для начала работы используйте команду /add_self.\n\n`;
+    welcome += `⚠️ Вы ещё не добавлены в базу сотрудников.\n`;
+    welcome += `Для начала работы используйте команду /add_self.\n\n`;
   } else {
-    part1 += `Вы зарегистрированы как <b>${escapeHtml(employee.name)}</b>\nАктивных Заказов: ${activeCount}\n3D-принтеров: ${employee.capacity}\n\n`;
+    welcome += `Вы зарегистрированы как <b>${escapeHtml(employee.name)}</b>\nАктивных Заказов: ${activeCount}\n3D-принтеров: ${employee.capacity}\n\n`;
   }
-  // Добавляем команды (первую часть)
   const commands = getAdminCommandsOnly(debugMode);
-  // Объединяем: part1 + commands.adminMessagePart1
-  const finalPart1 = part1 + commands.adminMessagePart1;
-  // part2 остаётся без изменений
-  return { adminMessagePart1: finalPart1, adminMessagePart2: commands.adminMessagePart2 };
+  return {
+    welcome, // с HTML
+    commandsPart1: commands.adminMessagePart1,  // без HTML
+    commandsPart2: commands.adminMessagePart2   // без HTML
+  };
 }
 
 /**
@@ -130,11 +130,13 @@ function getEmployeeCommandsOnly() {
  * @returns {string}
  */
 function getEmployeeStartMessage(employee, activeCount) {
-  let msg = activeCount ? `С возвращением, ` : `Добро пожаловать, ` + `<b>${escapeHtml(employee.name)}</b>!\n`;
-  if (activeCount) msg += `У вас активно заказов: ${activeCount}.\n`;
-  msg += `Новые заказы назначает Модератор.\n\n`;
-  msg += getEmployeeCommandsOnly();
-  return msg;
+  let welcome = activeCount ? `С возвращением, ` : `Добро пожаловать, ` + `<b>${escapeHtml(employee.name)}</b>!\n`;
+  if (activeCount) welcome += `У вас активно заказов: ${activeCount}.\n`;
+  welcome += `Новые заказы назначает Модератор.\n\n`;
+  return {
+    welcome, // с HTML
+    commands: getEmployeeCommandsOnly() // без HTML
+  };
 }
 
 /**

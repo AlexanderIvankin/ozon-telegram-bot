@@ -1889,24 +1889,38 @@ function registerCommands(
       if (employee) {
         activeCount = await db.getEmployeeActiveOrdersCount(employee.id);
       }
-      const { adminMessagePart1, adminMessagePart2 } = getAdminStartMessage(employee, activeCount, debugMode.isDebugMode());
+      const { welcome, commandsPart1, commandsPart2 } = getAdminStartMessage(employee, activeCount, debugMode.isDebugMode());
+
+      // Отправляем приветствие с HTML
+      await bot.sendMessage(chatId, welcome, { parse_mode: 'HTML' });
+
+      // Небольшая задержка (300 мс) между сообщениями
+      await new Promise(resolve => setTimeout(resolve, 300));
 
       // Отправляем первую часть
-      await bot.sendMessage(chatId, adminMessagePart1, { parse_mode: 'HTML' });
+      await bot.sendMessage(chatId, adminMessagePart1);
 
       // Небольшая задержка (300 мс) между сообщениями
       await new Promise(resolve => setTimeout(resolve, 300));
 
       // Отправляем вторую часть
-      await bot.sendMessage(chatId, adminMessagePart2, { parse_mode: 'HTML' });
+      await bot.sendMessage(chatId, adminMessagePart2);
       return;
     }
 
     // --- Обычный сотрудник (есть в БД) ---
     if (employee) {
       const activeCount = await db.getEmployeeActiveOrdersCount(employee.id);
-      const msg = getEmployeeStartMessage(employee, activeCount);
-      await bot.sendMessage(chatId, msg, { parse_mode: 'HTML' });
+      const { welcome, commands } = getEmployeeStartMessage(employee, activeCount);
+
+      // Приветствие с HTML
+      await bot.sendMessage(chatId, welcome, { parse_mode: 'HTML' });
+
+      // Небольшая задержка (300 мс) между сообщениями
+      await new Promise(resolve => setTimeout(resolve, 300));
+
+      // Команды без HTML
+      await bot.sendMessage(chatId, commands);
       return;
     }
 
@@ -4144,9 +4158,9 @@ function registerCommands(
 
     // --- Обычный сотрудник (есть в БД) ---
     if (employee) {
-        const msg = getEmployeeCommandsOnly();
-        await bot.sendMessage(chatId, msg);
-        return;
+      const msg = getEmployeeCommandsOnly();
+      await bot.sendMessage(chatId, msg);
+      return;
     }
 
     // --- Неавторизованный пользователь ---

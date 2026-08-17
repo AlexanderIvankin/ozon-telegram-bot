@@ -144,7 +144,7 @@ async function syncEmployeesFromExcel(db) {
 }
 
 /**
- * Экспортирует список сотрудников в team-info.xlsx (активные) или team-db.xlsx (все).
+ * Экспортирует список сотрудников в team-info.xlsx (активные) или employees-db.xlsx (все).
  * @param {Object} db - объект базы данных (с полем .db)
  * @param {boolean} includeFired - включать ли уволенных
  * @param {string} outputFileName - имя файла (по умолчанию team-info.xlsx)
@@ -278,7 +278,7 @@ async function exportTeamInfoXlsx(db, includeFired = false, outputFileName = 'te
 }
 
 async function exportTeamInfoXlsxAll(db) {
-    return exportTeamInfoXlsx(db, true, 'team-db.xlsx');
+    return exportTeamInfoXlsx(db, true, 'employees-db.xlsx');
 }
 
 module.exports = { syncEmployeesFromExcel, exportTeamInfoXlsx, exportTeamInfoXlsxAll };

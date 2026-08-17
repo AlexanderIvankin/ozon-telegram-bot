@@ -1962,7 +1962,7 @@ function registerCommands(
       adminMessagePart2 += `/download_materials — скачать файл цен материала за грамм "materials-prices.json"\n`;
       adminMessagePart2 += `/download_team_info — скачать файл сотрудников "team-info.xlsx"\n`;
       adminMessagePart2 += `/download_product_stats — скачать файл статистики продуктов "product-stats.xlsx" (с принудительной выгрузкой статистики из bot.db)\n`;
-      adminMessagePart2 += `/download_employee_db — скачать файл "team-db.xlsx" со ВСЕМИ сотрудниками (включая уволенных)\n`;
+      adminMessagePart2 += `/download_employees_db — скачать файл "employees-db.xlsx" со ВСЕМИ сотрудниками (включая уволенных)\n`;
       adminMessagePart2 += `/download_db — скачать файл базы данных "bot.db"\n\n`;
 
       adminMessagePart2 += `/upload_employees — загрузить новый файл "team-info.xlsx" с сотрудниками (автоматически синхронизирует БД)\n`;
@@ -3430,8 +3430,8 @@ function registerCommands(
     }
   });
 
-  // --- "/download_employee_db" Команда для администратора: скачать файл с ВСЕМИ сотрудниками (включая уволенных) ---
-  bot.onText(/\/download_employee_db/, async (msg) => {
+  // --- "/download_employees_db" Команда для администратора: скачать файл "employees-db.xlsx" с ВСЕМИ сотрудниками (включая уволенных) ---
+  bot.onText(/\/download_employees_db/, async (msg) => {
     const userId = msg.from.id.toString();
     if (!isAdmin(userId)) {
       return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
@@ -3443,7 +3443,7 @@ function registerCommands(
     try {
       const filePath = await exportTeamInfoXlsxAll(db);
       await bot.sendDocument(msg.chat.id, filePath, {
-        caption: '📄 Полная база сотрудников (включая уволенных) — team-db.xlsx'
+        caption: '📄 Полная база сотрудников (включая уволенных) — employees-db.xlsx'
       });
       // Файл можно оставить на сервере или удалить после отправки
     } catch (err) {
@@ -4281,7 +4281,7 @@ function registerCommands(
       helpTextPart2 += `/download_materials — скачать файл цен материала за грамм "materials-prices.json"\n`;
       helpTextPart2 += `/download_team_info — скачать файл сотрудников "team-info.xlsx"\n`;
       helpTextPart2 += `/download_product_stats — скачать файл статистики продуктов "product-stats.xlsx" (с принудительной выгрузкой статистики из bot.db)\n`;
-      helpTextPart2 += `/download_employee_db — скачать файл "team-db.xlsx" со ВСЕМИ сотрудниками (включая уволенных)\n`;
+      helpTextPart2 += `/download_employees_db — скачать файл "employees-db.xlsx" со ВСЕМИ сотрудниками (включая уволенных)\n`;
       helpTextPart2 += `/download_db — скачать файл базы данных "bot.db"\n\n`;
 
       helpTextPart2 += `/upload_employees — загрузить новый файл "team-info.xlsx" с сотрудниками (автоматически синхронизирует БД)\n`;

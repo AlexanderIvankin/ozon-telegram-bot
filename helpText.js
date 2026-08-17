@@ -87,7 +87,7 @@ function getAdminCommandsOnly(debugMode) {
  * @param {Object|null} employee - данные сотрудника или null
  * @param {number} activeCount - количество активных заказов
  * @param {boolean} debugMode - режим отладки
- * @returns {Object} { adminMessagePart1, adminMessagePart2 }
+ * @returns {Object} { welcome, adminMessagePart1, adminMessagePart2 }
  */
 function getAdminStartMessage(employee, activeCount, debugMode) {
   let welcome = `👋 Добро пожаловать, Администратор!\n\n`;
@@ -127,7 +127,7 @@ function getEmployeeCommandsOnly() {
  * Полное приветствие для сотрудника (используется в /start).
  * @param {Object} employee - данные сотрудника
  * @param {number} activeCount - количество активных заказов
- * @returns {string}
+ * @returns {Object} { welcome, commands }
  */
 function getEmployeeStartMessage(employee, activeCount) {
   let welcome = activeCount ? `С возвращением, ` : `Добро пожаловать, ` + `<b>${escapeHtml(employee.name)}</b>!\n`;

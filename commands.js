@@ -4296,13 +4296,13 @@ function registerCommands(
       if (debugMode.isDebugMode()) helpTextPart2 += `/debug_clear — сброс отладочных данных\n`;
 
       // Отправляем первую часть
-      await bot.sendMessage(chatId, helpTextPart1);
+      await bot.sendMessage(msg.chat.id, helpTextPart1);
 
       // Небольшая задержка (300 мс) между сообщениями
       await new Promise(resolve => setTimeout(resolve, 300));
 
       // Отправляем вторую часть
-      await bot.sendMessage(chatId, helpTextPart2);
+      await bot.sendMessage(msg.chat.id, helpTextPart2);
       return;
     }
     if (employee) {

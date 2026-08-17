@@ -87,7 +87,7 @@ function getAdminCommandsOnly(debugMode) {
  * @param {Object|null} employee - данные сотрудника или null
  * @param {number} activeCount - количество активных заказов
  * @param {boolean} debugMode - режим отладки
- * @returns {Object} { part1, part2 }
+ * @returns {Object} { adminMessagePart1, adminMessagePart2 }
  */
 function getAdminStartMessage(employee, activeCount, debugMode) {
   let part1 = `👋 Добро пожаловать, Администратор!\n\n`;
@@ -99,10 +99,10 @@ function getAdminStartMessage(employee, activeCount, debugMode) {
   }
   // Добавляем команды (первую часть)
   const commands = getAdminCommandsOnly(debugMode);
-  // Объединяем: part1 + команды.part1
-  const finalPart1 = part1 + commands.part1;
+  // Объединяем: part1 + commands.adminMessagePart1
+  const finalPart1 = part1 + commands.adminMessagePart1;
   // part2 остаётся без изменений
-  return { part1: finalPart1, part2: commands.part2 };
+  return { adminMessagePart1: finalPart1, adminMessagePart2: commands.adminMessagePart2 };
 }
 
 /**

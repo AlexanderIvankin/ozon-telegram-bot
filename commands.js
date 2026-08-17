@@ -3348,7 +3348,7 @@ function registerCommands(
     }
   });
 
-  // --- "/download_employees_db" Команда для администратора: скачать файл "employees-db.xlsx" с ВСЕМИ сотрудниками (включая уволенных) ---
+  // --- "/download_employees_db" Команда для администратора: скачать файл "employees-db.xlsx" со списком ВСЕХ сотрудниками (включая уволенных) ---
   bot.onText(/\/download_employees_db/, async (msg) => {
     const userId = msg.from.id.toString();
     if (!isAdmin(userId)) {
@@ -3361,7 +3361,7 @@ function registerCommands(
     try {
       const filePath = await exportTeamInfoXlsxAll(db);
       await bot.sendDocument(msg.chat.id, filePath, {
-        caption: `📄 Полная база ВСЕХ (включая уволенных) сотрудников "employees-db.xlsx"`
+        caption: `📄 Полный список ВСЕХ сотрудников (включая уволенных) и складов "employees-db.xlsx"`
       });
       // Файл можно оставить на сервере или удалить после отправки
     } catch (err) {

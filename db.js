@@ -858,25 +858,34 @@ async function getIssuedCount(employeeId) {
  * Создаёт ежедневный бэкап базы данных в папку backups.
  * Если бэкап за сегодня уже существует — пропускает.
  */
+
 async function createDbBackup() {
     const dbPath = path.join(__dirname, 'bot.db');
     const backupDir = path.join(__dirname, 'backups');
-    if (!fs.existsSync(backupDir)) {
-        fs.mkdirSync(backupDir, { recursive: true });
+    try {
+        if (!fs.existsSync(backupDir)) {
+            fs.mkdirSync(backupDir, { recursive: true });
+            console.log(`[DB] Создана папка бэкапов: ${backupDir}`);
+        }
+        const dateStr = new Date().toISOString().slice(0, 10);  // YYYY-MM-DD
+        const backupPath = path.join(backupDir, `bot_${dateStr}.db`);
+        if (fs.existsSync(backupPath)) {
+            console.log(`[DB] Бэкап за сегодня уже существует: ${backupPath}`);
+            return;
+        }
+        // Проверяем, что database доступна
+        if (!database) {
+            console.error('[DB] Ошибка: database не инициализирована!');
+            return;
+        }
+        // Принудительно синхронизируем WAL в основной файл
+        await database.run('PRAGMA wal_checkpoint;');
+        fs.copyFileSync(dbPath, backupPath);
+        console.log(`[DB] Бэкап создан: ${backupPath}`);
+    } catch (err) {
+        console.error('[DB] Ошибка создания бэкапа:', err);
+        throw err;
     }
-    const dateStr = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-    const backupPath = path.join(backupDir, `bot_${dateStr}.db`);
-
-    if (fs.existsSync(backupPath)) {
-        console.log('[DB] Бэкап за сегодня уже существует, пропускаем');
-        return;
-    }
-
-    // Принудительно синхронизируем WAL в основной файл
-    await database.run('PRAGMA wal_checkpoint;');
-
-    fs.copyFileSync(dbPath, backupPath);
-    console.log(`[DB] Бэкап создан: ${backupPath}`);
 }
 
 module.exports = {

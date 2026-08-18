@@ -51,14 +51,14 @@ function stopCooldownCleaner() {
 
 let backupInterval = null;
 
-function startDailyBackupChecker(db, bot = null) {
+function startDailyBackupChecker(bot = null) {
     if (backupInterval) clearInterval(backupInterval);
     backupInterval = setInterval(async () => {
         try {
             const now = new Date();
             if (now.getHours() === 0 && now.getMinutes() === 0) {
                 console.log('[SCHEDULER] Запуск ежедневного автобэкапа БД...');
-                await createDbBackup(db);
+                await createDbBackup();
                 if (bot) {
                     const moderatorId = process.env.MODERATOR_ID;
                     if (moderatorId) {
@@ -69,7 +69,7 @@ function startDailyBackupChecker(db, bot = null) {
         } catch (err) {
             console.error('[SCHEDULER] Ошибка автобэкапа:', err);
         }
-    }, 60 * 60 * 1000); // проверяем каждый час
+    }, 60 * 60 * 1000);
 }
 
 function stopDailyBackupChecker() {
@@ -85,10 +85,9 @@ let isPromotionCleanRunning = false;
 /**
  * Запускает ежедневную очистку акций в заданное время.
  * @param {Object} ozon - модуль ozon
- * @param {Object} db - модуль базы данных (не используется, но оставлен для единообразия)
  * @param {Object} bot - экземпляр бота для уведомлений
  */
-function startDailyPromotionCleaner(ozon, db = null, bot = null) {
+function startDailyPromotionCleaner(ozon, bot = null) {
     if (promotionCleanInterval) {
         clearInterval(promotionCleanInterval);
         promotionCleanInterval = null;

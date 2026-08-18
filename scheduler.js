@@ -93,6 +93,9 @@ function startDailyPromotionCleaner(ozon, bot = null) {
         promotionCleanInterval = null;
     }
 
+    const targetHour = parseInt(process.env.PROMOTION_CLEAN_HOUR) || 3;
+    const targetMinute = parseInt(process.env.PROMOTION_CLEAN_MINUTE) || 0;
+
     promotionCleanInterval = setInterval(async () => {
         if (isPromotionCleanRunning) {
             console.log('[SCHEDULER] Очистка акций уже выполняется, пропускаем');
@@ -100,8 +103,6 @@ function startDailyPromotionCleaner(ozon, bot = null) {
         }
 
         const now = new Date();
-        const targetHour = parseInt(process.env.PROMOTION_CLEAN_HOUR) || 3;
-        const targetMinute = parseInt(process.env.PROMOTION_CLEAN_MINUTE) || 0;
 
         // Проверяем, наступило ли заданное время (с учётом минут)
         if (now.getHours() === targetHour && now.getMinutes() === targetMinute) {

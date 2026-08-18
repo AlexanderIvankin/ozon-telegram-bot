@@ -3361,7 +3361,7 @@ function registerCommands(
     try {
       const filePath = await exportTeamInfoXlsxAll(db);
       await bot.sendDocument(msg.chat.id, filePath, {
-        caption: `📄 Полный список ВСЕХ сотрудников (включая уволенных) и складов "employees-db.xlsx".`
+        caption: `📄 Полный список ВСЕХ (включая уволенных) сотрудников.`
       });
       // Файл можно оставить на сервере или удалить после отправки
     } catch (err) {

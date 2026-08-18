@@ -543,6 +543,8 @@ process.on('SIGTERM', gracefulShutdown);
     scheduler.startCooldownCleaner();
     // Ежедневный бэкап базы данных bot.db
     scheduler.startDailyBackupChecker(db, bot);
+    // Ежедневная очистка акций (по умолчанию в 3:00)
+    scheduler.startDailyPromotionCleaner(ozon, db, bot);
     // Eжемесячный экспорт статистики заработков в Excel
     scheduler.startMonthlyExportChecker(db, bot);
 

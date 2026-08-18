@@ -79,6 +79,87 @@ function stopDailyBackupChecker() {
     }
 }
 
+let promotionCleanInterval = null;
+let isPromotionCleanRunning = false;
+
+/**
+ * Запускает ежедневную очистку акций в заданное время.
+ * @param {Object} ozon - модуль ozon
+ * @param {Object} db - модуль базы данных (не используется, но оставлен для единообразия)
+ * @param {Object} bot - экземпляр бота для уведомлений
+ */
+function startDailyPromotionCleaner(ozon, db = null, bot = null) {
+    if (promotionCleanInterval) {
+        clearInterval(promotionCleanInterval);
+        promotionCleanInterval = null;
+    }
+
+    promotionCleanInterval = setInterval(async () => {
+        if (isPromotionCleanRunning) {
+            console.log('[SCHEDULER] Очистка акций уже выполняется, пропускаем');
+            return;
+        }
+
+        const now = new Date();
+        const targetHour = parseInt(process.env.PROMOTION_CLEAN_HOUR) || 3;
+        const targetMinute = parseInt(process.env.PROMOTION_CLEAN_MINUTE) || 0;
+
+        // Проверяем, наступило ли заданное время (с учётом минут)
+        if (now.getHours() === targetHour && now.getMinutes() === targetMinute) {
+            isPromotionCleanRunning = true;
+            try {
+                console.log('[SCHEDULER] Запуск ежедневной очистки акций...');
+                const progressCallback = async (text) => {
+                    console.log(`[PROMOTION_CLEAN] ${text}`);
+                    if (bot) {
+                        const moderatorId = process.env.MODERATOR_ID;
+                        if (moderatorId) {
+                            try {
+                                await bot.sendMessage(moderatorId, `🧹 ${text}`);
+                            } catch (e) { /* игнорируем ошибки отправки */ }
+                        }
+                    }
+                };
+
+                const result = await ozon.removeAllPromotions(progressCallback);
+                console.log(`[SCHEDULER] Очистка акций завершена: ${result.actionsProcessed} акций, ${result.totalProductsRemoved} товаров`);
+
+                if (bot) {
+                    const moderatorId = process.env.MODERATOR_ID;
+                    if (moderatorId) {
+                        await bot.sendMessage(
+                            moderatorId,
+                            `✅ Ежедневная очистка акций завершена.\nОбработано акций: ${result.actionsProcessed}\nУдалено товаров: ${result.totalProductsRemoved}`
+                        );
+                    }
+                }
+            } catch (err) {
+                console.error('[SCHEDULER] Ошибка ежедневной очистки акций:', err);
+                if (bot) {
+                    const moderatorId = process.env.MODERATOR_ID;
+                    if (moderatorId) {
+                        try {
+                            await bot.sendMessage(moderatorId, `❌ Ошибка очистки акций: ${err.message}`);
+                        } catch (e) { /* игнорируем */ }
+                    }
+                }
+            } finally {
+                isPromotionCleanRunning = false;
+            }
+        }
+    }, 60 * 1000); // проверяем каждую минуту
+
+    console.log(`[SCHEDULER] Ежедневная очистка акций запланирована на ${targetHour}:${String(targetMinute).padStart(2, '0')}`);
+}
+
+function stopDailyPromotionCleaner() {
+    if (promotionCleanInterval) {
+        clearInterval(promotionCleanInterval);
+        promotionCleanInterval = null;
+    }
+    isPromotionCleanRunning = false;
+}
+
 let monthlyExportInterval = null;
 
 function startMonthlyExportChecker(db, bot = null) {
@@ -122,6 +203,8 @@ module.exports = {
     stopCooldownCleaner,
     startDailyBackupChecker,
     stopDailyBackupChecker,
+    startDailyPromotionCleaner,
+    stopDailyPromotionCleaner,
     startMonthlyExportChecker,
     stopMonthlyExportChecker,
 };

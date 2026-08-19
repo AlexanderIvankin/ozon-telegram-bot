@@ -1,6 +1,31 @@
 const { exportMonthlyEarnings, cleanCooldowns } = require('./commands');
 const { createDbBackup } = require('./db');
+require('dotenv').config();
 const debugMode = require('./debugMode');
+
+function getLocalDateTime() {
+    const timezone = process.env.TIMEZONE || 'Europe/Moscow';
+    const now = new Date();
+    const parts = new Intl.DateTimeFormat('en-US', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+        timeZone: timezone
+    }).formatToParts(now);
+    const getPart = (type) => parseInt(parts.find(p => p.type === type)?.value || '0');
+    return {
+        year: getPart('year'),
+        month: getPart('month'),
+        day: getPart('day'),
+        hours: getPart('hour'),
+        minutes: getPart('minute'),
+        seconds: getPart('second')
+    };
+}
 
 let checkInterval = null;
 let isPaused = false;
@@ -55,8 +80,8 @@ function startDailyBackupChecker(bot = null) {
     if (backupInterval) clearInterval(backupInterval);
     backupInterval = setInterval(async () => {
         try {
-            const now = new Date();
-            if (now.getHours() === 0 && now.getMinutes() === 0) {
+            const local = getLocalDateTime();
+            if (local.hours === 0 && local.minutes === 0) {
                 console.log('[SCHEDULER] Запуск ежедневного автобэкапа БД...');
                 await createDbBackup();
                 if (bot) {
@@ -102,10 +127,10 @@ function startDailyPromotionCleaner(ozon, bot = null) {
             return;
         }
 
-        const now = new Date();
+        const local = getLocalDateTime();
 
         // Проверяем, наступило ли заданное время (с учётом минут)
-        if (now.getHours() === targetHour && now.getMinutes() === targetMinute) {
+        if (local.hours === targetHour && local.minutes === targetMinute) {
             isPromotionCleanRunning = true;
             try {
                 console.log('[SCHEDULER] Запуск ежедневной очистки акций...');
@@ -166,10 +191,12 @@ function startMonthlyExportChecker(db, bot = null) {
     if (monthlyExportInterval) clearInterval(monthlyExportInterval);
     monthlyExportInterval = setInterval(async () => {
         try {
-            const now = new Date();
-            const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-            if (now.getDate() === lastDay && now.getHours() >= 23 && now.getMinutes() < 60) {
-                const prevMonth = new Date(now.getFullYear(), now.getMonth() - 1);
+            const local = getLocalDateTime();
+            // Определяем последний день месяца
+            const lastDay = new Date(local.year, local.month, 0).getDate(); // month у нас 1-12, поэтому month (без -1)
+            if (local.day === lastDay && local.hours >= 23 && local.minutes < 60) {
+                // Формируем месяц в формате YYYY-MM (предыдущий месяц)
+                const prevMonth = new Date(local.year, local.month - 1, 1);
                 const monthStr = `${prevMonth.getFullYear()}-${String(prevMonth.getMonth() + 1).padStart(2, '0')}`;
                 console.log(`[SCHEDULER] Запуск автоматического экспорта за ${monthStr}`);
                 await exportMonthlyEarnings(db, monthStr);

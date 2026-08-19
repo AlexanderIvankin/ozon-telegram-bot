@@ -247,7 +247,7 @@ async function getOrderDetails(orderId) {
         if (response.data.result && response.data.result.products) {
             for (const p of response.data.result.products) {
                 if (!p.product_id && p.product_id !== 0) {
-                    console.warn(`[WARN] В товаре отсутствует product_id:`, p);
+                    if (debugMode.isDebugMode()) console.warn(`[WARN] В товаре отсутствует product_id:`, p);
                 }
             }
         }
@@ -414,6 +414,7 @@ async function confirmPostingShip(postingNumber) {
 
     const details = await getOrderDetails(postingNumber);
     if (!details) throw new Error('Нет деталей заказа');
+
     if (details.status !== 'awaiting_packaging') {
         throw new Error(`Заказ не в статусе awaiting_packaging (текущий: ${details.status})`);
     }

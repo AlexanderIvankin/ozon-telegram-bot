@@ -4125,11 +4125,11 @@ function registerCommands(
     let reply = `🏦 <b>Ваш активный заработок (с последнего расчёта)</b>\n\n`;
     reply += `• Базовый заработок: ${escapeHtml(totalBase.toFixed(2))} руб.\n`;
     reply += `• Заказов: ${escapeHtml(orderCount)}\n`;
+    reply += `• Средний заработок за заказ: ${escapeHtml((totalBase / orderCount).toFixed(2))} руб.\n`;
     if (adjustments !== 0) {
       reply += `• Корректировки: ${escapeHtml(adjustments > 0 ? '+' : '')}${escapeHtml(adjustments.toFixed(2))} руб.\n`;
     }
-//    reply += `• Средний заработок за заказ: ${escapeHtml((totalWithAdjustments / orderCount).toFixed(2))} руб.\n`;
-    reply += `• Средний заработок за заказ: ${escapeHtml((totalBase / orderCount).toFixed(2))} руб.\n`;
+    //    reply += `• Средний заработок за заказ: ${escapeHtml((totalWithAdjustments / orderCount).toFixed(2))} руб.\n`;
     reply += `• <b>Итого: ${escapeHtml(totalWithAdjustments.toFixed(2))} руб.</b>\n`;
 
     await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'HTML' });

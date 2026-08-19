@@ -1,4 +1,5 @@
 require('dotenv').config();
+const { getLocalTimestamp } = require('./utils');
 
 // ============================================================
 //  ДОБАВЛЕНИЕ ВРЕМЕННЫХ МЕТОК КО ВСЕМ ЛОГАМ
@@ -9,7 +10,7 @@ const originalWarn = console.warn;
 
 function withTimestamp(originalFn) {
     return function (...args) {
-        const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
+        const timestamp = getLocalTimestamp();
         originalFn(`[${timestamp}]`, ...args);
     };
 }

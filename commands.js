@@ -6,7 +6,7 @@ const bwipjs = require('bwip-js');
 const { PDFDocument } = require('pdf-lib');
 const { syncEmployeesFromExcel, exportTeamInfoXlsx, exportTeamInfoXlsxAll } = require('./syncEmployees');
 const { getAdminCommandsOnly, getAdminStartMessage, getEmployeeCommandsOnly, getEmployeeStartMessage, getUnauthorizedMessage } = require('./helpText');
-const { escapeHtml } = require('./utils');
+const { escapeHtml, formatLocalTimestamp, formatDateDDMMYYYY } = require('./utils');
 const { finishingOrders, pendingFinishConfirmations } = require('./state');
 
 // Локальные хранилища для состояний
@@ -33,49 +33,6 @@ const TOGGLE_ORDERS_COOLDOWN_MS = 60 * 1000; // 1 минута
 
 let MIN_EARNINGS = 250; // значение по умолчанию, перезаписывается при загрузке
 
-const TIMEZONE = process.env.TIMEZONE || 'Europe/Moscow'; // можно переопределить через .env
-
-/**
- * Форматирует дату для имени файла: YYYY-MM-DD_HH-MM-SS в указанном часовом поясе
- */
-function formatLocalTimestamp(date = new Date()) {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-    timeZone: TIMEZONE
-  }).formatToParts(date);
-
-  const getPart = (type) => parts.find(p => p.type === type)?.value || '00';
-  const year = getPart('year');
-  const month = getPart('month');
-  const day = getPart('day');
-  const hour = getPart('hour');
-  const minute = getPart('minute');
-  const second = getPart('second');
-  return `${year}-${month}-${day}_${hour}-${minute}-${second}`;
-}
-
-/**
- * Форматирует timestamp (число мс) в DD.MM.YYYY в указанном часовом поясе
- */
-function formatDateDDMMYYYY(timestamp) {
-  const date = new Date(timestamp);
-  const parts = new Intl.DateTimeFormat('ru-RU', {
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-    timeZone: TIMEZONE
-  }).formatToParts(date);
-  const day = parts.find(p => p.type === 'day')?.value || '??';
-  const month = parts.find(p => p.type === 'month')?.value || '??';
-  const year = parts.find(p => p.type === 'year')?.value || '????';
-  return `${day}.${month}.${year}`;
-}
 
 // Функция для склейки PDF файлов
 async function mergePdfs(pdfBuffers) {

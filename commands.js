@@ -4128,7 +4128,7 @@ function registerCommands(
     if (adjustments !== 0) {
       reply += `• Корректировки: ${escapeHtml(adjustments > 0 ? '+' : '')}${escapeHtml(adjustments.toFixed(2))} руб.\n`;
     }
-    reply += `• Средний заработок за заказ: ${escapeHtml((totalWithAdjustments / orderCount).toFixed(2))} руб.\n`;
+//    reply += `• Средний заработок за заказ: ${escapeHtml((totalWithAdjustments / orderCount).toFixed(2))} руб.\n`;
     reply += `• <b>Итого: ${escapeHtml(totalWithAdjustments.toFixed(2))} руб.</b>\n`;
 
     await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'HTML' });

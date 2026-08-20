@@ -17,12 +17,12 @@ async function syncEmployeesFromExcel(db) {
         return;
     }
 
-    // --- Динамическое определение колонок складов, начиная с G (индекс 6) ---
+    // --- Динамическое определение колонок складов, начиная с H (индекс 7) ---
     const warehouseHeaderRow = rows[1];
     const warehouseColumns = [];
 
-    // Идём от индекса 6 до конца строки заголовков
-    for (let col = 6; col < warehouseHeaderRow.length; col++) {
+    // Идём от индекса 7 (колонка H) до конца строки заголовков
+    for (let col = 7; col < warehouseHeaderRow.length; col++) {
         const cellValue = warehouseHeaderRow[col];
         if (cellValue && typeof cellValue === 'string') {
             const match = cellValue.match(/ID:\s*(\d+)/i);
@@ -35,7 +35,6 @@ async function syncEmployeesFromExcel(db) {
         }
     }
 
-    // Если колонки не найдены, используем пустой массив (никаких складов)
     if (!warehouseColumns.length) {
         console.warn('[SYNC] Не найдено ни одной колонки с ID склада в заголовках');
     }
@@ -46,20 +45,21 @@ async function syncEmployeesFromExcel(db) {
     const employeesData = [];
     for (let i = 2; i < rows.length; i++) {
         const row = rows[i];
-        if (!row || row.length < 5) continue; // как минимум A-E
+        if (!row || row.length < 6) continue; // как минимум A-F (name, email, tg, phone, capacity, factor)
 
         let name = row[0] ? String(row[0]).trim() : '';
         if (!name) continue;
 
-        let tgUserId = row[1] ? String(row[1]).trim() : '';
+        let email = row[1] ? String(row[1]).trim() : ''; // новый столбец
+
+        let tgUserId = row[2] ? String(row[2]).trim() : '';
         if (!tgUserId) continue;
 
-        let phone = row[2] ? String(row[2]).trim() : '';
-        let capacity = row[3] ? parseInt(row[3]) : 1;
+        let phone = row[3] ? String(row[3]).trim() : '';
+        let capacity = row[4] ? parseInt(row[4]) : 1;
         if (isNaN(capacity)) capacity = 1;
 
-        // Столбец E: коэффициент заработка (по умолчанию 1.0)
-        let earningsFactor = parseFloat(String(row[4]).replace(',', '.'));
+        let earningsFactor = parseFloat(String(row[5]).replace(',', '.'));
         if (isNaN(earningsFactor) || earningsFactor <= 0) earningsFactor = 1.0;
 
         // Собираем склады сотрудника по динамическим колонкам
@@ -75,6 +75,7 @@ async function syncEmployeesFromExcel(db) {
         employeesData.push({
             tgUserId,
             name,
+            email,
             phone,
             capacity,
             earningsFactor,
@@ -92,30 +93,28 @@ async function syncEmployeesFromExcel(db) {
         const currentMap = new Map(currentEmployees.map(emp => [emp.tg_user_id, emp.id]));
 
         for (const emp of employeesData) {
-            // Проверяем, есть ли запись с таким tg_user_id (включая уволенных)
             const existing = await dbConn.get('SELECT id FROM employees WHERE tg_user_id = ?', emp.tgUserId);
             if (existing) {
                 // Обновляем существующую запись (восстанавливаем)
                 await dbConn.run(
-                    `UPDATE employees SET name = ?, capacity = ?, earnings_factor = ?, phone = ?, is_fired = 0 WHERE id = ?`,
-                    emp.name, emp.capacity, emp.earningsFactor, emp.phone, existing.id
+                    `UPDATE employees SET name = ?, email = ?, capacity = ?, earnings_factor = ?, phone = ?, is_fired = 0 WHERE id = ?`,
+                    emp.name, emp.email, emp.capacity, emp.earningsFactor, emp.phone, existing.id
                 );
             } else {
                 // Вставляем нового
                 await dbConn.run(
-                    `INSERT INTO employees (tg_user_id, name, capacity, earnings_factor, phone, is_fired) VALUES (?, ?, ?, ?, ?, 0)`,
-                    emp.tgUserId, emp.name, emp.capacity, emp.earningsFactor, emp.phone
+                    `INSERT INTO employees (tg_user_id, name, email, capacity, earnings_factor, phone, is_fired)
+                     VALUES (?, ?, ?, ?, ?, ?, 0)`,
+                    emp.tgUserId, emp.name, emp.email, emp.capacity, emp.earningsFactor, emp.phone
                 );
             }
         }
 
-        // Удаляем сотрудников, которых нет в файле (теперь помечаем уволенными)
+        // Помечаем уволенными тех, кого нет в файле
         const newTgIds = new Set(employeesData.map(e => e.tgUserId));
         for (const [tgId, empId] of currentMap.entries()) {
             if (!newTgIds.has(tgId)) {
-                // Помечаем как уволенного вместо удаления
                 await dbConn.run('UPDATE employees SET is_fired = 1 WHERE id = ?', empId);
-                // Также нужно снять все активные назначения (если они есть)
                 await dbConn.run('DELETE FROM assignments WHERE employee_id = ? AND status = "assigned"', empId);
             }
         }
@@ -156,7 +155,7 @@ async function exportTeamInfoXlsx(db, includeFired = false, outputFileName = 'te
     // 1. Получаем список сотрудников (только активных или включая уволенных)
     const firedCondition = includeFired ? '' : 'WHERE is_fired = 0';
     const employees = await dbConn.all(`
-        SELECT id, tg_user_id, name, phone, capacity, earnings_factor, is_fired
+        SELECT id, tg_user_id, name, email, phone, capacity, earnings_factor, is_fired
         FROM employees
         ${firedCondition}
         ORDER BY id
@@ -178,34 +177,29 @@ async function exportTeamInfoXlsx(db, includeFired = false, outputFileName = 'te
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('Сотрудники');
 
-    // 5. Формируем заголовки
-    // Первая строка: "Сотрудник", "Telegram ID", "Телефон", "Число принтеров", "Коэффициент Заработка", "" (пусто), "Склады" (слияние)
-    const headerRow1 = ['Сотрудник', 'Telegram ID', 'Телефон', 'Число принтеров', 'Коэффициент Заработка', ''];
-    // Вторая строка: заголовки складов (ID склада или имя)
-    const headerRow2 = ['', '', '', '', '', '']; // пустые под первые 6 колонок
+    // 5. Заголовки (новая структура: Сотрудник, E-mail, Telegram ID, Телефон, Число принтеров, Коэффициент Заработка, Разделитель, Склады)
+    const headerRow1 = ['Сотрудник', 'E-mail', 'Telegram ID', 'Телефон', 'Число принтеров', 'Коэффициент Заработка', ''];
+    const headerRow2 = ['', '', '', '', '', '', '']; // пустые под первые 7 колонок
 
     // Добавляем названия складов во вторую строку
     for (const wh of warehouses) {
-        headerRow1.push(''); // первая строка – пусто, слияние будет позже
+        headerRow1.push('');
         headerRow2.push(`${wh.name} (ID: ${wh.warehouse_id})`);
     }
 
-    // Добавляем первую строку
+    // Добавляем строки
     const row1 = worksheet.addRow(headerRow1);
-    // Добавляем вторую строку
     const row2 = worksheet.addRow(headerRow2);
 
-    // 6. Слияние для "Склады" в первой строке
+    // 6. Слияние для "Склады" в первой строке (начинается с 8-й колонки, индекс 7)
     if (warehouseIds.length > 0) {
-        // Первая строка, столбец G (индекс 6) и до конца
-        const startCol = 7; // G
-        const endCol = 6 + warehouseIds.length; // последний столбец складов
-        worksheet.mergeCells(`G1:${String.fromCharCode(64 + endCol)}1`);
-        // Записываем текст в объединённую ячейку
+        const startCol = 8; // H
+        const endCol = 7 + warehouseIds.length; // последний столбец складов
+        worksheet.mergeCells(`${String.fromCharCode(64 + startCol)}1:${String.fromCharCode(64 + endCol)}1`);
         row1.getCell(startCol).value = 'Склады';
     }
 
-    // 7. Стили для строк заголовков (1 и 2)
+    // 7. Стили для строк заголовков
     [row1, row2].forEach(row => {
         row.eachCell((cell) => {
             cell.alignment = { horizontal: 'center', vertical: 'middle' };
@@ -215,19 +209,19 @@ async function exportTeamInfoXlsx(db, includeFired = false, outputFileName = 'te
 
     // 8. Ширина столбцов
     const colWidths = [
-        40, // A
-        15, // B
-        15, // C
-        20, // D
-        25, // E
-        10, // F
+        45, // A - Сотрудник
+        45, // B - E-mail
+        30, // C - Telegram ID
+        30, // D - Телефон
+        30, // E - Число принтеров
+        30, // F - Коэффициент Заработка
+        15, // G - разделитель
     ];
-    // Для складов – 40
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < colWidths.length; i++) {
         worksheet.getColumn(i + 1).width = colWidths[i];
     }
     for (let i = 0; i < warehouseIds.length; i++) {
-        worksheet.getColumn(7 + i).width = 40;
+        worksheet.getColumn(8 + i).width = 75; // склады
     }
 
     // 9. Данные сотрудников (начиная с 3-й строки)
@@ -236,6 +230,7 @@ async function exportTeamInfoXlsx(db, includeFired = false, outputFileName = 'te
         const earningsFactor = parseFloat(emp.earnings_factor) || 1.0;
         const rowData = [
             emp.name,
+            emp.email || '',
             String(emp.tg_user_id),
             emp.phone || '',
             emp.capacity,
@@ -247,21 +242,20 @@ async function exportTeamInfoXlsx(db, includeFired = false, outputFileName = 'te
             rowData.push(whSet.has(whId) ? '+' : '');
         }
         const dataRow = worksheet.addRow(rowData);
-        // Выравнивание по центру для всех ячеек данных и установка форматов
         dataRow.eachCell((cell, colNumber) => {
             cell.alignment = { horizontal: 'center', vertical: 'middle' };
-            // Колонка B (индекс 2) – Telegram ID – текстовый формат
-            if (colNumber === 2) {
+            // Колонка C (индекс 3) – Telegram ID – текстовый формат
+            if (colNumber === 3) {
                 cell.numFmt = '@';
                 cell.value = String(cell.value);
             }
-            // Колонка C (индекс 3) – Телефон – текстовый формат
-            else if (colNumber === 3) {
+            // Колонка D (индекс 4) – Телефон – текстовый формат
+            else if (colNumber === 4) {
                 cell.numFmt = '@';
                 cell.value = String(cell.value);
             }
-            // Колонка E (индекс 5) – Коэффициент заработка – числовой формат с двумя знаками
-            else if (colNumber === 5) {
+            // Колонка F (индекс 6) – Коэффициент заработка – числовой формат с двумя знаками
+            else if (colNumber === 6) {
                 cell.numFmt = '0.00';
                 if (typeof cell.value !== 'number') {
                     cell.value = parseFloat(String(cell.value).replace(',', '.')) || 0;

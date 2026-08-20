@@ -24,11 +24,17 @@ async function initDB() {
 
     // Проверяем наличие всех необходимых колонок (phone, is_fired, earnings_factor, capacity, taking_orders)
     const tableInfo = await database.all("PRAGMA table_info(employees)");
+    const hasEmail = tableInfo.some(col => col.name === 'email');
     const hasPhone = tableInfo.some(col => col.name === 'phone');
     const hasIsFired = tableInfo.some(col => col.name === 'is_fired');
     const hasEarningsFactor = tableInfo.some(col => col.name === 'earnings_factor');
     const hasCapacity = tableInfo.some(col => col.name === 'capacity');
     const hasTakingOrders = tableInfo.some(col => col.name === 'taking_orders');
+
+    if (!hasEmail) {
+        await database.run('ALTER TABLE employees ADD COLUMN email TEXT');
+        console.log('[DB] Добавлена колонка email в employees');
+    }
 
     if (!hasPhone) {
         await database.run('ALTER TABLE employees ADD COLUMN phone TEXT');

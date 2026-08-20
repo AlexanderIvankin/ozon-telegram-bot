@@ -2018,24 +2018,49 @@ function registerCommands(
     if (isModerator(userId) && typeof updateModeratorActivity === 'function') {
       updateModeratorActivity();
     }
+
     const assignments = await db.db.all(`
-            SELECT a.order_id, e.name as employee_name 
-            FROM assignments a 
-            JOIN employees e ON a.employee_id = e.id 
-            WHERE a.status = 'assigned'
-        `);
-    if (!assignments.length) return bot.sendMessage(msg.chat.id, 'Нет активных заказов.');
-    let reply = 'Активные заказы:\n';
-    for (const a of assignments) reply += `• Заказ ${a.order_id} — ${a.employee_name}\n`;
-    await bot.sendMessage(msg.chat.id, reply);
+        SELECT a.order_id, e.name as employee_name
+        FROM assignments a
+        JOIN employees e ON a.employee_id = e.id
+        WHERE a.status = 'assigned'
+    `);
+
+    if (!assignments.length) {
+      return bot.sendMessage(msg.chat.id, 'Нет активных заказов.');
+    }
+
+    // Разбиваем по 50 заказов
+    const CHUNK_SIZE = 50;
+    let totalChunks = Math.ceil(assignments.length / CHUNK_SIZE);
+
+    for (let i = 0; i < assignments.length; i += CHUNK_SIZE) {
+      const chunk = assignments.slice(i, i + CHUNK_SIZE);
+      let reply = '';
+
+      if (i === 0) {
+        reply = `📋 Активные заказы\nВсего: ${assignments.length} заказ(ов)\nЧасть 1 из ${totalChunks}\n\n`;
+      } else {
+        reply = `📋 Активные заказы (часть ${Math.floor(i / CHUNK_SIZE) + 1} из ${totalChunks})\n\n`;
+      }
+
+      for (const a of chunk) {
+        reply += `• Заказ ${a.order_id} — ${a.employee_name}\n`;
+      }
+
+      await bot.sendMessage(msg.chat.id, reply);
+
+      if (i + CHUNK_SIZE < assignments.length) {
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+    }
   });
 
   // --- "/warehouses" Команда для администратора: показать список всех складов ---
   bot.onText(/\/warehouses/, async (msg) => {
     const userId = msg.from.id.toString();
     if (!isAdmin(userId)) {
-      await bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
-      return;
+      return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
     }
     if (isModerator(userId) && typeof updateModeratorActivity === 'function') {
       updateModeratorActivity();
@@ -2045,11 +2070,33 @@ function registerCommands(
     if (!warehouses.length) {
       return bot.sendMessage(msg.chat.id, 'Склады не найдены. Возможно, не удалось выполнить синхронизацию.');
     }
-    let reply = '📦 Список складов (из Ozon):\n';
-    for (const wh of warehouses) {
-      reply += `\n• ${wh.name} (ID: ${wh.warehouse_id})\n   📍 ${wh.address || 'адрес не указан'}\n   Тип: ${wh.is_rfbs ? 'realFBS' : 'FBS'}\n`;
+
+    // Разбиваем по 15 складов
+    const CHUNK_SIZE = 15;
+    let totalChunks = Math.ceil(warehouses.length / CHUNK_SIZE);
+
+    for (let i = 0; i < warehouses.length; i += CHUNK_SIZE) {
+      const chunk = warehouses.slice(i, i + CHUNK_SIZE);
+      let reply = '';
+
+      if (i === 0) {
+        reply = `📦 Список складов (из Ozon)\nВсего: ${warehouses.length} складов\nЧасть 1 из ${totalChunks}\n\n`;
+      } else {
+        reply = `📦 Склады (часть ${Math.floor(i / CHUNK_SIZE) + 1} из ${totalChunks})\n\n`;
+      }
+
+      for (const wh of chunk) {
+        reply += `• ${wh.name} (ID: ${wh.warehouse_id})\n`;
+        reply += `   📍 ${wh.address || 'адрес не указан'}\n`;
+        reply += `   Тип: ${wh.is_rfbs ? 'realFBS' : 'FBS'}\n\n`;
+      }
+
+      await bot.sendMessage(msg.chat.id, reply);
+
+      if (i + CHUNK_SIZE < warehouses.length) {
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
     }
-    await bot.sendMessage(msg.chat.id, reply);
   });
 
   // --- "/employee_warehouses" Команда для администратора: показать склады, где числится сотрудник ---
@@ -2763,7 +2810,7 @@ function registerCommands(
   bot.onText(/\/orders(?:\s+(\d+))?/, async (msg, match) => {
     const userId = msg.from.id.toString();
     if (!isAdmin(userId)) {
-      return bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
+      return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
     }
     if (isModerator(userId) && typeof updateModeratorActivity === 'function') {
       updateModeratorActivity();
@@ -2781,48 +2828,65 @@ function registerCommands(
         );
       }
 
-      let warehouseName = null;
-      if (warehouseId) {
-        warehouseName = await db.getWarehouseNameById(warehouseId);
-      }
+      // Разбиваем по 25 заказов
+      const CHUNK_SIZE = 25;
+      let totalChunks = Math.ceil(orders.length / CHUNK_SIZE);
 
-      let reply = '📋 Список заказов (awaiting_packaging)';
-      if (warehouseName && warehouseName !== warehouseId) {
-        reply += ` для склада «${warehouseName}»`;
-      } else if (warehouseId) {
-        reply += ` для склада ID: ${warehouseId}`;
-      }
-      reply += `\nВсего: ${orders.length} заказ(ов)\n`;
-      reply += '──────────────────\n\n';
+      for (let i = 0; i < orders.length; i += CHUNK_SIZE) {
+        const chunk = orders.slice(i, i + CHUNK_SIZE);
+        let reply = '';
 
-      for (const order of orders) {
-        const orderNumber = order.posting_number;
-        const productsCount = order.products ? order.products.length : (order.products_count || '?');
-
-        let whId = order.warehouse_id || order.delivery_method?.warehouse_id || null;
-        let whDisplay = 'не указан';
-
-        if (whId) {
-          whId = String(whId); // ПРИВОДИМ К СТРОКЕ
-          const whName = await db.getWarehouseNameById(whId);
-          if (whName === whId) {
-            console.warn(`[ORDERS] Склад с ID ${whId} не найден в БД, проверьте синхронизацию складов.`);
-            whDisplay = `ID: ${whId}`;
-          } else {
-            whDisplay = `${whName} (ID: ${whId})`;
+        // Для первого чанка добавляем заголовок
+        if (i === 0) {
+          let warehouseName = null;
+          if (warehouseId) {
+            warehouseName = await db.getWarehouseNameById(warehouseId);
           }
+          reply = '📋 Список заказов (awaiting_packaging)';
+          if (warehouseName && warehouseName !== warehouseId) {
+            reply += ` для склада «${warehouseName}»`;
+          } else if (warehouseId) {
+            reply += ` для склада ID: ${warehouseId}`;
+          }
+          reply += `\nВсего: ${orders.length} заказ(ов)\n`;
+          reply += `Часть ${Math.floor(i / CHUNK_SIZE) + 1} из ${totalChunks}\n`;
+          reply += '──────────────────\n\n';
+        } else {
+          reply = `Часть ${Math.floor(i / CHUNK_SIZE) + 1} из ${totalChunks}\n\n`;
         }
 
-        reply += `• Заказ ${orderNumber}\n`;
-        reply += `  Товаров: ${productsCount}\n`;
-        reply += `  Склад: ${whDisplay}\n\n`;
+        for (const order of chunk) {
+          const orderNumber = order.posting_number;
+          const productsCount = order.products ? order.products.length : (order.products_count || '?');
+          let whId = order.warehouse_id || order.delivery_method?.warehouse_id || null;
+          let whDisplay = 'не указан';
+          if (whId) {
+            whId = String(whId);
+            const whName = await db.getWarehouseNameById(whId);
+            if (whName === whId) {
+              whDisplay = `ID: ${whId}`;
+            } else {
+              whDisplay = `${whName} (ID: ${whId})`;
+            }
+          }
+          reply += `• Заказ ${orderNumber}\n`;
+          reply += `  Товаров: ${productsCount}\n`;
+          reply += `  Склад: ${whDisplay}\n\n`;
+        }
+
+        if (i + CHUNK_SIZE >= orders.length) {
+          reply += '──────────────────\n';
+          reply += '📌 Для просмотра деталей заказа используйте:\n';
+          reply += '/order_details <posting_number>';
+        }
+
+        await bot.sendMessage(msg.chat.id, reply);
+
+        // Задержка между частями
+        if (i + CHUNK_SIZE < orders.length) {
+          await new Promise(resolve => setTimeout(resolve, 300));
+        }
       }
-
-      reply += '──────────────────\n';
-      reply += '📌 Для просмотра деталей заказа используйте:\n';
-      reply += '/order_details <posting_number>';
-
-      await bot.sendMessage(msg.chat.id, reply);
     } catch (err) {
       console.error('Ошибка в /orders:', err);
       bot.sendMessage(msg.chat.id, '❌ Ошибка при получении списка заказов. Проверьте логи.');

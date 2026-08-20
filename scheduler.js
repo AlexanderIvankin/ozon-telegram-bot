@@ -51,26 +51,58 @@ function stopCooldownCleaner() {
 }
 
 let backupInterval = null;
+let lastBackupDate = null;
 
 function startDailyBackupChecker(bot = null) {
-    if (backupInterval) clearInterval(backupInterval);
+    if (backupInterval) {
+        clearInterval(backupInterval);
+        backupInterval = null;
+    }
+
     backupInterval = setInterval(async () => {
         try {
             const localTime = getLocalTime();
-            if (localTime.hours === 0 && localTime.minutes === 0) {
-                console.log('[SCHEDULER] Запуск ежедневного автобэкапа БД...');
-                await createDbBackup();
-                if (bot) {
-                    const moderatorId = process.env.MODERATOR_ID;
-                    if (moderatorId) {
-                        await bot.sendMessage(moderatorId, '🗄️ Ежедневный бэкап БД создан.');
+
+            if (localTime.hours !== 0 || localTime.minutes !== 0) {
+                return;
+            }
+
+            const today = `${localTime.year}-${String(localTime.month).padStart(2, '0')}-${String(localTime.day).padStart(2, '0')}`;
+
+            // Защита от повторного запуска в течение одной минуты
+            if (lastBackupDate === today) {
+                return;
+            }
+
+            lastBackupDate = today;
+
+            console.log('[SCHEDULER] Запуск ежедневного автобэкапа БД...');
+
+            await createDbBackup();
+
+            if (bot) {
+                const moderatorId = process.env.MODERATOR_ID;
+
+                if (moderatorId) {
+                    try {
+                        await bot.sendMessage(
+                            moderatorId,
+                            '🗄️ Ежедневный бэкап БД создан.'
+                        );
+                    } catch (e) {
+                        console.error(
+                            '[SCHEDULER] Не удалось отправить уведомление о бэкапе:',
+                            e
+                        );
                     }
                 }
             }
         } catch (err) {
             console.error('[SCHEDULER] Ошибка автобэкапа:', err);
         }
-    }, 60 * 60 * 1000);
+    }, 60 * 1000);
+
+    console.log('[SCHEDULER] Ежедневный автобэкап запланирован на 00:00');
 }
 
 function stopDailyBackupChecker() {
@@ -162,31 +194,71 @@ function stopDailyPromotionCleaner() {
 }
 
 let monthlyExportInterval = null;
+let lastExportedMonth = null;
 
 function startMonthlyExportChecker(db, bot = null) {
-    if (monthlyExportInterval) clearInterval(monthlyExportInterval);
+    if (monthlyExportInterval) {
+        clearInterval(monthlyExportInterval);
+        monthlyExportInterval = null;
+    }
+
     monthlyExportInterval = setInterval(async () => {
         try {
-            const localDate = getLocalDate(); // Получаем полноценный Date объект
-            // Определяем последний день месяца
-            const lastDay = new Date(localDate.getFullYear(), localDate.getMonth() + 1, 0).getDate(); // month у нас 1-12, поэтому month (без -1)
-            if (lastDay.day === lastDay && lastDay.hours >= 23 && lastDay.minutes < 60) {
-                // Формируем месяц в формате YYYY-MM (предыдущий месяц)
-                const prevMonth = new Date(localDate.year, localDate.month - 1, 1);
-                const monthStr = `${prevMonth.getFullYear()}-${String(prevMonth.getMonth() + 1).padStart(2, '0')}`;
-                console.log(`[SCHEDULER] Запуск автоматического экспорта за ${monthStr}`);
-                await exportMonthlyEarnings(db, monthStr);
-                if (bot) {
-                    const moderatorId = process.env.MODERATOR_ID;
-                    if (moderatorId) {
-                        await bot.sendMessage(moderatorId, `📊 Автоматический экспорт за ${monthStr} выполнен.`);
-                    }
+            const localDate = getLocalDate();
+
+            // Запускаем экспорт в первый день нового месяца в 00:00
+            if (
+                localDate.getDate() !== 1 ||
+                localDate.getHours() !== 0 ||
+                localDate.getMinutes() !== 0
+            ) {
+                return;
+            }
+
+            // Формируем месяц для экспорта (предыдущий месяц)
+            const prevMonth = new Date(
+                localDate.getFullYear(),
+                localDate.getMonth() - 1,
+                1
+            );
+
+            const monthStr =
+                `${prevMonth.getFullYear()}-${String(prevMonth.getMonth() + 1).padStart(2, '0')}`;
+
+            // Защита от повторного запуска
+            if (lastExportedMonth === monthStr) {
+                return;
+            }
+
+            console.log(
+                `[SCHEDULER] Запуск автоматического экспорта за ${monthStr}`
+            );
+
+            await exportMonthlyEarnings(db, monthStr);
+
+            lastExportedMonth = monthStr;
+
+            if (bot) {
+                const moderatorId = process.env.MODERATOR_ID;
+
+                if (moderatorId) {
+                    await bot.sendMessage(
+                        moderatorId,
+                        `📊 Автоматический экспорт за ${monthStr} выполнен.`
+                    );
                 }
             }
         } catch (err) {
-            console.error('[SCHEDULER] Ошибка автоматического экспорта:', err);
+            console.error(
+                '[SCHEDULER] Ошибка автоматического экспорта:',
+                err
+            );
         }
-    }, 60 * 60 * 1000);
+    }, 60 * 1000);
+
+    console.log(
+        '[SCHEDULER] Ежемесячный экспорт запланирован на первый день месяца в 00:00'
+    );
 }
 
 function stopMonthlyExportChecker() {

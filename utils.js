@@ -90,7 +90,7 @@ function formatDateDDMMYYYY(timestamp) {
  */
 function getLocalDate() {
   const now = new Date();
-  // Формируем строку в локальном времени и парсим обратно в Date
+
   const formatter = new Intl.DateTimeFormat('en-US', {
     year: 'numeric',
     month: '2-digit',
@@ -101,14 +101,20 @@ function getLocalDate() {
     hour12: false,
     timeZone: TIMEZONE
   });
+
   const parts = formatter.formatToParts(now);
-  const getPart = (type) => parseInt(parts.find(p => p.type === type)?.value || '0');
+  const getPart = (type) => parseInt(
+    parts.find(p => p.type === type)?.value || '0',
+    10
+  );
+
   const year = getPart('year');
-  const month = getPart('month') - 1; // месяцы в JS 0-11
+  const month = getPart('month') - 1;
   const day = getPart('day');
   const hour = getPart('hour');
   const minute = getPart('minute');
   const second = getPart('second');
+
   return new Date(year, month, day, hour, minute, second);
 }
 

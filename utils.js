@@ -1,6 +1,46 @@
+const { PDFDocument } = require('pdf-lib');
 require('dotenv').config();
 
 const TIMEZONE = process.env.TIMEZONE || 'Europe/Moscow';
+
+// Функция для склейки PDF файлов
+async function mergePdfs(pdfBuffers) {
+  if (!pdfBuffers.length) return null;
+  const mergedPdf = await PDFDocument.create();
+  for (const buffer of pdfBuffers) {
+    try {
+      const pdf = await PDFDocument.load(buffer);
+      const indices = await mergedPdf.copyPages(pdf, pdf.getPageIndices());
+      for (const page of indices) {
+        mergedPdf.addPage(page);
+      }
+    } catch (err) {
+      console.error('Ошибка при объединении PDF:', err);
+      // Пропускаем битый PDF
+    }
+  }
+  return await mergedPdf.save();
+}
+
+// Функция для преобразования номера строки в букву
+function colToLetter(col) {
+  let letter = '';
+  while (col > 0) {
+    let rem = (col - 1) % 26;
+    letter = String.fromCharCode(65 + rem) + letter;
+    col = Math.floor((col - 1) / 26);
+  }
+  return letter;
+}
+
+// Функция для формирования вывода в HTML parse mode
+function escapeHtml(text) {
+  if (text === null || text === undefined) return '';
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
 
 /**
  * Форматирует дату для имени файла: YYYY-MM-DD_HH-MM-SS в указанном часовом поясе
@@ -94,20 +134,13 @@ function getLocalTimestamp() {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
-// Функция для формирования вывода в HTML parse mode
-function escapeHtml(text) {
-  if (text === null || text === undefined) return '';
-  return String(text)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
-
 module.exports = {
+  mergePdfs,
+  colToLetter,
+  escapeHtml,
   formatLocalTimestamp,
   formatDateDDMMYYYY,
   getLocalDate,
   getLocalTime,
   getLocalTimestamp,
-  escapeHtml,
 };

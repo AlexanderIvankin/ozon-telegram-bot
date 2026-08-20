@@ -1,6 +1,7 @@
 const XLSX = require('xlsx');
 const ExcelJS = require('exceljs');
 const path = require('path');
+const { colToLetter } = require('./utils');
 const debugMode = require('./debugMode');
 
 async function syncEmployeesFromExcel(db) {
@@ -195,7 +196,9 @@ async function exportTeamInfoXlsx(db, includeFired = false, outputFileName = 'te
     if (warehouseIds.length > 0) {
         const startCol = 8; // H
         const endCol = 7 + warehouseIds.length; // последний столбец складов
-        worksheet.mergeCells(`${String.fromCharCode(64 + startCol)}1:${String.fromCharCode(64 + endCol)}1`);
+        const startLetter = colToLetter(startCol);
+        const endLetter = colToLetter(endCol);
+        worksheet.mergeCells(`${startLetter}1:${endLetter}1`);
         row1.getCell(startCol).value = 'Склады';
     }
 

@@ -3,10 +3,9 @@ const path = require('path');
 const ExcelJS = require('exceljs');
 const axios = require('axios');
 const bwipjs = require('bwip-js');
-const { PDFDocument } = require('pdf-lib');
 const { syncEmployeesFromExcel, exportTeamInfoXlsx, exportTeamInfoXlsxAll } = require('./syncEmployees');
 const { getAdminCommandsOnly, getAdminStartMessage, getEmployeeCommandsOnly, getEmployeeStartMessage, getUnauthorizedMessage } = require('./helpText');
-const { escapeHtml, formatLocalTimestamp, formatDateDDMMYYYY } = require('./utils');
+const { mergePdfs, escapeHtml, formatLocalTimestamp, formatDateDDMMYYYY } = require('./utils');
 const { finishingOrders, pendingFinishConfirmations } = require('./state');
 
 // Локальные хранилища для состояний
@@ -32,26 +31,6 @@ let toggleOrdersCooldowns = new Map(); // userId -> timestamp последнег
 const TOGGLE_ORDERS_COOLDOWN_MS = 60 * 1000; // 1 минута
 
 let MIN_EARNINGS = 250; // значение по умолчанию, перезаписывается при загрузке
-
-
-// Функция для склейки PDF файлов
-async function mergePdfs(pdfBuffers) {
-  if (!pdfBuffers.length) return null;
-  const mergedPdf = await PDFDocument.create();
-  for (const buffer of pdfBuffers) {
-    try {
-      const pdf = await PDFDocument.load(buffer);
-      const indices = await mergedPdf.copyPages(pdf, pdf.getPageIndices());
-      for (const page of indices) {
-        mergedPdf.addPage(page);
-      }
-    } catch (err) {
-      console.error('Ошибка при объединении PDF:', err);
-      // Пропускаем битый PDF
-    }
-  }
-  return await mergedPdf.save();
-}
 
 /**
  * Экспорт заработка за месяц (исторический, без корректировок) в Excel.

@@ -2018,7 +2018,7 @@ function registerCommands(
       let reply = '';
 
       if (i === 0) {
-        reply = `📋 Активные заказы\nВсего: ${assignments.length} заказ(ов)\nЧасть 1 из ${totalChunks}\n\n`;
+        reply = `📋 Активные заказы\n\nВсего заказов: ${assignments.length}\n\nЧасть 1 из ${totalChunks}\n\n`;
       } else {
         reply = `📋 Активные заказы (часть ${Math.floor(i / CHUNK_SIZE) + 1} из ${totalChunks})\n\n`;
       }
@@ -2059,7 +2059,7 @@ function registerCommands(
       let reply = '';
 
       if (i === 0) {
-        reply = `📦 Список складов (из Ozon)\nВсего: ${warehouses.length} складов\nЧасть 1 из ${totalChunks}\n\n`;
+        reply = `📦 Список складов (из Ozon)\n\nВсего складов: ${warehouses.length}\n\nЧасть 1 из ${totalChunks}\n\n`;
       } else {
         reply = `📦 Склады (часть ${Math.floor(i / CHUNK_SIZE) + 1} из ${totalChunks})\n\n`;
       }
@@ -2827,8 +2827,8 @@ function registerCommands(
           } else if (warehouseId) {
             reply += ` для склада ID: ${warehouseId}`;
           }
-          reply += `\nВсего: ${orders.length} заказ(ов)\n`;
-          reply += `Часть ${Math.floor(i / CHUNK_SIZE) + 1} из ${totalChunks}\n`;
+          reply += `\n\nВсего заказов: ${orders.length}\n\n`;
+          reply += `Часть ${Math.floor(i / CHUNK_SIZE) + 1} из ${totalChunks}\n\n`;
           reply += '──────────────────\n\n';
         } else {
           reply = `Часть ${Math.floor(i / CHUNK_SIZE) + 1} из ${totalChunks}\n\n`;

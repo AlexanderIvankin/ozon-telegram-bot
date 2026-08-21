@@ -2009,25 +2009,28 @@ function registerCommands(
       return bot.sendMessage(msg.chat.id, 'Нет активных заказов.');
     }
 
+    let reply = '';
+    reply = `📋 <b>Активные заказы</b>\nВсего заказов: <b>${assignments.length}</b>\n\n`;
+
+    await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'HTML' });
+
+    await new Promise(resolve => setTimeout(resolve, 300));
+
     // Разбиваем по 50 заказов
     const CHUNK_SIZE = 50;
     let totalChunks = Math.ceil(assignments.length / CHUNK_SIZE);
 
     for (let i = 0; i < assignments.length; i += CHUNK_SIZE) {
       const chunk = assignments.slice(i, i + CHUNK_SIZE);
-      let reply = '';
+      reply = '';
 
-      if (i === 0) {
-        reply = `📋 Активные заказы\n\nВсего заказов: ${assignments.length}\n\nЧасть 1 из ${totalChunks}\n\n`;
-      } else {
-        reply = `📋 Активные заказы (часть ${Math.floor(i / CHUNK_SIZE) + 1} из ${totalChunks})\n\n`;
-      }
+      if (totalChunks > 1) reply = `📋 Активные заказы (часть <b>${Math.floor(i / CHUNK_SIZE) + 1}</b> из ${totalChunks})\n\n`;
 
       for (const a of chunk) {
-        reply += `• Заказ ${a.order_id} — ${a.employee_name}\n`;
+        reply += `• Заказ <code>${escapeHtml(a.order_id)}</code> — <b>${escapeHtml(a.employee_name)}</b>\n`;
       }
 
-      await bot.sendMessage(msg.chat.id, reply);
+      await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'HTML' });
 
       if (i + CHUNK_SIZE < assignments.length) {
         await new Promise(resolve => setTimeout(resolve, 300));
@@ -2050,27 +2053,31 @@ function registerCommands(
       return bot.sendMessage(msg.chat.id, 'Склады не найдены. Возможно, не удалось выполнить синхронизацию.');
     }
 
+    let reply = '';
+
+    reply = `📦 <b>Список складов (из Ozon)</b>\nВсего складов: <b>${warehouses.length}</b>\n\n`;
+
+    await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'HTML' });
+
+    await new Promise(resolve => setTimeout(resolve, 300));
+
     // Разбиваем по 15 складов
     const CHUNK_SIZE = 15;
     let totalChunks = Math.ceil(warehouses.length / CHUNK_SIZE);
 
     for (let i = 0; i < warehouses.length; i += CHUNK_SIZE) {
       const chunk = warehouses.slice(i, i + CHUNK_SIZE);
-      let reply = '';
+      reply = '';
 
-      if (i === 0) {
-        reply = `📦 Список складов (из Ozon)\n\nВсего складов: ${warehouses.length}\n\nЧасть 1 из ${totalChunks}\n\n`;
-      } else {
-        reply = `📦 Склады (часть ${Math.floor(i / CHUNK_SIZE) + 1} из ${totalChunks})\n\n`;
-      }
+      if (totalChunks > 1) reply = `📦 Склады (часть <b>${Math.floor(i / CHUNK_SIZE) + 1}</b> из ${totalChunks})\n\n`;
 
       for (const wh of chunk) {
-        reply += `• ${wh.name} (ID: ${wh.warehouse_id})\n`;
-        reply += `   📍 ${wh.address || 'адрес не указан'}\n`;
+        reply += `• <b>${escapeHtml(wh.name)}</b> (ID: <b>${wh.warehouse_id}</b>)\n`;
+        reply += `   📍 ${wh.address ? escapeHtml(wh.address) : 'адрес не указан'}\n`;
         reply += `   Тип: ${wh.is_rfbs ? 'realFBS' : 'FBS'}\n\n`;
       }
 
-      await bot.sendMessage(msg.chat.id, reply);
+      await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'HTML' });
 
       if (i + CHUNK_SIZE < warehouses.length) {
         await new Promise(resolve => setTimeout(resolve, 300));
@@ -2099,15 +2106,15 @@ function registerCommands(
         WHERE ew.employee_id = ?
     `, employeeId);
 
-    let reply = `📦 Склады сотрудника ${emp.name}:\n`;
+    let reply = `📦 Склады сотрудника <b>${escapeHtml(emp.name)}</b>:\n`;
     if (!warehouses.length) {
-      reply += 'Не числится ни на одном складе.';
+      reply += `<b>Не числится ни на одном складе.</b>`;
     } else {
       for (const wh of warehouses) {
-        reply += `\n• ${wh.name} (ID: ${wh.warehouse_id})\n   📍 ${wh.address || 'адрес не указан'}`;
+        reply += `\n• <b>${escapeHtml(wh.name)}</b> (ID: <b>${wh.warehouse_id}</b>)\n   📍 ${wh.address ? escapeHtml(wh.address) : 'адрес не указан'}`;
       }
     }
-    await bot.sendMessage(msg.chat.id, reply);
+    await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'HTML' });
   });
 
   // --- "/employee_orders" Команда для администратора: Просмотр активных заказов сотрудника ---
@@ -2807,65 +2814,66 @@ function registerCommands(
         );
       }
 
+      let reply = '';
+      let warehouseName = null;
+      if (warehouseId) {
+        warehouseName = await db.getWarehouseNameById(warehouseId);
+      }
+      reply = `📋 <b>Список заказов (awaiting_packaging)</b>`;
+      if (warehouseName && warehouseName !== warehouseId) {
+        reply += ` для склада «<b>${escapeHtml(warehouseName)}</b>»`;
+      } else if (warehouseId) {
+        reply += ` для склада ID: <b>${warehouseId}</b>`;
+      }
+      reply += `\nВсего заказов: <b>${orders.length}</b>\n\n`;
+
+      await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'HTML' });
+
+      await new Promise(resolve => setTimeout(resolve, 300));
+
       // Разбиваем по 25 заказов
       const CHUNK_SIZE = 25;
       let totalChunks = Math.ceil(orders.length / CHUNK_SIZE);
 
       for (let i = 0; i < orders.length; i += CHUNK_SIZE) {
         const chunk = orders.slice(i, i + CHUNK_SIZE);
-        let reply = '';
+        reply = '';
 
-        // Для первого чанка добавляем заголовок
-        if (i === 0) {
-          let warehouseName = null;
-          if (warehouseId) {
-            warehouseName = await db.getWarehouseNameById(warehouseId);
-          }
-          reply = '📋 Список заказов (awaiting_packaging)';
-          if (warehouseName && warehouseName !== warehouseId) {
-            reply += ` для склада «${warehouseName}»`;
-          } else if (warehouseId) {
-            reply += ` для склада ID: ${warehouseId}`;
-          }
-          reply += `\n\nВсего заказов: ${orders.length}\n\n`;
-          reply += `Часть ${Math.floor(i / CHUNK_SIZE) + 1} из ${totalChunks}\n\n`;
-          reply += '──────────────────\n\n';
-        } else {
-          reply = `Часть ${Math.floor(i / CHUNK_SIZE) + 1} из ${totalChunks}\n\n`;
-        }
+        if (totalChunks > 1) reply += `Заказы (часть <b>${Math.floor(i / CHUNK_SIZE) + 1}</b> из ${totalChunks})\n\n`;
 
         for (const order of chunk) {
           const orderNumber = order.posting_number;
           const productsCount = order.products ? order.products.length : (order.products_count || '?');
           let whId = order.warehouse_id || order.delivery_method?.warehouse_id || null;
-          let whDisplay = 'не указан';
+          let whDisplay = `<b>не указан</b>`;
           if (whId) {
             whId = String(whId);
             const whName = await db.getWarehouseNameById(whId);
             if (whName === whId) {
-              whDisplay = `ID: ${whId}`;
+              whDisplay = `ID: <b>${whId}</b>`;
             } else {
-              whDisplay = `${whName} (ID: ${whId})`;
+              whDisplay = `<b>${escapeHtml(whName)}</b> (ID: <b>${whId}</b>)`;
             }
           }
-          reply += `• Заказ ${orderNumber}\n`;
+          reply += `• Заказ <code>${escapeHtml(orderNumber)}</code>\n`;
           reply += `  Товаров: ${productsCount}\n`;
           reply += `  Склад: ${whDisplay}\n\n`;
         }
 
-        if (i + CHUNK_SIZE >= orders.length) {
-          reply += '──────────────────\n';
-          reply += '📌 Для просмотра деталей заказа используйте:\n';
-          reply += '/order_details <posting_number>';
-        }
-
-        await bot.sendMessage(msg.chat.id, reply);
+        await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'HTML' });
 
         // Задержка между частями
         if (i + CHUNK_SIZE < orders.length) {
           await new Promise(resolve => setTimeout(resolve, 300));
         }
       }
+
+      reply = '';
+      reply += '📌 Для просмотра деталей заказа используйте:\n';
+      reply += '/order_details <posting_number>';
+
+      await bot.sendMessage(msg.chat.id, reply);
+
     } catch (err) {
       console.error('Ошибка в /orders:', err);
       bot.sendMessage(msg.chat.id, '❌ Ошибка при получении списка заказов. Проверьте логи.');

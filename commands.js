@@ -2072,7 +2072,7 @@ function registerCommands(
       if (totalChunks > 1) reply = `📦 Склады (часть <b>${Math.floor(i / CHUNK_SIZE) + 1}</b> из ${totalChunks})\n\n`;
 
       for (const wh of chunk) {
-        reply += `• <b>${escapeHtml(wh.name)}</b> (ID: <b>${wh.warehouse_id}</b>)\n`;
+        reply += `• <b>${escapeHtml(wh.name)}</b> (ID: <code>${escapeHtml(wh.warehouse_id)}</code>)\n`;
         reply += `   📍 ${wh.address ? escapeHtml(wh.address) : 'адрес не указан'}\n`;
         reply += `   Тип: ${wh.is_rfbs ? 'realFBS' : 'FBS'}\n\n`;
       }
@@ -2111,7 +2111,7 @@ function registerCommands(
       reply += `<b>Не числится ни на одном складе.</b>`;
     } else {
       for (const wh of warehouses) {
-        reply += `\n• <b>${escapeHtml(wh.name)}</b> (ID: <b>${wh.warehouse_id}</b>)\n   📍 ${wh.address ? escapeHtml(wh.address) : 'адрес не указан'}\n`;
+        reply += `\n• <b>${escapeHtml(wh.name)}</b> (ID: <code>${escapeHtml(wh.warehouse_id)}</code>)\n   📍 ${wh.address ? escapeHtml(wh.address) : 'адрес не указан'}\n`;
       }
     }
     await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'HTML' });
@@ -2120,19 +2120,57 @@ function registerCommands(
   // --- "/employee_orders" Команда для администратора: Просмотр активных заказов сотрудника ---
   bot.onText(/\/employee_orders (\d+)/, async (msg, match) => {
     const userId = msg.from.id.toString();
+
     if (!isAdmin(userId)) {
-      await bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
+      await bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
       return;
     }
+
     if (isModerator(userId) && typeof updateModeratorActivity === 'function') {
       updateModeratorActivity();
     }
-    const employeeId = parseInt(match[1]);
-    const orders = await db.getEmployeeActiveOrders(employeeId);
-    const emp = await db.getEmployeeById(employeeId);
-    let reply = `Активные заказы сотрудника ${emp.name}:\n`;
-    orders.forEach(o => { reply += `- ${o.order_id} (назначен ${new Date(o.assigned_at).toLocaleString()})\n`; });
-    await bot.sendMessage(msg.chat.id, reply || 'Нет активных заказов');
+
+    try {
+      const employeeId = parseInt(match[1], 10);
+
+      const emp = await db.getEmployeeById(employeeId);
+
+      if (!emp) {
+        await bot.sendMessage(msg.chat.id, '❌ Сотрудник не найден.');
+        return;
+      }
+
+      const orders = await db.getEmployeeActiveOrders(employeeId);
+
+      if (!orders || orders.length === 0) {
+        await bot.sendMessage(
+          msg.chat.id,
+          `У сотрудника <b>${escapeHtml(emp.name)}</b> нет активных заказов.`,
+          { parse_mode: 'HTML' }
+        );
+        return;
+      }
+
+      let reply = `Активные заказы сотрудника <b>${escapeHtml(emp.name)}</b>:\n`;
+
+      for (const o of orders) {
+        reply += `- <code>${escapeHtml(String(o.order_id))}</code> ` +
+          `(назначен ${escapeHtml(new Date(o.assigned_at).toLocaleString())})\n`;
+      }
+
+      await bot.sendMessage(msg.chat.id, reply, {
+        parse_mode: 'HTML'
+      });
+
+    } catch (err) {
+      console.error('[EMPLOYEE_ORDERS] Ошибка:', err);
+
+      await bot.sendMessage(
+        msg.chat.id,
+        `❌ Не удалось получить активные заказы: ${escapeHtml(err.message)}`,
+        { parse_mode: 'HTML' }
+      );
+    }
   });
 
 
@@ -2823,7 +2861,7 @@ function registerCommands(
       if (warehouseName && warehouseName !== warehouseId) {
         reply += ` для склада «<b>${escapeHtml(warehouseName)}</b>»`;
       } else if (warehouseId) {
-        reply += ` для склада ID: <b>${warehouseId}</b>`;
+        reply += ` для склада ID: <code>${escapeHtml(warehouseId)}</code>`;
       }
       reply += `\nВсего заказов: <b>${orders.length}</b>\n\n`;
 
@@ -2850,9 +2888,9 @@ function registerCommands(
             whId = String(whId);
             const whName = await db.getWarehouseNameById(whId);
             if (whName === whId) {
-              whDisplay = `ID: <b>${whId}</b>`;
+              whDisplay = `ID: <code>${escapeHtml(whId)}</code>`;
             } else {
-              whDisplay = `<b>${escapeHtml(whName)}</b> (ID: <b>${whId}</b>)`;
+              whDisplay = `<b>${escapeHtml(whName)}</b> (ID: <code>${escapeHtml(whId)}</code>)`;
             }
           }
           reply += `• Заказ <code>${escapeHtml(orderNumber)}</code>\n`;
@@ -2896,7 +2934,7 @@ function registerCommands(
         return bot.sendMessage(msg.chat.id, `❌ Не удалось получить детали заказа ${postingNumber}.`);
       }
 
-      let reply = `📄 <b>Детали заказа ${escapeHtml(postingNumber)}</b>\n\n`;
+      let reply = `📄 <b>Детали заказа <code>${escapeHtml(postingNumber)}</code></b>\n\n`;
 
       // Основная информация
       if (details.substatus) reply += ` (${escapeHtml(details.substatus)})`;
@@ -2906,7 +2944,7 @@ function registerCommands(
         reply += `<b>Метод доставки:</b> ${escapeHtml(details.delivery_method.name || '—')}\n`;
         if (details.delivery_method.warehouse_id) {
           const warehouseName = await db.getWarehouseNameById(String(details.delivery_method.warehouse_id));
-          reply += `<b>Склад:</b> ${escapeHtml(warehouseName)} (ID: ${escapeHtml(details.delivery_method.warehouse_id)})\n`;
+          reply += `<b>Склад:</b> ${escapeHtml(warehouseName)} (ID: <code>${escapeHtml(details.delivery_method.warehouse_id)}</code>)\n`;
         }
       }
 

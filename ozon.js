@@ -134,7 +134,7 @@ async function fetchAwaitingOrders(warehouseId = null, limit = 100) {
                 to: to.toISOString()
             };
             if (warehouseId) {
-                filter.warehouse_id = [Number(warehouseId)];
+                filter.warehouse_ids = [Number(warehouseId)];
                 console.log(`[Ozon] Фильтр по складу: ${warehouseId}`);
             }
             const requestBody = {

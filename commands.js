@@ -2111,7 +2111,7 @@ function registerCommands(
       reply += `<b>Не числится ни на одном складе.</b>`;
     } else {
       for (const wh of warehouses) {
-        reply += `\n• <b>${escapeHtml(wh.name)}</b> (ID: <b>${wh.warehouse_id}</b>)\n   📍 ${wh.address ? escapeHtml(wh.address) : 'адрес не указан'}`;
+        reply += `\n• <b>${escapeHtml(wh.name)}</b> (ID: <b>${wh.warehouse_id}</b>)\n   📍 ${wh.address ? escapeHtml(wh.address) : 'адрес не указан'}\n`;
       }
     }
     await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'HTML' });

@@ -2840,28 +2840,34 @@ function registerCommands(
       updateModeratorActivity();
     }
 
-    const warehouseId = match[1] || null;
+    const warehouseId = match[1] ? Number(match[1]) : null; // преобразуем в число
+
     try {
-      const orders = await ozon.fetchAwaitingOrders(warehouseId);
+      const orders = await ozon.fetchAwaitingOrders(warehouseId); // передаём число или null
+
+      let warehouseName = null;
+      let warehouseNotFound = false;
+      if (warehouseId) {
+        warehouseName = await db.getWarehouseNameById(String(warehouseId));
+        if (warehouseName === String(warehouseId)) {
+          warehouseNotFound = true; // склад не найден в БД
+        }
+      }
 
       if (!orders || orders.length === 0) {
-        return bot.sendMessage(msg.chat.id,
-          warehouseId
-            ? `📭 Нет заказов в статусе "awaiting_packaging" для склада ${warehouseId}.`
-            : '📭 Нет заказов в статусе "awaiting_packaging".'
-        );
+        let msg = warehouseId
+          ? `📭 Нет заказов в статусе "awaiting_packaging" для склада ${warehouseNotFound ? `ID: <code>${warehouseId}</code>` : `«<b>${escapeHtml(warehouseName)}</b>»`}.`
+          : '📭 Нет заказов в статусе "awaiting_packaging".';
+        return bot.sendMessage(msg.chat.id, msg, { parse_mode: 'HTML' });
       }
 
-      let reply = '';
-      let warehouseName = null;
+      let reply = `📋 <b>Список заказов (awaiting_packaging)</b>`;
       if (warehouseId) {
-        warehouseName = await db.getWarehouseNameById(warehouseId);
-      }
-      reply = `📋 <b>Список заказов (awaiting_packaging)</b>`;
-      if (warehouseName && warehouseName !== warehouseId) {
-        reply += ` для склада «<b>${escapeHtml(warehouseName)}</b>»`;
-      } else if (warehouseId) {
-        reply += ` для склада ID: <code>${escapeHtml(warehouseId)}</code>`;
+        if (warehouseNotFound) {
+          reply += ` для склада ID: <code>${warehouseId}</code>`;
+        } else {
+          reply += ` для склада «<b>${escapeHtml(warehouseName)}</b>»`;
+        }
       }
       reply += `\nВсего заказов: <b>${orders.length}</b>\n\n`;
 

@@ -18,6 +18,7 @@ let pendingOrderMessages = new Map(); // userId -> messageId
 let pendingModelAdd = new Map();    // для /add_model
 let pendingFileId = new Map();      // для /get_file_id
 let materialsData = null;
+let specialOffers = null; // для specialOffers в materials-prices.json
 
 let labelCooldowns = new Map(); // userId -> timestamp последнего вызова /send_label
 const LABEL_COOLDOWN_MS = 60 * 1000; // 1 минута
@@ -123,6 +124,8 @@ function loadMaterials() {
     const raw = fs.readFileSync(path.join(__dirname, 'materials-prices.json'), 'utf8');
     const data = JSON.parse(raw);
     materialsData = data;
+    // Загружаем специальные предложения
+    specialOffers = data.specialOffers || null;
     // Обновляем MIN_EARNINGS из файла, если поле есть
     if (data.minEarnings !== undefined && typeof data.minEarnings === 'number') {
       MIN_EARNINGS = data.minEarnings;
@@ -130,6 +133,9 @@ function loadMaterials() {
       MIN_EARNINGS = 250; // значение по умолчанию
     }
     console.log(`✅ Справочники материалов загружены. MIN_EARNINGS = ${MIN_EARNINGS}`);
+    if (specialOffers) {
+      console.log(`✅ Загружено специальных предложений: ${Object.keys(specialOffers).length}`);
+    }
   } catch (err) {
     console.error('❌ Ошибка загрузки materials-prices.json:', err.message);
     // Задаём дефолтные значения
@@ -305,6 +311,30 @@ function registerCommands(
     for (const product of orderDetails.products) {
       const offerId = product.offer_id;
       if (!offerId) continue;
+
+      let earningsPerUnit = 0;
+      let isSpecial = false;
+
+      // 1. Проверяем специальное предложение
+      if (specialOffers && specialOffers[offerId] !== undefined) {
+        earningsPerUnit = specialOffers[offerId] * factor;
+        isSpecial = true;
+        // Для специальных предложений не нужна статистика
+        earningsDetails.push({
+          offerId,
+          productName: product.name,
+          material: 'Спецпредложение',
+          weight: 0,
+          quantity: product.quantity || 1,
+          earningsPerUnit,
+          totalForProduct: earningsPerUnit * (product.quantity || 1),
+          isSpecial: true
+        });
+        totalEarnings += earningsPerUnit * (product.quantity || 1);
+        continue;
+      }
+
+      // 2. Обычный расчёт по статистике
       const stats = await db.getProductStats(offerId);
       if (!stats) {
         allHaveStats = false;
@@ -313,10 +343,9 @@ function registerCommands(
       }
       const materialPrice = materialsData.materials[stats.material] || 0;
       const weight = stats.weight_grams || 0;
-      let earningsPerUnit = materialPrice * weight;
-      if (earningsPerUnit < MIN_EARNINGS) earningsPerUnit = MIN_EARNINGS;
-      // Применяем коэффициент
-      earningsPerUnit = earningsPerUnit * factor;
+      let earningsPerUnitCalc = materialPrice * weight;
+      if (earningsPerUnitCalc < MIN_EARNINGS) earningsPerUnitCalc = MIN_EARNINGS;
+      earningsPerUnit = earningsPerUnitCalc * factor;
       const quantity = product.quantity || 1;
       const totalForProduct = earningsPerUnit * quantity;
       totalEarnings += totalForProduct;
@@ -327,9 +356,11 @@ function registerCommands(
         weight,
         quantity,
         earningsPerUnit,
-        totalForProduct
+        totalForProduct,
+        isSpecial: false
       });
     }
+
     return { total: totalEarnings, details: earningsDetails, allHaveStats };
   }
 
@@ -835,15 +866,23 @@ function registerCommands(
           console.log(`[CONFIRM_CANCEL] Сброшен currentOrderProcessing для заказа ${orderId}`);
         }
         await bot.answerCallbackQuery(callbackQuery.id, { text: '✅ Заказ отменён' });
-        await bot.editMessageText(`✅ Заказ ${orderId} отменён.`, {
-          chat_id: msg.chat.id,
-          message_id: msg.message_id
-        });
+        await bot.editMessageText(
+          `✅ Заказ <code>${escapeHtml(orderId)}</code> отменён.`,
+          {
+            chat_id: msg.chat.id,
+            message_id: msg.message_id,
+            parse_mode: 'HTML'
+          }
+        );
 
         // Уведомляем модератора
         const moderatorId = process.env.MODERATOR_ID;
         if (moderatorId) {
-          await bot.sendMessage(moderatorId, `📦 Сотрудник ${employee.name} отменил заказ ${orderId}. Заказ возвращён в очередь.`);
+          await bot.sendMessage(
+            moderatorId,
+            `📦 Сотрудник <b>${escapeHtml(employee.name)}</b> отменил заказ <code>${escapeHtml(orderId)}</code>. Заказ возвращён в очередь.`,
+            { parse_mode: 'HTML' }
+          );
         }
 
         await safeCheckAndOfferNewOrders();
@@ -1410,7 +1449,11 @@ function registerCommands(
       );
       if (!assignment) {
         console.log(`[FINISH] Заказ ${postingNumber} уже завершён или не найден`);
-        await bot.sendMessage(chatId, `⚠️ Заказ ${postingNumber} уже завершён или не найден.`);
+        await bot.sendMessage(
+          chatId,
+          `⚠️ Заказ <code>${escapeHtml(postingNumber)}</code> уже завершён или не найден.`,
+          { parse_mode: 'HTML' }
+        );
         return;
       }
 
@@ -1501,19 +1544,33 @@ function registerCommands(
         await bot.sendDocument(
           chatId,
           labelBuffer,
-          { caption: `✅ Этикетка для заказа ${postingNumber}` },
-          { filename: `label_${postingNumber}.pdf`, contentType: 'application/pdf' }
+          {
+            caption: `✅ Этикетка для заказа <code>${escapeHtml(postingNumber)}</code>`,
+            parse_mode: 'HTML'
+          },
+          {
+            filename: `label_${postingNumber}.pdf`,
+            contentType: 'application/pdf'
+          }
         );
       } else {
-        await bot.sendMessage(chatId, `✅ Заказ ${postingNumber} подтверждён. Этикетку можно скачать в личном кабинете Ozon.`);
+        await bot.sendMessage(
+          chatId,
+          `✅ Заказ <code>${escapeHtml(postingNumber)}</code> подтверждён. Этикетку можно скачать в личном кабинете Ozon.`,
+          { parse_mode: 'HTML' }
+        );
       }
 
       // 5. Отправляем детализацию заработка сотруднику (если есть)
       if (earningsData && earningsData.details && earningsData.details.length) {
         let msg = `💰 <b>Заработок за заказ ${escapeHtml(postingNumber)}</b>\n\n`;
         for (const item of earningsData.details) {
-          msg += `• ${escapeHtml(item.productName)} (${escapeHtml(item.offerId)})\n`;
-          msg += `  Материал: ${escapeHtml(item.material)}, Вес: ${escapeHtml(item.weight)} г/шт, Кол-во: ${escapeHtml(item.quantity)} шт\n`;
+          msg += `• ${escapeHtml(item.productName)} (<code>${escapeHtml(item.offerId)}</code>)\n`;
+          if (item.isSpecial) {
+            msg += `  Специальная цена: ${escapeHtml(item.earningsPerUnit.toFixed(2))} руб./шт\n`;
+          } else {
+            msg += `  Материал: ${escapeHtml(item.material)}, Вес: ${escapeHtml(item.weight)} г/шт, Кол-во: ${escapeHtml(item.quantity)} шт\n`;
+          }
           msg += `  Заработок за единицу: ${escapeHtml(item.earningsPerUnit.toFixed(2))} руб., Итого: ${escapeHtml(item.totalForProduct.toFixed(2))} руб.\n`;
         }
         msg += `\n<b>Итого: ${escapeHtml(earningsData.total.toFixed(2))} руб.</b>`;
@@ -1523,7 +1580,11 @@ function registerCommands(
       // 6. Уведомляем модератора
       const moderatorId = process.env.MODERATOR_ID;
       if (moderatorId) {
-        await bot.sendMessage(moderatorId, `📦 Сотрудник ${employee.name} завершил заказ ${postingNumber}.`);
+        await bot.sendMessage(
+          moderatorId,
+          `📦 Сотрудник <b>${escapeHtml(employee.name)}</b> завершил заказ <code>${escapeHtml(postingNumber)}</code>.`,
+          { parse_mode: 'HTML' }
+        );
       }
 
       console.log(`[FINISH] Заказ ${postingNumber} успешно завершён, вызываем очистку состояний`);
@@ -1532,7 +1593,11 @@ function registerCommands(
 
     } catch (err) {
       console.error(`[FINISH] Ошибка при завершении заказа ${postingNumber}:`, err);
-      await bot.sendMessage(chatId, `❌ Не удалось подтвердить сборку заказа ${postingNumber}: ${err.message}`);
+      await bot.sendMessage(
+        chatId,
+        `❌ Не удалось подтвердить сборку заказа <code>${escapeHtml(postingNumber)}</code>: <b>${escapeHtml(err.message)}</b>`,
+        { parse_mode: 'HTML' }
+      );
       // Если ошибка произошла после подтверждения сборки, но до транзакции, заказ может быть уже в статусе awaiting_deliver,
       // но статус в нашей БД останется assigned. Это допустимо, так как мы не обновили БД.
       // Пользователь может повторить попытку, и тогда сработает проверка дубля заработка.
@@ -1592,17 +1657,16 @@ function registerCommands(
         detailsText = `\nСостав:\n${items}`;
         skuList = orderDetails.products.map(p => p.sku).filter(Boolean);
 
-        // Сбор статистики (материал, цвет)
         for (const p of orderDetails.products) {
           const offerId = p.offer_id;
           if (offerId) {
             const stats = await db.getProductStats(offerId);
             if (stats) {
-              statsText += `\n${p.name} — Материал: ${stats.material}, Цвет: ${stats.color}`;
+              statsText += `\n${escapeHtml(p.name)} — Материал: <b>${escapeHtml(stats.material)}</b>, Цвет: <b>${escapeHtml(stats.color)}</b>`;
             }
           }
         }
-        if (statsText) statsText = '\n\n*Статистика товаров:*' + statsText;
+        if (statsText) statsText = '\n\n<b>Статистика товаров:</b>' + statsText;
       }
 
       // Кнопка завершения только если все данные есть
@@ -1617,9 +1681,7 @@ function registerCommands(
         };
       }
 
-      const detailsTextEscaped = escapeHtml(detailsText);
-      const statsTextEscaped = escapeHtml(statsText);
-      const caption = `✅ Вам назначен заказ №: <b>${escapeHtml(orderId)}</b>${detailsTextEscaped}${statsText ? '\n\n<b>Статистика товаров:</b>' + statsTextEscaped : ''}\n\nКогда упакуете, нажмите кнопку ниже или выполните команду:\n/finish_order <code>${escapeHtml(orderId)}</code>`;
+      const caption = `✅ Вам назначен заказ №: <code>${escapeHtml(orderId)}</code>${escapeHtml(detailsText)}${statsText ? '\n\n<b>Статистика товаров:</b>' + statsText : ''}\n\nКогда упакуете, нажмите кнопку ниже или выполните команду:\n/finish_order <code>${escapeHtml(orderId)}</code>`;
 
       try {
         const barcodeBuffer = await bwipjs.toBuffer({
@@ -1638,7 +1700,8 @@ function registerCommands(
           });
         } else {
           await bot.sendPhoto(employee.tg_user_id, barcodeBuffer, {
-            caption: caption + '\n\n⚠️ Для этого заказа требуется заполнить данные по материалам. Следуйте инструкциям.'
+            caption: caption + '\n\n⚠️ Для этого заказа требуется заполнить данные по материалам. Следуйте инструкциям.',
+            parse_mode: 'HTML'
           });
         }
       } catch (barcodeError) {
@@ -1646,7 +1709,7 @@ function registerCommands(
         if (finishKeyboard) {
           await bot.sendMessage(employee.tg_user_id, caption, { parse_mode: 'HTML', ...finishKeyboard });
         } else {
-          await bot.sendMessage(employee.tg_user_id, caption + '\n\n⚠️ Для этого заказа требуется заполнить данные по материалам. Следуйте инструкциям.');
+          await bot.sendMessage(employee.tg_user_id, caption + '\n\n⚠️ Для этого заказа требуется заполнить данные по материалам. Следуйте инструкциям.', { parse_mode: 'HTML' });
         }
       }
 
@@ -1660,7 +1723,8 @@ function registerCommands(
               const imageBuffer = await ozon.downloadImage(imgUrl);
               if (imageBuffer) {
                 await bot.sendPhoto(employee.tg_user_id, imageBuffer, {
-                  caption: `Фото к заказу ${orderId}: ${p.name}`
+                  caption: `📷 Фото к заказу <code>${escapeHtml(orderId)}</code>: <b>${escapeHtml(p.name)}</b>`,
+                  parse_mode: 'HTML'
                 });
                 await new Promise(resolve => setTimeout(resolve, 500));
               }
@@ -1703,25 +1767,41 @@ function registerCommands(
             if (textFiles.length) {
               for (const txt of textFiles) {
                 await bot.sendDocument(moderatorId, txt.file_id, {
-                  caption: `📄 Текстовый файл для товара ${product.name} (${originalOfferId}) из offer_id ${txt.offer_id}: ${txt.file_name}\nОтправьте его сотруднику ${employee.name} вручную.`
+                  caption: `📄 Текстовый файл для товара <b>${escapeHtml(product.name)}</b> (offer_id: <code>${escapeHtml(originalOfferId)}</code>) из offer_id <code>${escapeHtml(txt.offer_id)}</code>: <b>${escapeHtml(txt.file_name)}</b>\nОтправьте его сотруднику <b>${escapeHtml(employee.name)}</b> вручную.`,
+                  parse_mode: 'HTML'
                 });
                 await new Promise(resolve => setTimeout(resolve, 300));
               }
-              await bot.sendMessage(employee.tg_user_id, `ℹ️ Для товара ${product.name} (${originalOfferId}) нет 3D-моделей, но есть инструкция (файл .txt). Обратитесь к модератору.`);
+              await bot.sendMessage(
+                employee.tg_user_id,
+                `ℹ️ Для товара ${product.name} (<code>${escapeHtml(originalOfferId)}</code>) нет 3D-моделей, но есть инструкция (файл .txt). Обратитесь к модератору.`,
+                { parse_mode: 'HTML' }
+              );
             } else {
-              await bot.sendMessage(moderatorId, `⚠️ Для товара ${product.name} (${originalOfferId}) отсутствуют 3D-модели.\nОтправьте их сотруднику ${employee.name} вручную.`);
-              await bot.sendMessage(employee.tg_user_id, `ℹ️ 3D-модели для товара ${product.name} (${originalOfferId}) отсутствуют. Обратитесь к модератору за выдачей.`);
+              await bot.sendMessage(
+                moderatorId,
+                `⚠️ Для товара ${product.name} (<code>${escapeHtml(originalOfferId)}</code>) отсутствуют 3D-модели.\nОтправьте их сотруднику ${employee.name} вручную.`,
+                { parse_mode: 'HTML' }
+              );
+              await bot.sendMessage(
+                employee.tg_user_id,
+                `ℹ️ 3D-модели для товара ${product.name} (<code>${escapeHtml(originalOfferId)}</code>) отсутствуют. Обратитесь к модератору за выдачей.`,
+                { parse_mode: 'HTML' }
+              );
             }
             continue;
           }
 
           for (const model of models) {
-            let caption = `📁 3D-модель для ${product.name}\noffer_id: ${originalOfferId}`;
+            let caption = `📁 3D-модель для ${product.name}\noffer_id: <code>${escapeHtml(originalOfferId)}</code>`;
             if (usedOfferId !== originalOfferId) {
-              caption += `\n(модель взята из offer_id: ${usedOfferId})`;
+              caption += `\n(модель взята из offer_id: <code>${escapeHtml(usedOfferId)}</code>)`;
             }
-            caption += `\nФайл: ${model.file_name}`;
-            await bot.sendDocument(employee.tg_user_id, model.file_id, { caption });
+            caption += `\nФайл: <b>${escapeHtml(model.file_name)}</b>`;
+            await bot.sendDocument(employee.tg_user_id, model.file_id, {
+              caption,
+              parse_mode: 'HTML'
+            });
             // Записываем выдачу моделей для сотрудника к данному offerId
             await db.addIssuedModel(employee.id, originalOfferId);
             await new Promise(resolve => setTimeout(resolve, 500));
@@ -1729,7 +1809,11 @@ function registerCommands(
 
           if (skipped.length) {
             const fileList = skipped.map(s => s.file_name).join(', ');
-            await bot.sendMessage(moderatorId, `⚠️ Для товара ${product.name} (${originalOfferId}) не загружены модели: ${fileList}.\nОтправьте их сотруднику ${employee.name} вручную.`);
+            await bot.sendMessage(
+              moderatorId,
+              `⚠️ Для товара ${product.name} (<code>${escapeHtml(originalOfferId)}</code>) не загружены модели: <b>${escapeHtml(fileList)}</b>.\nОтправьте их сотруднику ${employee.name} вручную.`,
+              { parse_mode: 'HTML' }
+            );
           }
         } catch (err) {
           console.error(`Ошибка обработки товара ${product.name}:`, err);
@@ -1762,7 +1846,7 @@ function registerCommands(
           // Найдём название товара
           const product = orderDetails.products.find(p => p.offer_id === offerId);
           const productName = product ? product.name : offerId;
-          const caption = `🛍️ Товар: ${productName}\nАртикул: ${offerId}\nДля этого товара ещё нет данных по материалу, цвету и весу.\nНажмите кнопку ниже, чтобы заполнить статистику.`;
+          const caption = `🛍️ Товар: <b>${escapeHtml(productName)}</b>\nАртикул: <code>${escapeHtml(offerId)}</code>\nДля этого товара ещё нет данных по материалу, цвету и весу.\nНажмите кнопку ниже, чтобы заполнить статистику.`;
           const keyboard = {
             reply_markup: {
               inline_keyboard: [
@@ -1770,7 +1854,10 @@ function registerCommands(
               ]
             }
           };
-          const sentMsg = await bot.sendMessage(employee.tg_user_id, caption, keyboard);
+          const sentMsg = await bot.sendMessage(employee.tg_user_id, caption, {
+            ...keyboard,
+            parse_mode: 'HTML'
+          });
           // Сохраняем messageId для последующего редактирования/удаления
           offersState[offerId].messageId = sentMsg.message_id;
         }
@@ -1787,7 +1874,11 @@ function registerCommands(
 
       // --- Отправляем уведомление администратору (если передан chatId) ---
       if (adminChatId) {
-        await bot.sendMessage(adminChatId, `✅ Заказ ${orderId} назначен сотруднику ${employee.name} (ID сотрудника: ${employee.id}).`);
+        await bot.sendMessage(
+          adminChatId,
+          `✅ Заказ <code>${escapeHtml(orderId)}</code> назначен сотруднику <b>${escapeHtml(employee.name)}</b> (ID сотрудника: <code>${escapeHtml(employee.id)}</code>).`,
+          { parse_mode: 'HTML' }
+        );
       }
 
       // Запускаем следующий заказ, если есть
@@ -1800,7 +1891,11 @@ function registerCommands(
     } catch (err) {
       console.error(`[ASSIGN] Ошибка назначения заказа ${orderId}:`, err);
       if (adminChatId) {
-        await bot.sendMessage(adminChatId, `❌ Ошибка назначения: ${err.message}`);
+        await bot.sendMessage(
+          adminChatId,
+          `❌ Ошибка назначения: <b>${escapeHtml(err.message)}</b>`,
+          { parse_mode: 'HTML' }
+        );
       }
       throw err;
     }
@@ -1877,7 +1972,7 @@ function registerCommands(
     }
     const existing = await db.getEmployee(userId);
     if (existing) {
-      await bot.sendMessage(chatId, `Вы уже в БД как ${existing.name}`);
+      await bot.sendMessage(chatId, `Вы уже в БД как <b>${escapeHtml(existing.name)}</b>`, { parse_mode: 'HTML' });
       return;
     }
     await db.addEmployee(userId, 'Admin');
@@ -2326,14 +2421,26 @@ function registerCommands(
     try {
       const details = await ozon.getOrderDetails(postingNumber);
       if (!details) {
-        return bot.sendMessage(msg.chat.id, `❌ Не удалось получить статус заказа ${postingNumber}.`);
+        return bot.sendMessage(
+          msg.chat.id,
+          `❌ Не удалось получить статус заказа <code>${escapeHtml(postingNumber)}</code>.`,
+          { parse_mode: 'HTML' }
+        );
       }
       if (details.status !== 'awaiting_deliver') {
-        return bot.sendMessage(msg.chat.id, `❌ Заказ ${postingNumber} не в статусе "awaiting_deliver" (текущий: ${details.status}). Этикетка недоступна.`);
+        return bot.sendMessage(
+          msg.chat.id,
+          `❌ Заказ <code>${escapeHtml(postingNumber)}</code> не в статусе "awaiting_deliver" (текущий: <b>${escapeHtml(details.status)}</b>). Этикетка недоступна.`,
+          { parse_mode: 'HTML' }
+        );
       }
     } catch (err) {
       console.error(`[ADMIN_SEND_LABEL] Ошибка проверки статуса:`, err);
-      return bot.sendMessage(msg.chat.id, `❌ Ошибка проверки статуса: ${err.message}`);
+      return bot.sendMessage(
+        msg.chat.id,
+        `❌ Ошибка проверки статуса: <b>${escapeHtml(err.message)}</b>`,
+        { parse_mode: 'HTML' }
+      );
     }
 
     // Если не указан сотрудник – отправляем себе (администратору)
@@ -2343,7 +2450,11 @@ function registerCommands(
     if (targetEmployeeId) {
       const employee = await db.getEmployeeById(targetEmployeeId);
       if (!employee) {
-        return bot.sendMessage(msg.chat.id, `❌ Сотрудник с ID ${targetEmployeeId} не найден.`);
+        return bot.sendMessage(
+          msg.chat.id,
+          `❌ Сотрудник с ID <code>${escapeHtml(targetEmployeeId)}</code> не найден.`,
+          { parse_mode: 'HTML' }
+        );
       }
       targetChatId = employee.tg_user_id;
       targetName = employee.name;
@@ -2353,7 +2464,11 @@ function registerCommands(
     try {
       await bot.sendChatAction(targetChatId, 'typing');
     } catch (err) {
-      return bot.sendMessage(msg.chat.id, `❌ Не удалось отправить сообщение ${targetName}. Возможно, он не начал диалог с ботом.`);
+      return bot.sendMessage(
+        msg.chat.id,
+        `❌ Не удалось отправить сообщение сотруднику <b>${escapeHtml(targetName)}</b>. Возможно, он не начал диалог с ботом.`,
+        { parse_mode: 'HTML' }
+      );
     }
 
     // Таймаут между вызововами методов Ozon API
@@ -2362,26 +2477,37 @@ function registerCommands(
     try {
       const labelBuffer = await ozon.getPackageLabel(postingNumber);
       if (labelBuffer) {
-        if (labelBuffer) {
-          await bot.sendDocument(
-            targetChatId,
-            labelBuffer,
-            {
-              caption: `✅ Этикетка для заказа ${postingNumber}`
-            },
-            {
-              filename: `label_${postingNumber}.pdf`,
-              contentType: 'application/pdf'
-            }
-          );
-        }
-        await bot.sendMessage(msg.chat.id, `✅ Этикетка для заказа ${postingNumber} отправлена ${targetName}.`);
+        await bot.sendDocument(
+          targetChatId,
+          labelBuffer,
+          {
+            caption: `✅ Этикетка для заказа <code>${escapeHtml(postingNumber)}</code>`,
+            parse_mode: 'HTML'
+          },
+          {
+            filename: `label_${postingNumber}.pdf`,
+            contentType: 'application/pdf'
+          }
+        );
+        await bot.sendMessage(
+          msg.chat.id,
+          `✅ Этикетка для заказа <code>${escapeHtml(postingNumber)}</code> отправлена <b>${escapeHtml(targetName)}</b>.`,
+          { parse_mode: 'HTML' }
+        );
       } else {
-        await bot.sendMessage(msg.chat.id, `❌ Не удалось получить этикетку для заказа ${postingNumber}.`);
+        await bot.sendMessage(
+          msg.chat.id,
+          `❌ Не удалось получить этикетку для заказа <code>${escapeHtml(postingNumber)}</code>.`,
+          { parse_mode: 'HTML' }
+        );
       }
     } catch (err) {
       console.error('Ошибка отправки этикетки:', err);
-      await bot.sendMessage(msg.chat.id, `❌ Ошибка: ${err.message}`);
+      await bot.sendMessage(
+        msg.chat.id,
+        `❌ Ошибка: <b>${escapeHtml(err.message)}</b>`,
+        { parse_mode: 'HTML' }
+      );
     }
   });
 
@@ -2392,7 +2518,11 @@ function registerCommands(
       return bot.sendMessage(msg.chat.id, '⛔ Только администратор может загружать модели.');
     }
     pendingUploadModel.set(userId, { step: 'waiting_file' });
-    bot.sendMessage(msg.chat.id, '📤 Отправьте файл модели. Имя файла должно содержать offer_id (например, 2001867564-N_avs_k1.3mf).');
+    bot.sendMessage(
+      msg.chat.id,
+      '📤 Отправьте файл модели. Имя файла должно содержать offer_id (например, <code>2001867564-N_avs_k1.3mf</code>).',
+      { parse_mode: 'HTML' }
+    );
   });
 
   // --- "/remove_model" Команда для администратора: удаление модели ---
@@ -2405,9 +2535,17 @@ function registerCommands(
     const fileName = match[2];
     try {
       await db.deleteProductModel(offerId, fileName);
-      bot.sendMessage(msg.chat.id, `✅ Модель ${fileName} для offer_id ${offerId} удалена из базы.`);
+      bot.sendMessage(
+        msg.chat.id,
+        `✅ Модель <b>${escapeHtml(fileName)}</b> для offer_id <code>${escapeHtml(offerId)}</code> удалена из базы.`,
+        { parse_mode: 'HTML' }
+      );
     } catch (err) {
-      bot.sendMessage(msg.chat.id, `❌ Ошибка удаления: ${err.message}`);
+      bot.sendMessage(
+        msg.chat.id,
+        `❌ Ошибка удаления: <b>${escapeHtml(err.message)}</b>`,
+        { parse_mode: 'HTML' }
+      );
     }
   });
 
@@ -2423,13 +2561,17 @@ function registerCommands(
     const offerId = match[1];
     const models = await db.getAllProductModels(offerId);
     if (!models.length) {
-      return bot.sendMessage(msg.chat.id, `📭 Нет моделей для offer_id ${offerId}.`);
+      return bot.sendMessage(
+        msg.chat.id,
+        `📭 Нет моделей для offer_id <code>${escapeHtml(offerId)}</code>.`,
+        { parse_mode: 'HTML' }
+      );
     }
-    let reply = `📋 Модели для ${offerId}:\n`;
+    let reply = `📋 Модели для offer_id <code>${escapeHtml(offerId)}</code>:\n`;
     for (const m of models) {
-      reply += `• ${m.file_name} (${(m.file_size / 1024 / 1024).toFixed(2)} МБ)\n`;
+      reply += `• <b>${escapeHtml(m.file_name)}</b> (${(m.file_size / 1024 / 1024).toFixed(2)} МБ)\n`;
     }
-    await bot.sendMessage(msg.chat.id, reply);
+    await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'HTML' });
   });
 
   // --- "/cancel_model" Команда для администратора: отмена ожидания заливки модели ---
@@ -2440,9 +2582,15 @@ function registerCommands(
     }
     if (pendingModelAdd && pendingModelAdd.has(userId)) {
       pendingModelAdd.delete(userId);
-      bot.sendMessage(msg.chat.id, 'Операция добавления модели отменена.');
+      bot.sendMessage(
+        msg.chat.id,
+        '✅ Операция добавления модели отменена.'
+      );
     } else {
-      bot.sendMessage(msg.chat.id, 'Нет активной операции.');
+      bot.sendMessage(
+        msg.chat.id,
+        'ℹ️ Нет активной операции.'
+      );
     }
   });
 
@@ -2453,9 +2601,11 @@ function registerCommands(
       return bot.sendMessage(msg.chat.id, '⛔ Только администратор может добавлять модели.');
     }
     const offerId = match[1];
-    // Ожидаем, что следующим сообщением администратор отправит файл
-    bot.sendMessage(msg.chat.id, `Отправьте файл модели для offer_id ${offerId} (до 50 МБ).`);
-    // Сохраняем состояние: ожидаем файл для этого offer_id
+    bot.sendMessage(
+      msg.chat.id,
+      `📤 Отправьте файл модели для offer_id <code>${escapeHtml(offerId)}</code> (до 50 МБ).`,
+      { parse_mode: 'HTML' }
+    );
     if (!pendingModelAdd) pendingModelAdd = new Map();
     pendingModelAdd.set(userId, { offerId, step: 'waiting_file' });
   });
@@ -2472,12 +2622,18 @@ function registerCommands(
     const fileName = match[3] || `привязанный_файл_${Date.now()}`;
 
     try {
-      // НЕ используем bot.getFile – привязка работает с любым размером
-      // Размер неизвестен, сохраняем 0 (можно обновить позже, если потребуется)
       await db.upsertProductModel(offerId, fileId, fileName, 0);
-      await bot.sendMessage(msg.chat.id, `✅ Модель "${fileName}" для offer_id ${offerId} успешно привязана (file_id: ${fileId}).`);
+      bot.sendMessage(
+        msg.chat.id,
+        `✅ Модель <b>${escapeHtml(fileName)}</b> для offer_id <code>${escapeHtml(offerId)}</code> успешно привязана (file_id: <code>${escapeHtml(fileId)}</code>).`,
+        { parse_mode: 'HTML' }
+      );
     } catch (err) {
-      await bot.sendMessage(msg.chat.id, `❌ Ошибка привязки: ${err.message}`);
+      bot.sendMessage(
+        msg.chat.id,
+        `❌ Ошибка привязки: <b>${escapeHtml(err.message)}</b>`,
+        { parse_mode: 'HTML' }
+      );
     }
   });
 
@@ -2511,7 +2667,10 @@ function registerCommands(
   bot.on('document', async (msg) => {
     const userId = msg.from.id.toString();
     if (!isAdmin(userId)) {
-      return bot.sendMessage(msg.chat.id, '⛔ Только администратор может загружать файлы.');
+      return bot.sendMessage(
+        msg.chat.id,
+        '⛔ Только администратор может загружать файлы.'
+      );
     }
 
     const file = msg.document;
@@ -2522,12 +2681,15 @@ function registerCommands(
       const pending = pendingEmployeeUpload.get(userId);
       if (pending.step !== 'waiting_file') return;
       if (fileName !== 'team-info.xlsx') {
-        await bot.sendMessage(msg.chat.id, '❌ Пожалуйста, отправьте файл с именем team-info.xlsx');
+        await bot.sendMessage(
+          msg.chat.id,
+          '❌ Пожалуйста, отправьте файл с именем <b>team-info.xlsx</b>.',
+          { parse_mode: 'HTML' }
+        );
         pendingEmployeeUpload.delete(userId);
         return;
       }
       try {
-        // Скачиваем файл
         const fileLink = await bot.getFileLink(file.file_id);
         const tempPath = path.join(__dirname, 'temp_team_info.xlsx');
         const writer = fs.createWriteStream(tempPath);
@@ -2537,15 +2699,20 @@ function registerCommands(
           writer.on('finish', resolve);
           writer.on('error', reject);
         });
-        // Заменяем основной файл
         const targetPath = path.join(__dirname, 'team-info.xlsx');
         fs.renameSync(tempPath, targetPath);
-        // Синхронизация
         await syncEmployeesFromExcel(db);
-        await bot.sendMessage(msg.chat.id, '✅ Сотрудники успешно обновлены из загруженного файла.');
+        await bot.sendMessage(
+          msg.chat.id,
+          '✅ Сотрудники успешно обновлены из загруженного файла.'
+        );
       } catch (err) {
         console.error('[UPLOAD_EMPLOYEES] Ошибка:', err);
-        await bot.sendMessage(msg.chat.id, `❌ Ошибка: ${err.message}`);
+        await bot.sendMessage(
+          msg.chat.id,
+          `❌ Ошибка: <b>${escapeHtml(err.message)}</b>`,
+          { parse_mode: 'HTML' }
+        );
       }
       pendingEmployeeUpload.delete(userId);
       return;
@@ -2556,7 +2723,11 @@ function registerCommands(
       const pending = pendingMaterialsUpload.get(userId);
       if (pending.step !== 'waiting_file') return;
       if (fileName !== 'materials-prices.json') {
-        await bot.sendMessage(msg.chat.id, '❌ Пожалуйста, отправьте файл с именем materials-prices.json.');
+        await bot.sendMessage(
+          msg.chat.id,
+          '❌ Пожалуйста, отправьте файл с именем <b>materials-prices.json</b>.',
+          { parse_mode: 'HTML' }
+        );
         pendingMaterialsUpload.delete(userId);
         return;
       }
@@ -2570,14 +2741,20 @@ function registerCommands(
           writer.on('finish', resolve);
           writer.on('error', reject);
         });
-        // Заменяем основной файл
         const targetPath = path.join(__dirname, 'materials-prices.json');
         fs.renameSync(tempPath, targetPath);
-        loadMaterials(); // перезагружаем в память
-        await bot.sendMessage(msg.chat.id, '✅ Справочник материалов обновлён.');
+        loadMaterials();
+        await bot.sendMessage(
+          msg.chat.id,
+          '✅ Справочник материалов обновлён.'
+        );
       } catch (err) {
         console.error('[UPLOAD_MATERIALS] Ошибка:', err);
-        await bot.sendMessage(msg.chat.id, `❌ Ошибка: ${err.message}`);
+        await bot.sendMessage(
+          msg.chat.id,
+          `❌ Ошибка: <b>${escapeHtml(err.message)}</b>`,
+          { parse_mode: 'HTML' }
+        );
       }
       pendingMaterialsUpload.delete(userId);
       return;
@@ -2592,10 +2769,13 @@ function registerCommands(
       const fileName = file.file_name;
       console.log(`[UPLOAD_MODEL] Имя файла: "${fileName}"`);
 
-      // --- Простой сплит по первому символу '_' ---
       const underscoreIndex = fileName.indexOf('_');
       if (underscoreIndex === -1) {
-        await bot.sendMessage(msg.chat.id, '❌ Имя файла должно содержать символ "_" после offer_id (например, "2001867564-N_avs.stl").');
+        await bot.sendMessage(
+          msg.chat.id,
+          '❌ Имя файла должно содержать символ "_" после offer_id (например, <code>2001867564-N_avs.stl</code>).',
+          { parse_mode: 'HTML' }
+        );
         pendingUploadModel.delete(userId);
         return;
       }
@@ -2603,9 +2783,6 @@ function registerCommands(
       let offerId = fileName.substring(0, underscoreIndex);
       const rest = fileName.substring(underscoreIndex + 1);
 
-      // --- Восстановление суффикса, если он был заменён ---
-      // Если offerId не содержит дефис, но в начале rest есть N, NR или NL и затем '_' или '.' 
-      // (т.е. был суффикс, но его заменили на подчёркивание)
       const suffixMatch = rest.match(/^([A-Z]+)(?:-|_|\.)/);
       if (!offerId.includes('-') && suffixMatch) {
         const possibleSuffix = suffixMatch[1];
@@ -2616,9 +2793,12 @@ function registerCommands(
         }
       }
 
-      // --- Проверка на допустимые символы ---
       if (!/^[A-Z0-9-]+$/.test(offerId)) {
-        await bot.sendMessage(msg.chat.id, '❌ Артикул может содержать только буквы, цифры и дефис. Проверьте имя файла.');
+        await bot.sendMessage(
+          msg.chat.id,
+          '❌ Артикул может содержать только буквы, цифры и дефис. Проверьте имя файла.',
+          { parse_mode: 'HTML' }
+        );
         pendingUploadModel.delete(userId);
         return;
       }
@@ -2627,15 +2807,24 @@ function registerCommands(
 
       try {
         const sent = await bot.sendDocument(process.env.MODELS_CHAT_ID, file.file_id, {
-          caption: `offer_id: ${offerId}\nФайл: ${fileName}`
+          caption: `offer_id: <code>${escapeHtml(offerId)}</code>\nФайл: <b>${escapeHtml(fileName)}</b>`,
+          parse_mode: 'HTML'
         });
         const newFileId = sent.document.file_id;
         await db.deleteProductModel(offerId, fileName);
         await db.upsertProductModel(offerId, newFileId, fileName, file.file_size);
-        await bot.sendMessage(msg.chat.id, `✅ Модель ${fileName} для offer_id ${offerId} успешно загружена/обновлена.`);
+        await bot.sendMessage(
+          msg.chat.id,
+          `✅ Модель <b>${escapeHtml(fileName)}</b> для offer_id <code>${escapeHtml(offerId)}</code> успешно загружена/обновлена.`,
+          { parse_mode: 'HTML' }
+        );
       } catch (err) {
         console.error('Ошибка загрузки модели:', err);
-        await bot.sendMessage(msg.chat.id, `❌ Ошибка загрузки: ${err.message}`);
+        await bot.sendMessage(
+          msg.chat.id,
+          `❌ Ошибка загрузки: <b>${escapeHtml(err.message)}</b>`,
+          { parse_mode: 'HTML' }
+        );
       }
       pendingUploadModel.delete(userId);
       return;
@@ -2649,7 +2838,11 @@ function registerCommands(
       const file = msg.document;
       const fileSizeMB = file.file_size / (1024 * 1024);
       if (fileSizeMB > 50) {
-        await bot.sendMessage(msg.chat.id, `❌ Файл слишком большой (${fileSizeMB.toFixed(2)} МБ). Максимум 50 МБ.`);
+        await bot.sendMessage(
+          msg.chat.id,
+          `❌ Файл слишком большой (<b>${fileSizeMB.toFixed(2)} МБ</b>). Максимум 50 МБ.`,
+          { parse_mode: 'HTML' }
+        );
         return;
       }
       const fileName = file.file_name;
@@ -2657,15 +2850,24 @@ function registerCommands(
 
       try {
         const sent = await bot.sendDocument(process.env.MODELS_CHAT_ID, file.file_id, {
-          caption: `offer_id: ${offerId}\nФайл: ${fileName}`
+          caption: `offer_id: <code>${escapeHtml(offerId)}</code>\nФайл: <b>${escapeHtml(fileName)}</b>`,
+          parse_mode: 'HTML'
         });
         const newFileId = sent.document.file_id;
         await db.deleteProductModel(offerId, fileName);
         await db.upsertProductModel(offerId, newFileId, fileName, file.file_size);
-        await bot.sendMessage(msg.chat.id, `✅ Модель ${fileName} для offer_id ${offerId} успешно добавлена/обновлена.`);
+        await bot.sendMessage(
+          msg.chat.id,
+          `✅ Модель <b>${escapeHtml(fileName)}</b> для offer_id <code>${escapeHtml(offerId)}</code> успешно добавлена/обновлена.`,
+          { parse_mode: 'HTML' }
+        );
       } catch (err) {
         console.error('Ошибка добавления модели:', err);
-        await bot.sendMessage(msg.chat.id, `❌ Ошибка добавления модели: ${err.message}`);
+        await bot.sendMessage(
+          msg.chat.id,
+          `❌ Ошибка добавления модели: <b>${escapeHtml(err.message)}</b>`,
+          { parse_mode: 'HTML' }
+        );
       }
       pendingModelAdd.delete(userId);
       return;
@@ -2679,8 +2881,11 @@ function registerCommands(
         const fileId = file.file_id;
         const fileName = file.file_name;
         const fileSize = file.file_size;
-        await bot.sendMessage(msg.chat.id,
-          `✅ file_id: \`${fileId}\`\nИмя: ${fileName}\nРазмер: ${(fileSize / 1024 / 1024).toFixed(2)} МБ\n\nИспользуйте /bind_model <offer_id> ${fileId} "${fileName}"`);
+        await bot.sendMessage(
+          msg.chat.id,
+          `✅ file_id: <code>${escapeHtml(fileId)}</code>\nИмя: <b>${escapeHtml(fileName)}</b>\nРазмер: <b>${(fileSize / 1024 / 1024).toFixed(2)} МБ</b>\n\nИспользуйте /bind_model <code>offer_id</code> <code>${escapeHtml(fileId)}</code> "<b>${escapeHtml(fileName)}</b>"`,
+          { parse_mode: 'HTML' }
+        );
         pendingFileId.delete(userId);
       }
       return;
@@ -2701,9 +2906,12 @@ function registerCommands(
       const fileId = msg.document.file_id;
       const fileSize = msg.document.file_size;
 
-      // НЕ вызываем bot.getFile
       await db.upsertProductModel(offerId, fileId, fileName, fileSize);
-      await bot.sendMessage(msg.chat.id, `✅ Модель ${fileName} для offer_id ${offerId} успешно привязана/обновлена.`);
+      await bot.sendMessage(
+        msg.chat.id,
+        `✅ Модель <b>${escapeHtml(fileName)}</b> для offer_id <code>${escapeHtml(offerId)}</code> успешно привязана/обновлена.`,
+        { parse_mode: 'HTML' }
+      );
       return;
     }
   });
@@ -2721,53 +2929,75 @@ function registerCommands(
     const offerId = match[1];
     const targetEmployeeId = match[2] ? parseInt(match[2]) : null;
 
-    // Если не указан сотрудник – отправляем себе (администратору)
     let targetChatId = msg.chat.id;
     let targetName = 'себе';
 
     if (targetEmployeeId) {
       const employee = await db.getEmployeeById(targetEmployeeId);
       if (!employee) {
-        return bot.sendMessage(msg.chat.id, `❌ Сотрудник с ID ${targetEmployeeId} не найден.`);
+        return bot.sendMessage(
+          msg.chat.id,
+          `❌ Сотрудник с ID <code>${escapeHtml(targetEmployeeId)}</code> не найден.`,
+          { parse_mode: 'HTML' }
+        );
       }
       targetChatId = employee.tg_user_id;
       targetName = employee.name;
     }
 
-    // Получаем все модели для данного offer_id
     const models = await db.getAllProductModels(offerId);
     if (!models || models.length === 0) {
-      return bot.sendMessage(msg.chat.id, `📭 Нет моделей для offer_id ${offerId}.`);
+      return bot.sendMessage(
+        msg.chat.id,
+        `📭 Нет моделей для offer_id <code>${escapeHtml(offerId)}</code>.`,
+        { parse_mode: 'HTML' }
+      );
     }
 
-    // Проверяем, может ли бот писать в целевой чат
     try {
       await bot.sendChatAction(targetChatId, 'typing');
     } catch (err) {
-      return bot.sendMessage(msg.chat.id, `❌ Не удалось отправить сообщение сотруднику ${targetName}. Возможно, он не начал диалог с ботом.`);
+      return bot.sendMessage(
+        msg.chat.id,
+        `❌ Не удалось отправить сообщение сотруднику <b>${escapeHtml(targetName)}</b>. Возможно, он не начал диалог с ботом.`,
+        { parse_mode: 'HTML' }
+      );
     }
 
-    await bot.sendMessage(msg.chat.id, `📤 Отправляю ${models.length} моделей для offer_id ${offerId} ${targetEmployeeId ? `сотруднику ${targetName}` : 'себе'}...`);
+    await bot.sendMessage(
+      msg.chat.id,
+      `📤 Отправляю <b>${models.length}</b> моделей для offer_id <code>${escapeHtml(offerId)}</code> ${targetEmployeeId ? `сотруднику <b>${escapeHtml(targetName)}</b>` : 'себе'}...`,
+      { parse_mode: 'HTML' }
+    );
 
     let sentCount = 0;
     for (const model of models) {
       try {
-        const caption = `📁 Модель для offer_id: ${offerId}\nФайл: ${model.file_name}`;
-        await bot.sendDocument(targetChatId, model.file_id, { caption });
+        const caption = `📁 Модель для offer_id: <code>${escapeHtml(offerId)}</code>\nФайл: <b>${escapeHtml(model.file_name)}</b>`;
+        await bot.sendDocument(targetChatId, model.file_id, {
+          caption,
+          parse_mode: 'HTML'
+        });
         sentCount++;
-        // Записываем выдачу моделей для сотрудника к данному offerId
         if (targetEmployeeId) {
           await db.addIssuedModel(targetEmployeeId, offerId);
         }
-        // Небольшая задержка, чтобы избежать флуда
         await new Promise(resolve => setTimeout(resolve, 300));
       } catch (err) {
         console.error(`Ошибка отправки модели ${model.file_name}:`, err.message);
-        await bot.sendMessage(msg.chat.id, `❌ Ошибка при отправке файла ${model.file_name}: ${err.message}`);
+        await bot.sendMessage(
+          msg.chat.id,
+          `❌ Ошибка при отправке файла <b>${escapeHtml(model.file_name)}</b>: <b>${escapeHtml(err.message)}</b>`,
+          { parse_mode: 'HTML' }
+        );
       }
     }
 
-    await bot.sendMessage(msg.chat.id, `✅ Отправлено ${sentCount} из ${models.length} моделей для offer_id ${offerId} ${targetEmployeeId ? `сотруднику ${targetName}` : 'себе'}.`);
+    await bot.sendMessage(
+      msg.chat.id,
+      `✅ Отправлено <b>${sentCount}</b> из <b>${models.length}</b> моделей для offer_id <code>${escapeHtml(offerId)}</code> ${targetEmployeeId ? `сотруднику <b>${escapeHtml(targetName)}</b>` : 'себе'}.`,
+      { parse_mode: 'HTML' }
+    );
   });
 
   // --- "/reload_queue" Команда для администратора: Принудительная инициализация синхронизации (вне таймера) и перезапуска очереди заказов ---
@@ -3221,7 +3451,7 @@ function registerCommands(
       }
 
       await bot.sendMessage(msg.chat.id,
-        `✅ Корректировка для сотрудника ${escapeHtml(employee.name)} (ID ${employee.id}) на сумму ${amount > 0 ? '+' : ''}${amount.toFixed(2)} руб. добавлена.`
+        `✅ Корректировка для сотрудника <b>${escapeHtml(employee.name)}</b> (ID ${employee.id}) на сумму ${amount > 0 ? '+' : ''}${amount.toFixed(2)} руб. добавлена.`
       );
     } catch (err) {
       console.error('[EDIT_EARNINGS] Ошибка:', err);
@@ -3296,7 +3526,7 @@ function registerCommands(
     const offerId = match[1];
     try {
       await db.db.run('DELETE FROM product_stats WHERE offer_id = ?', offerId);
-      bot.sendMessage(msg.chat.id, `✅ Запись для ${offerId} удалена.`);
+      bot.sendMessage(msg.chat.id, `✅ Запись для <code>${escapeHtml(offerId)}</code> удалена.`, { parse_mode: 'HTML' });
     } catch (err) {
       bot.sendMessage(msg.chat.id, `❌ Ошибка: ${err.message}`);
     }
@@ -3731,14 +3961,22 @@ function registerCommands(
       postingNumber, employee.id
     );
     if (!assignment) {
-      return bot.sendMessage(msg.chat.id, `❌ Заказ ${postingNumber} не найден среди ваших активных заказов.`);
+      return bot.sendMessage(
+        msg.chat.id,
+        `❌ Заказ <code>${escapeHtml(postingNumber)}</code> не найден среди ваших активных заказов.`,
+        { parse_mode: 'HTML' }
+      );
     }
 
     // --- Проверяем наличие статистики для всех товаров в заказе ---
     try {
       const orderDetails = await ozon.getOrderDetails(postingNumber);
       if (!orderDetails || !orderDetails.products) {
-        return bot.sendMessage(msg.chat.id, `❌ Не удалось получить детали заказа ${postingNumber}.`);
+        return bot.sendMessage(
+          msg.chat.id,
+          `❌ Не удалось получить детали заказа <code>${escapeHtml(postingNumber)}</code>.`,
+          { parse_mode: 'HTML' }
+        );
       }
       let missingStats = [];
       for (const product of orderDetails.products) {
@@ -3748,12 +3986,20 @@ function registerCommands(
         if (!stats) missingStats.push(offerId);
       }
       if (missingStats.length > 0) {
-        const missingList = missingStats.join(', ');
-        return bot.sendMessage(msg.chat.id, `❌ Для заказа ${postingNumber} отсутствует статистика для товаров: ${missingList}. Заполните статистику через /my_orders.`);
+        const missingList = missingStats.map(id => `<code>${escapeHtml(id)}</code>`).join(', ');
+        return bot.sendMessage(
+          msg.chat.id,
+          `❌ Для заказа <code>${escapeHtml(postingNumber)}</code> отсутствует статистика для товаров: ${missingList}. Заполните статистику через /my_orders.`,
+          { parse_mode: 'HTML' }
+        );
       }
     } catch (err) {
       console.error('Ошибка проверки статистики:', err);
-      return bot.sendMessage(msg.chat.id, `❌ Ошибка проверки статистики: ${err.message}`);
+      return bot.sendMessage(
+        msg.chat.id,
+        `❌ Ошибка проверки статистики: <b>${escapeHtml(err.message)}</b>`,
+        { parse_mode: 'HTML' }
+      );
     }
 
     // --- Очищаем pendingForms и удаляем сообщения перед завершением ---
@@ -3763,7 +4009,11 @@ function registerCommands(
       // Дополнительная проверка: если состояние существует, но есть незавершённые опросы – блокируем
       const hasIncomplete = Object.values(state.offers).some(o => o.status !== 'completed');
       if (hasIncomplete || !state.allCompleted) {
-        return bot.sendMessage(msg.chat.id, `❌ Сначала заполните статистику для всех товаров в заказе ${postingNumber}. Используйте /my_orders, чтобы продолжить.`);
+        return bot.sendMessage(
+          msg.chat.id,
+          `❌ Сначала заполните статистику для всех товаров в заказе <code>${escapeHtml(postingNumber)}</code>. Используйте /my_orders, чтобы продолжить.`,
+          { parse_mode: 'HTML' }
+        );
       }
       // Удаляем сообщения
       for (const offerId of Object.keys(state.offers)) {
@@ -3799,7 +4049,11 @@ function registerCommands(
     );
     if (!assignment) {
       console.log(`[CANCEL_ORDER] Заказ ${postingNumber} не найден среди активных заказов сотрудника ${employee.id}`);
-      return bot.sendMessage(msg.chat.id, `❌ Заказ ${postingNumber} не найден среди ваших активных заказов.`);
+      return bot.sendMessage(
+        msg.chat.id,
+        `❌ Заказ <code>${escapeHtml(postingNumber)}</code> не найден среди ваших активных заказов.`,
+        { parse_mode: 'HTML' }
+      );
     }
     console.log(`[CANCEL_ORDER] Заказ найден, показываем подтверждение`);
     const confirmKeyboard = {
@@ -3812,7 +4066,14 @@ function registerCommands(
         ]
       }
     };
-    await bot.sendMessage(msg.chat.id, `⚠️ Вы уверены, что хотите отменить заказ ${postingNumber}?`, confirmKeyboard);
+    await bot.sendMessage(
+      msg.chat.id,
+      `⚠️ Вы уверены, что хотите отменить заказ <code>${escapeHtml(postingNumber)}</code>?`,
+      {
+        parse_mode: 'HTML',
+        ...confirmKeyboard
+      }
+    );
   });
 
   // --- "/send_label" – получить этикетку заказа (для сотрудников) ---
@@ -3840,21 +4101,37 @@ function registerCommands(
       postingNumber, employee.id
     );
     if (!assignment) {
-      return bot.sendMessage(msg.chat.id, `❌ Заказ ${postingNumber} не найден среди ваших завершённых заказов.`);
+      return bot.sendMessage(
+        msg.chat.id,
+        `❌ Заказ <code>${escapeHtml(postingNumber)}</code> не найден среди ваших завершённых заказов.`,
+        { parse_mode: 'HTML' }
+      );
     }
 
     // 4. Проверяем статус заказа через Ozon API (должен быть awaiting_deliver)
     try {
       const details = await ozon.getOrderDetails(postingNumber);
       if (!details) {
-        return bot.sendMessage(msg.chat.id, `❌ Не удалось получить статус заказа ${postingNumber}.`);
+        return bot.sendMessage(
+          msg.chat.id,
+          `❌ Не удалось получить статус заказа <code>${escapeHtml(postingNumber)}</code>.`,
+          { parse_mode: 'HTML' }
+        );
       }
       if (details.status !== 'awaiting_deliver') {
-        return bot.sendMessage(msg.chat.id, `❌ Заказ ${postingNumber} не в статусе "awaiting_deliver" (текущий: ${details.status}). Этикетка недоступна.`);
+        return bot.sendMessage(
+          msg.chat.id,
+          `❌ Заказ <code>${escapeHtml(postingNumber)}</code> не в статусе "awaiting_deliver" (текущий: <b>${escapeHtml(details.status)}</b>). Этикетка недоступна.`,
+          { parse_mode: 'HTML' }
+        );
       }
     } catch (err) {
       console.error(`[SEND_LABEL] Ошибка получения статуса:`, err);
-      return bot.sendMessage(msg.chat.id, `❌ Ошибка проверки статуса: ${err.message}`);
+      return bot.sendMessage(
+        msg.chat.id,
+        `❌ Ошибка проверки статуса: <b>${escapeHtml(err.message)}</b>`,
+        { parse_mode: 'HTML' }
+      );
     }
 
     // Таймаут между вызововами методов Ozon API
@@ -3864,20 +4141,34 @@ function registerCommands(
     try {
       const labelBuffer = await ozon.getPackageLabel(postingNumber);
       if (!labelBuffer) {
-        return bot.sendMessage(msg.chat.id, `❌ Не удалось получить этикетку для заказа ${postingNumber}.`);
+        return bot.sendMessage(
+          msg.chat.id,
+          `❌ Не удалось получить этикетку для заказа <code>${escapeHtml(postingNumber)}</code>.`,
+          { parse_mode: 'HTML' }
+        );
       }
       // Отправляем этикетку сотруднику
       await bot.sendDocument(
         msg.chat.id,
         labelBuffer,
-        { caption: `✅ Этикетка для заказа ${postingNumber}` },
-        { filename: `label_${postingNumber}.pdf`, contentType: 'application/pdf' }
+        {
+          caption: `✅ Этикетка для заказа <code>${escapeHtml(postingNumber)}</code>`,
+          parse_mode: 'HTML'
+        },
+        {
+          filename: `label_${postingNumber}.pdf`,
+          contentType: 'application/pdf'
+        }
       );
       // Обновляем кулдаун
       labelCooldowns.set(userId, Date.now());
     } catch (err) {
       console.error(`[SEND_LABEL] Ошибка:`, err);
-      await bot.sendMessage(msg.chat.id, `❌ Ошибка получения этикетки: ${err.message}`);
+      await bot.sendMessage(
+        msg.chat.id,
+        `❌ Ошибка получения этикетки: <b>${escapeHtml(err.message)}</b>`,
+        { parse_mode: 'HTML' }
+      );
     }
   });
 
@@ -4256,14 +4547,22 @@ function registerCommands(
     if (state) {
       const weight = parseFloat(msg.text.trim().replace(',', '.'));
       if (isNaN(weight) || weight <= 0) {
-        await bot.sendMessage(userId, '❌ Введите корректное положительное число (например, 12.5)');
+        await bot.sendMessage(
+          userId,
+          '❌ Введите корректное положительное число (например, <b>12.5</b>).',
+          { parse_mode: 'HTML' }
+        );
         return;
       }
 
       // Найти offerId, для которого ожидается вес
       const offerId = Object.keys(state.offers).find(oid => state.offers[oid].waitingForWeight === true);
       if (!offerId) {
-        await bot.sendMessage(userId, '❌ Не найден товар для ввода веса.');
+        await bot.sendMessage(
+          userId,
+          '❌ Не найден товар для ввода веса.',
+          { parse_mode: 'HTML' }
+        );
         return;
       }
 
@@ -4271,7 +4570,11 @@ function registerCommands(
       // Проверка дублирования
       const existingStats = await db.getProductStats(offerId);
       if (existingStats) {
-        await bot.sendMessage(userId, `⚠️ Статистика для товара ${offerId} уже существует. Запись не будет изменена.`);
+        await bot.sendMessage(
+          userId,
+          `⚠️ Статистика для товара <code>${escapeHtml(offerId)}</code> уже существует. Запись не будет изменена.`,
+          { parse_mode: 'HTML' }
+        );
         // Удаляем этот товар из состояния
         delete state.offers[offerId];
         // Проверяем, все ли товары завершены
@@ -4313,7 +4616,11 @@ function registerCommands(
       } catch (e) { }
 
       // Отправляем подтверждение
-      await bot.sendMessage(userId, `✅ Статистика для товара ${offerId} сохранена.`);
+      await bot.sendMessage(
+        userId,
+        `✅ Статистика для товара <code>${escapeHtml(offerId)}</code> сохранена.`,
+        { parse_mode: 'HTML' }
+      );
 
       // Проверяем, все ли товары завершены
       const allCompleted = Object.values(state.offers).every(o => o.status === 'completed');
@@ -4326,7 +4633,11 @@ function registerCommands(
         const nextIncomplete = Object.keys(state.offers).find(oid => state.offers[oid].status !== 'completed');
         if (nextIncomplete) {
           // Можно предложить заполнить следующий, но лучше через /my_orders
-          await bot.sendMessage(userId, `Остались товары без статистики. Используйте /my_orders, чтобы продолжить.`);
+          await bot.sendMessage(
+            userId,
+            `ℹ️ Остались товары без статистики. Используйте /my_orders, чтобы продолжить.`,
+            { parse_mode: 'HTML' }
+          );
         }
       }
       return;
@@ -4338,7 +4649,11 @@ function registerCommands(
       // Если шаг не равен 3 (ожидание веса) – игнорируем (пользователь должен нажимать кнопки)
       if (adminState.step !== 3) {
         // Если пользователь вводит текст, когда не ожидается – напоминаем
-        await bot.sendMessage(userId, '❌ Сейчас ожидается выбор из списка. Используйте кнопки.');
+        await bot.sendMessage(
+          userId,
+          '❌ Сейчас ожидается выбор из списка. Используйте кнопки.',
+          { parse_mode: 'HTML' }
+        );
         return;
       }
 
@@ -4346,7 +4661,11 @@ function registerCommands(
       const value = text.trim().replace(',', '.');
       const weight = parseFloat(value);
       if (isNaN(weight) || weight <= 0) {
-        await bot.sendMessage(userId, '❌ Введите корректное положительное число (например, 12.5)');
+        await bot.sendMessage(
+          userId,
+          '❌ Введите корректное положительное число (например, <b>12.5</b>).',
+          { parse_mode: 'HTML' }
+        );
         return;
       }
 
@@ -4365,15 +4684,23 @@ function registerCommands(
         if (adminState.lastMessageId) {
           try { await bot.deleteMessage(userId, adminState.lastMessageId); } catch (e) { }
         }
-        await bot.sendMessage(userId,
-          `✅ Статистика для offer_id \`${adminState.offerId}\` успешно сохранена/обновлена.\n` +
-          `Материал: ${adminState.data.material}\nЦвет: ${adminState.data.color}\nВес: ${weight} г`
+        await bot.sendMessage(
+          userId,
+          `✅ Статистика для offer_id <code>${escapeHtml(adminState.offerId)}</code> успешно сохранена/обновлена.\n` +
+          `Материал: <b>${escapeHtml(adminState.data.material)}</b>\n` +
+          `Цвет: <b>${escapeHtml(adminState.data.color)}</b>\n` +
+          `Вес: <b>${weight}</b> г`,
+          { parse_mode: 'HTML' }
         );
         // Удаляем состояние
         pendingStatsFill.delete(userId);
       } catch (err) {
         console.error('[ADMIN_FILL_STATS] Ошибка сохранения:', err);
-        await bot.sendMessage(userId, `❌ Ошибка сохранения: ${err.message}`);
+        await bot.sendMessage(
+          userId,
+          `❌ Ошибка сохранения: <b>${escapeHtml(err.message)}</b>`,
+          { parse_mode: 'HTML' }
+        );
       }
       return;
     }
@@ -4424,7 +4751,14 @@ async function restorePendingForms(db, ozon, bot) {
             ]
           }
         };
-        await bot.sendMessage(userId, `✅ Все данные для заказа ${orderId} заполнены. Теперь вы можете завершить заказ.`, finishKeyboard);
+        await bot.sendMessage(
+          userId,
+          `✅ Все данные для заказа <code>${escapeHtml(orderId)}</code> заполнены. Теперь вы можете завершить заказ.`,
+          {
+            parse_mode: 'HTML',
+            ...finishKeyboard
+          }
+        );
         console.log(`[RESTORE] Восстановлено состояние (заполнено) для заказа ${orderId} пользователя ${userId}`);
       } else {
         console.log(`[RESTORE] Заказ ${orderId} пользователя ${userId} – недостает статистики для: ${missingStats.join(', ')}`);

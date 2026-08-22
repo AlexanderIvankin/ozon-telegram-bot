@@ -317,7 +317,8 @@ async function cleanExpiredAssignments(activeOrderIds) {
         try {
             await bot.sendMessage(
                 assignment.tg_user_id,
-                `❌ Заказ ${orderId} был отменён (или более не актуален). Он снят с вас.`
+                `❌ Заказ <code>${escapeHtml(orderId)}</code> был отменён (или более не актуален). Он снят с вас.`,
+                { parse_mode: 'HTML' }
             );
         } catch (e) { /* игнорируем, если не можем отправить */ }
 
@@ -326,7 +327,8 @@ async function cleanExpiredAssignments(activeOrderIds) {
         if (moderatorId) {
             await bot.sendMessage(
                 moderatorId,
-                `🔄 Заказ ${orderId} автоматически снят с сотрудника ${assignment.employee_name}, так как он больше не в статусе awaiting_packaging.`
+                `🔄 Заказ <code>${escapeHtml(orderId)}</code> автоматически снят с сотрудника <b>${escapeHtml(assignment.employee_name)}</b>, так как он больше не в статусе awaiting_packaging.`,
+                { parse_mode: 'HTML' }
             );
         }
     }
@@ -338,7 +340,9 @@ async function showOrderMenu(order) {
     if (debug) console.log(`[MENU] Отображение заказа ${order.posting_number} – начало`);
     const details = await ozon.getOrderDetails(order.posting_number);
 
-    let warehouseDisplay = order.analytics_data?.warehouse || (order.warehouse_id ? `ID: ${order.warehouse_id}` : 'не указан');
+    let warehouseDisplay = order.analytics_data?.warehouse
+        ? `<b>${escapeHtml(order.analytics_data.warehouse)}</b>`
+        : (order.warehouse_id ? `ID: <code>${escapeHtml(order.warehouse_id)}</code>` : 'не указан');
 
     let createdAtDisplay = '';
     if (details.in_process_at) {
@@ -357,12 +361,12 @@ async function showOrderMenu(order) {
         productsInfo = '\n\n<b>Состав:</b>\n';
         for (const p of details.products) {
             let article = p.offer_id || (p.barcodes?.[0]);
-            let articleDisplay = article ? `<b>${article}</b>` : '—';
+            let articleDisplay = article ? `<code>${escapeHtml(article)}</code>` : '—';
 
             let price = parseFloat(p.price) || 0;
             let currencyCode = p.currency_code || 'RUB';
             if (currencyCode && currency === 'RUB') currency = currencyCode;
-            let priceDisplay = price > 0 ? `${price.toFixed(2)} ${currencyCode}` : '—';
+            let priceDisplay = price > 0 ? `<b>${price.toFixed(2)}</b> ${currencyCode}` : '—';
 
             let dims = p.dimensions || {};
             let length = dims.length ? `${dims.length} см` : '—';
@@ -370,13 +374,13 @@ async function showOrderMenu(order) {
             let height = dims.height ? `${dims.height} см` : '—';
             let weightVal = dims.weight ? parseFloat(dims.weight) : (p.weight_max ? parseFloat(p.weight_max) * 1000 : 0);
             let weightDisplay = weightVal > 0 ? `${weightVal.toFixed(0)} г` : '—';
-            let dimsDisplay = `📏 ${length} × ${width} × ${height}, ⚖️ ${weightDisplay}`;
+            let dimsDisplay = `📏 <b>${length}</b> × <b>${width}</b> × <b>${height}</b>, ⚖️ <b>${weightDisplay}</b>`;
 
             let statsDisplay = '';
             if (p.offer_id) {
                 const stats = await db.getProductStats(p.offer_id);
                 if (stats) {
-                    statsDisplay = `   Материал: ${stats.material}\n   Цвет: ${stats.color}\n`;
+                    statsDisplay = `   Материал: <b>${escapeHtml(stats.material)}</b>\n   Цвет: <b>${escapeHtml(stats.color)}</b>\n`;
                 }
             }
 
@@ -390,12 +394,12 @@ async function showOrderMenu(order) {
             if (p.sku) skuList.push(p.sku);
         }
 
-        let totalDisplay = totalAmount > 0 ? `${totalAmount.toFixed(2)} ${currency}` : '—';
+        let totalDisplay = totalAmount > 0 ? `<b>${totalAmount.toFixed(2)}</b> ${currency}` : '—';
         productsInfo += `\n<b>Общая сумма заказа:</b> ${totalDisplay}`;
     }
 
     const adminChatId = MODERATOR_ID.toString();
-    const messageText = `🆕 <b>Новый заказ!</b>\nНомер: ${order.posting_number}\nСклад: ${warehouseDisplay}${createdAtDisplay}${productsInfo}\n\nВыберите действие:`;
+    const messageText = `🆕 <b>Новый заказ!</b>\nНомер: <code>${escapeHtml(order.posting_number)}</code>\nСклад: ${warehouseDisplay}${createdAtDisplay}${productsInfo}\n\nВыберите действие:`;
 
     const keyboard = [
         [{ text: '👑 Приоритетные', callback_data: `priority_${order.posting_number}` }],

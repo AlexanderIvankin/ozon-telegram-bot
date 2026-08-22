@@ -425,7 +425,8 @@ async function showOrderMenu(order) {
                         const imageBuffer = await ozon.downloadImage(imgUrl);
                         if (imageBuffer) {
                             const sentPhoto = await bot.sendPhoto(adminChatId, imageBuffer, {
-                                caption: `Фото к заказу ${order.posting_number}: ${p.name}`
+                                caption: `📷 Фото к заказу <code>${escapeHtml(order.posting_number)}</code>: <b>${escapeHtml(p.name)}</b>`,
+                                parse_mode: 'HTML'
                             });
                             lastOrderPhotoIds.push(sentPhoto.message_id);
                             await new Promise(resolve => setTimeout(resolve, 500));

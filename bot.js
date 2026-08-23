@@ -100,8 +100,10 @@ let autoSkipped = false; // флаг того, что автоматически
 let inactivityInterval = null; // таймер проверки неактивности
 
 // Глобальное состояние для пошаговой обработки очереди
-let currentOrderProcessing = null;      // { order, processingMessageId? }
-let pendingNewOrders = [];              // массив заказов, ожидающих обработки
+const orderState = {
+    currentOrderProcessing: null, // { order, processingMessageId? }
+    pendingNewOrders: []          // массив заказов, ожидающих обработки
+};
 
 // Функция обновления активности модератора
 function updateModeratorActivity() {
@@ -148,7 +150,7 @@ function startInactivityTimer() {
     if (inactivityInterval) clearInterval(inactivityInterval);
     inactivityInterval = setInterval(() => {
         if (scheduler.isCheckerPaused()) return;
-        if (!currentOrderProcessing) return;
+        if (!orderState.currentOrderProcessing) return;
         const minutesSinceLastActivity = (Date.now() - lastModeratorActivity) / (60 * 1000);
         if (!autoSkipped && minutesSinceLastActivity >= AUTO_SKIP_MINUTES) {
             console.log(`[INACTIVITY] Модератор неактивен ${minutesSinceLastActivity.toFixed(1)} мин, принудительная перезагрузка очереди`);
@@ -211,8 +213,8 @@ async function checkAndOfferNewOrders() {
         if (!allOrders.length) {
             // НЕ сбрасываем очередь, если в ней уже есть заказы
             // Если очередь пуста, можно сбросить currentOrderProcessing
-            if (pendingNewOrders.length === 0) {
-                currentOrderProcessing = null;
+            if (orderState.pendingNewOrders.length === 0) {
+                orderState.currentOrderProcessing = null;
             }
             return;
         }
@@ -229,19 +231,19 @@ async function checkAndOfferNewOrders() {
         }
 
         // Сохраняем текущий обрабатываемый заказ, если он ещё есть в новом списке
-        const currentOrderId = currentOrderProcessing?.order?.posting_number;
+        const currentOrderId = orderState.currentOrderProcessing?.order?.posting_number;
         if (currentOrderId && !newOrders.some(o => o.posting_number === currentOrderId)) {
             // Текущий заказ уже не в статусе awaiting_packaging — сбрасываем
             console.log(`[CHECK] Текущий заказ ${currentOrderId} больше не в статусе awaiting_packaging, сбрасываем`);
-            currentOrderProcessing = null;
+            orderState.currentOrderProcessing = null;
         }
 
         // Заменяем очередь новыми заказами (но если текущий заказ ещё актуален, он уже в newOrders)
-        pendingNewOrders.length = 0;
-        pendingNewOrders.push(...newOrders);
+        orderState.pendingNewOrders.length = 0;
+        orderState.pendingNewOrders.push(...newOrders);
 
         // Если нет активного заказа и есть заказы – отправляем первый
-        if (!currentOrderProcessing && pendingNewOrders.length) {
+        if (!orderState.currentOrderProcessing && orderState.pendingNewOrders.length) {
             await processNextOrder();
         }
     } catch (err) {
@@ -259,58 +261,141 @@ async function checkAndOfferNewOrders() {
 
 // Функция для очистки устаревших назначений
 async function cleanExpiredAssignments(activeOrderIds) {
-    // activeOrderIds — множество posting_number из свежего списка
     const activeSet = new Set(activeOrderIds);
 
-    // Получаем все активные назначения (статус assigned) вместе с текущим статусом из БД
+    // LEFT JOIN — чтобы видеть назначения на отсутствующих сотрудников
     const assignments = await db.db.all(
-        'SELECT a.order_id, a.employee_id, e.tg_user_id, e.name as employee_name, a.status as local_status ' +
-        'FROM assignments a JOIN employees e ON a.employee_id = e.id ' +
+        'SELECT a.order_id, a.employee_id, e.tg_user_id, e.name as employee_name, ' +
+        'e.is_fired, a.status as local_status ' +
+        'FROM assignments a LEFT JOIN employees e ON a.employee_id = e.id ' +
         'WHERE a.status = "assigned"'
     );
 
     for (const assignment of assignments) {
         const orderId = assignment.order_id;
 
-        // 0. Если заказ сейчас завершается – пропускаем
-        if (finishingOrders.has(orderId) || pendingFinishConfirmations.has(orderId)) {
-            console.log(`[CLEAN] Заказ ${orderId} в процессе завершения, пропускаем очистку`);
-            continue;
+        // === 1. Проверка зависших состояний завершения ===
+        const finishState = finishingOrders.get(orderId);
+        if (finishState) {
+            const elapsed = Date.now() - finishState.startedAt;
+            if (elapsed < 10 * 60 * 1000) {
+                console.log(
+                    `[CLEAN] Заказ ${orderId} в процессе завершения ` +
+                    `(${Math.round(elapsed / 1000)} сек.), пропускаем`
+                );
+                continue;
+            }
+            console.warn(
+                `[CLEAN] Заказ ${orderId} завис в finishingOrders ` +
+                `на ${Math.round(elapsed / 60000)} мин. Принудительно удаляем.`
+            );
+            finishingOrders.delete(orderId);
+            pendingFinishConfirmations.delete(orderId);
         }
 
-        // 1. Если заказ всё ещё есть в списке awaiting_packaging — пропускаем
+        const confirmState = pendingFinishConfirmations.get(orderId);
+        if (confirmState) {
+            if (!confirmState.startedAt) {
+                console.warn(
+                    `[CLEAN] Заказ ${orderId} имеет pendingFinishConfirmations без startedAt. ` +
+                    `Удаляем зависшее состояние.`
+                );
+                pendingFinishConfirmations.delete(orderId);
+            } else {
+                const elapsed = Date.now() - confirmState.startedAt;
+                if (elapsed > 10 * 60 * 1000) {
+                    console.warn(
+                        `[CLEAN] Заказ ${orderId} имеет зависшее pendingFinishConfirmations ` +
+                        `(${Math.round(elapsed / 60000)} мин), удаляем.`
+                    );
+                    pendingFinishConfirmations.delete(orderId);
+                } else {
+                    console.log(
+                        `[CLEAN] Заказ ${orderId} ожидает подтверждения, пропускаем`
+                    );
+                    continue;
+                }
+            }
+        }
+
+        // === 2. Если заказ всё ещё в awaiting_packaging — пропускаем ===
         if (activeSet.has(orderId)) {
             continue;
         }
 
-        // 2. Если заказ уже помечен как completed — пропускаем (защита от race condition)
+        // === 3. Если заказ уже завершён в БД — пропускаем ===
         if (assignment.local_status === 'completed') {
-            console.log(`[CLEAN] Заказ ${orderId} уже завершён (status=completed), пропускаем очистку`);
+            console.log(`[CLEAN] Заказ ${orderId} уже завершён (status=completed), пропускаем`);
             continue;
         }
 
-        // 3. Дополнительная проверка свежего статуса из БД (на случай изменения после первого запроса)
         const freshStatus = await db.db.get(
             'SELECT status FROM assignments WHERE order_id = ?',
             orderId
         );
         if (freshStatus && freshStatus.status === 'completed') {
-            console.log(`[CLEAN] Заказ ${orderId} уже завершён (повторная проверка), пропускаем очистку`);
+            console.log(`[CLEAN] Заказ ${orderId} уже завершён (повторная проверка), пропускаем`);
             continue;
         }
 
-        console.log(`[CLEAN] Заказ ${orderId} больше не в awaiting_packaging, отменяем назначение у ${assignment.employee_name}`);
+        // === 4. Если сотрудник отсутствует или уволен — снимаем заказ ===
+        if (!assignment.employee_name || assignment.is_fired === 1) {
+            console.warn(
+                `[CLEAN] Заказ ${orderId} назначен на некорректного сотрудника ` +
+                `(employee_id=${assignment.employee_id}), снимаем`
+            );
 
-        // Отменяем назначение (БЕЗ увеличения счётчика)
+            await db.autoCancelOrder(orderId, assignment.employee_id);
+            await clearOrderState(bot, orderId, assignment.tg_user_id || null);
+
+            // Удаляем из очереди
+            const idx = orderState.pendingNewOrders.findIndex(o => o.posting_number === orderId);
+            if (idx !== -1) orderState.pendingNewOrders.splice(idx, 1);
+            if (orderState.currentOrderProcessing && orderState.currentOrderProcessing.order?.posting_number === orderId) {
+                orderState.currentOrderProcessing = null;
+            }
+
+            // Уведомляем сотрудника, если он есть
+            if (assignment.tg_user_id) {
+                try {
+                    await bot.sendMessage(
+                        assignment.tg_user_id,
+                        `❌ Заказ <code>${escapeHtml(orderId)}</code> был снят с вас ` +
+                        `(сотрудник отсутствует или уволен).`,
+                        { parse_mode: 'HTML' }
+                    );
+                } catch (e) {
+                    console.warn(`[CLEAN] Не удалось уведомить сотрудника по заказу ${orderId}:`, e.message);
+                }
+            }
+
+            // Всегда уведомляем модератора
+            const moderatorId = process.env.MODERATOR_ID;
+            if (moderatorId) {
+                await bot.sendMessage(
+                    moderatorId,
+                    `🔄 Заказ <code>${escapeHtml(orderId)}</code> автоматически снят с сотрудника ` +
+                    `<b>${escapeHtml(assignment.employee_name || 'не найден')}</b> ` +
+                    `(сотрудник отсутствует или уволен).`,
+                    { parse_mode: 'HTML' }
+                );
+            }
+            continue;
+        }
+
+        // === 5. Стандартное удаление: заказ больше не в awaiting_packaging ===
+        console.log(
+            `[CLEAN] Заказ ${orderId} больше не в awaiting_packaging, отменяем назначение у ${assignment.employee_name}`
+        );
+
         await db.autoCancelOrder(orderId, assignment.employee_id);
-
         await clearOrderState(bot, orderId, assignment.tg_user_id);
 
-        // Если заказ был в очереди — удаляем
-        const idx = pendingNewOrders.findIndex(o => o.posting_number === orderId);
-        if (idx !== -1) pendingNewOrders.splice(idx, 1);
-        if (currentOrderProcessing && currentOrderProcessing.order.posting_number === orderId) {
-            currentOrderProcessing = null;
+        // Удаляем из очереди
+        const idx = orderState.pendingNewOrders.findIndex(o => o.posting_number === orderId);
+        if (idx !== -1) orderState.pendingNewOrders.splice(idx, 1);
+        if (orderState.currentOrderProcessing && orderState.currentOrderProcessing.order?.posting_number === orderId) {
+            orderState.currentOrderProcessing = null;
         }
 
         // Уведомляем сотрудника
@@ -320,14 +405,15 @@ async function cleanExpiredAssignments(activeOrderIds) {
                 `❌ Заказ <code>${escapeHtml(orderId)}</code> был отменён (или более не актуален). Он снят с вас.`,
                 { parse_mode: 'HTML' }
             );
-        } catch (e) { /* игнорируем, если не можем отправить */ }
+        } catch (e) { }
 
         // Уведомляем модератора
         const moderatorId = process.env.MODERATOR_ID;
         if (moderatorId) {
             await bot.sendMessage(
                 moderatorId,
-                `🔄 Заказ <code>${escapeHtml(orderId)}</code> автоматически снят с сотрудника <b>${escapeHtml(assignment.employee_name)}</b>, так как он больше не в статусе awaiting_packaging.`,
+                `🔄 Заказ <code>${escapeHtml(orderId)}</code> автоматически снят с сотрудника ` +
+                `<b>${escapeHtml(assignment.employee_name)}</b>, так как он больше не в статусе awaiting_packaging.`,
                 { parse_mode: 'HTML' }
             );
         }
@@ -449,17 +535,17 @@ async function showOrderMenu(order) {
 // Функция для обработки следующего заказа из очереди
 async function processNextOrder() {
     try {
-        if (!pendingNewOrders.length) {
-            currentOrderProcessing = null;
+        if (!orderState.pendingNewOrders.length) {
+            orderState.currentOrderProcessing = null;
             return;
         }
-        console.log(`[NEXT] Вызов processNextOrder, pendingNewOrders.length = ${pendingNewOrders.length}, currentOrderProcessing = ${currentOrderProcessing ? currentOrderProcessing.order.posting_number : 'null'}`);
+        console.log(`[NEXT] Вызов processNextOrder, pendingNewOrders.length = ${orderState.pendingNewOrders.length}, currentOrderProcessing = ${orderState.currentOrderProcessing ? orderState.currentOrderProcessing.order.posting_number : 'null'}`);
         let attempts = 0;
-        while (pendingNewOrders.length && attempts < 3) {
-            const order = pendingNewOrders.shift();
+        while (orderState.pendingNewOrders.length && attempts < 3) {
+            const order = orderState.pendingNewOrders.shift();
             try {
                 await showOrderMenu(order);
-                currentOrderProcessing = { order, timestamp: Date.now() };
+                orderState.currentOrderProcessing = { order, timestamp: Date.now() };
                 return;
             } catch (err) {
                 attempts++;
@@ -467,15 +553,15 @@ async function processNextOrder() {
                 if (attempts >= 3) {
                     console.error(`Заказ ${order.posting_number} пропущен из-за повторяющихся ошибок`);
                 } else {
-                    pendingNewOrders.unshift(order);
+                    orderState.pendingNewOrders.unshift(order);
                     await new Promise(resolve => setTimeout(resolve, 2000));
                 }
             }
         }
-        currentOrderProcessing = null;
+        orderState.currentOrderProcessing = null;
     } catch (err) {
         console.error('[ERROR] processNextOrder:', err);
-        currentOrderProcessing = null;
+        orderState.currentOrderProcessing = null;
         setTimeout(() => processNextOrder(), 1000);
     }
 }
@@ -499,11 +585,11 @@ async function deleteLastOrderMessages() {
 
 async function forceReloadQueue() {
     await deleteLastOrderMessages();
-    currentOrderProcessing = null;
-    pendingNewOrders.length = 0;
+    orderState.currentOrderProcessing = null;
+    orderState.pendingNewOrders.length = 0;
     try {
         await safeCheckAndOfferNewOrders();
-        if (!currentOrderProcessing && pendingNewOrders.length) {
+        if (!orderState.currentOrderProcessing && orderState.pendingNewOrders.length) {
             await safeProcessNextOrder();
         }
     } catch (err) {
@@ -537,14 +623,24 @@ process.on('SIGTERM', gracefulShutdown);
     registerCommands(
         bot, db, ozon, scheduler, debugMode,
         isAuthorizedUser, isModerator, isAdmin,
-        showOrderMenu, safeCheckAndOfferNewOrders, safeProcessNextOrder,
-        pendingNewOrders, currentOrderProcessing,
+        showOrderMenu, safeCheckAndOfferNewOrders,
+        safeProcessNextOrder, orderState,
         deleteLastOrderMessages, updateModeratorActivity,
         startInactivityTimer, stopInactivityTimer
     );
-    setTimeout(() => {
-        checkAndOfferNewOrders();
-        restorePendingForms(db, ozon, bot);
+    setTimeout(async () => {
+        // Восстанавливаем состояния для активных заказов
+        try {
+            await restorePendingForms(db, ozon, bot);
+        } catch (err) {
+            console.error('[STARTUP] Ошибка restorePendingForms:', err);
+        }
+        // Проверяем новые заказы из API (внутри вызовет cleanExpiredAssignments)
+        try {
+            await checkAndOfferNewOrders();
+        } catch (err) {
+            console.error('[STARTUP] Ошибка checkAndOfferNewOrders:', err);
+        }
     }, 5000);
     scheduler.startCooldownCleaner();
     // Ежедневный бэкап базы данных bot.db

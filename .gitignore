@@ -12,6 +12,8 @@ team-info.xlsx
 *.xls~
 ~$*.xlsx
 
+materials-prices.json
+
 skipped_models.log
 uploaded_models.log
 skipped_models - Copy.log

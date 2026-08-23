@@ -8,5 +8,8 @@
     "НейлонАрмир": 2.5,
     "ASA": 2.5
   },
-  "minEarnings": 250
+  "minEarnings": 250,
+  "specialOffers": {
+    "TOYOT-VR-N": 85
+  }
 }

@@ -159,11 +159,12 @@ loadMaterials();
 function registerCommands(
   bot, db, ozon, scheduler, debugMode,
   isAuthorizedUser, isModerator, isAdmin,
-  showOrderMenu, safeCheckAndOfferNewOrders, safeProcessNextOrder,
-  pendingNewOrders, currentOrderProcessing,
+  showOrderMenu, safeCheckAndOfferNewOrders,
+  safeProcessNextOrder, orderState,
   deleteLastOrderMessages, updateModeratorActivity,
   startInactivityTimer, stopInactivityTimer
 ) {
+  const { pendingNewOrders, currentOrderProcessing } = orderState;
 
   // Вспомогательная функция безопасного удаления сообщения
   async function safeDeleteMessage(chatId, messageId) {
@@ -619,8 +620,9 @@ function registerCommands(
 
       // Сохраняем исходное сообщение для последующего удаления при подтверждении
       pendingFinishConfirmations.set(orderId, {
-        originalChatId: callbackQuery.message.chat.id,
-        originalMessageId: callbackQuery.message.message_id
+        originalChatId,
+        originalMessageId,
+        startedAt: Date.now()
       });
 
       // Отправляем новое сообщение с подтверждением
@@ -654,7 +656,7 @@ function registerCommands(
         await bot.answerCallbackQuery(callbackQuery.id, { text: '⏳ Заказ уже завершается, подождите...' });
         return;
       }
-      finishingOrders.set(orderId, true);
+      finishingOrders.set(orderId, { startedAt: Date.now(), userId });
 
       // Ответить на callback сразу, чтобы избежать ошибки "query is too old"
       await bot.answerCallbackQuery(callbackQuery.id, { text: '⏳ Заказ завершается...' });
@@ -861,8 +863,8 @@ function registerCommands(
         await clearOrderState(bot, orderId, userId);
 
         await db.cancelOrder(orderId, employee.id);
-        if (currentOrderProcessing && currentOrderProcessing.order.posting_number === orderId) {
-          currentOrderProcessing = null;
+        if (orderState.currentOrderProcessing && orderState.currentOrderProcessing.order.posting_number === orderId) {
+          orderState.currentOrderProcessing = null;
           console.log(`[CONFIRM_CANCEL] Сброшен currentOrderProcessing для заказа ${orderId}`);
         }
         await bot.answerCallbackQuery(callbackQuery.id, { text: '✅ Заказ отменён' });
@@ -886,8 +888,8 @@ function registerCommands(
         }
 
         await safeCheckAndOfferNewOrders();
-        if (!currentOrderProcessing && pendingNewOrders.length) {
-          console.log(`[CONFIRM_CANCEL] Отправляем следующий заказ, осталось: ${pendingNewOrders.length}`);
+        if (!orderState.currentOrderProcessing && orderState.pendingNewOrders.length) {
+          console.log(`[CONFIRM_CANCEL] Отправляем следующий заказ, осталось: ${orderState.pendingNewOrders.length}`);
           await safeProcessNextOrder();
         }
       } catch (err) {
@@ -929,11 +931,11 @@ function registerCommands(
       console.log(`[SKIP] Получен пропуск заказа ${data.substring(5)} от модератора ${adminId}`);
       const orderId = data.substring(5);
       // Удаляем этот заказ из глобальной очереди, если он там есть
-      const index = pendingNewOrders.findIndex(o => o.posting_number === orderId);
-      if (index !== -1) pendingNewOrders.splice(index, 1);
+      const index = orderState.pendingNewOrders.findIndex(o => o.posting_number === orderId);
+      if (index !== -1) orderState.pendingNewOrders.splice(index, 1);
       // Сбрасываем текущий обрабатываемый заказ
-      if (currentOrderProcessing && currentOrderProcessing.order.posting_number === orderId) {
-        currentOrderProcessing = null;
+      if (orderState.currentOrderProcessing && orderState.currentOrderProcessing.order.posting_number === orderId) {
+        orderState.currentOrderProcessing = null;
       }
       await bot.answerCallbackQuery(callbackQuery.id, { text: 'Заказ пропущен' });
       await safeDeleteMessage(msg.chat.id, msg.message_id);
@@ -1162,10 +1164,10 @@ function registerCommands(
       }
 
       // Если этот заказ сейчас в обработке у админа – сбрасываем currentOrderProcessing
-      const idx = pendingNewOrders.findIndex(o => o.posting_number === orderId);
-      if (idx !== -1) pendingNewOrders.splice(idx, 1);
-      if (currentOrderProcessing && currentOrderProcessing.order.posting_number === orderId) {
-        currentOrderProcessing = null;
+      const idx = orderState.pendingNewOrders.findIndex(o => o.posting_number === orderId);
+      if (idx !== -1) orderState.pendingNewOrders.splice(idx, 1);
+      if (orderState.currentOrderProcessing && orderState.currentOrderProcessing.order.posting_number === orderId) {
+        orderState.currentOrderProcessing = null;
         console.log(`[ADMIN] Сброшен текущий обрабатываемый заказ ${orderId}`);
       }
 
@@ -1180,7 +1182,7 @@ function registerCommands(
       await safeCheckAndOfferNewOrders();
 
       // Если после обновления нет активного заказа, но есть новые – отправляем следующий
-      if (!currentOrderProcessing && pendingNewOrders.length) {
+      if (!orderState.currentOrderProcessing && orderState.pendingNewOrders.length) {
         await safeProcessNextOrder();
       }
       return;
@@ -1312,8 +1314,8 @@ function registerCommands(
         await dbConn.run('COMMIT');
 
         // Очищаем глобальные состояния
-        pendingNewOrders.length = 0;
-        currentOrderProcessing = null;
+        orderState.pendingNewOrders.length = 0;
+        orderState.currentOrderProcessing = null;
         if (typeof deleteLastOrderMessages === 'function') {
           await deleteLastOrderMessages();
         }
@@ -1340,8 +1342,8 @@ function registerCommands(
 
         // Перезагрузка очереди заказов
         await safeCheckAndOfferNewOrders();
-        if (pendingNewOrders.length) {
-          currentOrderProcessing = null;
+        if (orderState.pendingNewOrders.length) {
+          orderState.currentOrderProcessing = null;
           await safeProcessNextOrder();
         }
 
@@ -1441,6 +1443,7 @@ function registerCommands(
   // ---------------------- ОБЩАЯ ФУНКЦИЯ ДЛЯ ЗАВЕРШЕНИЯ ЗАКАЗА ----------------------
   async function finishOrder(chatId, postingNumber, employee) {
     console.log(`[FINISH] === Начало завершения заказа ${postingNumber} сотрудником ${employee.name} (ID ${employee.id}) ===`);
+    let transactionCompleted = false;
     try {
       // Проверяем, что заказ ещё активен
       const assignment = await db.db.get(
@@ -1531,6 +1534,9 @@ function registerCommands(
         await db.completeOrder(postingNumber);
 
         await dbConn.run('COMMIT');
+
+        transactionCompleted = true;
+
         console.log(`[FINISH] Транзакция успешно закоммичена для заказа ${postingNumber}`);
       } catch (txError) {
         await dbConn.run('ROLLBACK');
@@ -1540,24 +1546,32 @@ function registerCommands(
       // ===================================
 
       // 4. Отправляем этикетку (после успешной транзакции)
-      if (labelBuffer) {
-        await bot.sendDocument(
-          chatId,
-          labelBuffer,
-          {
-            caption: `✅ Этикетка для заказа <code>${escapeHtml(postingNumber)}</code>`,
-            parse_mode: 'HTML'
-          },
-          {
-            filename: `label_${postingNumber}.pdf`,
-            contentType: 'application/pdf'
-          }
-        );
-      } else {
-        await bot.sendMessage(
-          chatId,
-          `✅ Заказ <code>${escapeHtml(postingNumber)}</code> подтверждён. Этикетку можно скачать в личном кабинете Ozon.`,
-          { parse_mode: 'HTML' }
+      try {
+        if (labelBuffer) {
+          await bot.sendDocument(
+            chatId,
+            labelBuffer,
+            {
+              caption: `✅ Этикетка для заказа <code>${escapeHtml(postingNumber)}</code>`,
+              parse_mode: 'HTML'
+            },
+            {
+              filename: `label_${postingNumber}.pdf`,
+              contentType: 'application/pdf'
+            }
+          );
+        } else {
+          await bot.sendMessage(
+            chatId,
+            `✅ Заказ <code>${escapeHtml(postingNumber)}</code> подтверждён. Этикетку можно скачать в личном кабинете Ozon.`,
+            { parse_mode: 'HTML' }
+          );
+        }
+      } catch (notifyErr) {
+        console.error(
+          `[FINISH] Заказ ${postingNumber} завершён, ` +
+          `но не удалось отправить этикетку/уведомление:`,
+          notifyErr
         );
       }
 
@@ -1587,10 +1601,11 @@ function registerCommands(
         );
       }
 
+      // После успешного завершения устанавливаем флаг
+      isCompleted = true;
       console.log(`[FINISH] Заказ ${postingNumber} успешно завершён, вызываем очистку состояний`);
       await clearOrderState(bot, postingNumber, employee.tg_user_id);
       console.log(`[FINISH] === Выполнено завершение заказа ${postingNumber} ===`);
-
     } catch (err) {
       console.error(`[FINISH] Ошибка при завершении заказа ${postingNumber}:`, err);
       await bot.sendMessage(
@@ -1598,15 +1613,20 @@ function registerCommands(
         `❌ Не удалось подтвердить сборку заказа <code>${escapeHtml(postingNumber)}</code>: <b>${escapeHtml(err.message)}</b>`,
         { parse_mode: 'HTML' }
       );
-      // Если ошибка произошла после подтверждения сборки, но до транзакции, заказ может быть уже в статусе awaiting_deliver,
-      // но статус в нашей БД останется assigned. Это допустимо, так как мы не обновили БД.
-      // Пользователь может повторить попытку, и тогда сработает проверка дубля заработка.
-      // Всё равно пытаемся очистить состояние, если оно есть
+      // Всё равно пытаемся очистить состояние
       try {
         await clearOrderState(bot, postingNumber, employee.tg_user_id);
       } catch (clearErr) {
         console.error(`[FINISH] Ошибка при очистке состояний после ошибки:`, clearErr);
       }
+    } finally {
+      // ВСЕГДА удаляем флаги, даже если clearOrderState не сработал
+      if (!transactionCompleted) {
+        console.log(`[FINISH] Принудительно удаляем флаги для ${postingNumber}`);
+        finishingOrders.delete(postingNumber);
+        pendingFinishConfirmations.delete(postingNumber);
+      }
+      console.log(`[FINISH] Флаги для ${postingNumber} очищены (finally)`);
     }
   }
 
@@ -1864,10 +1884,10 @@ function registerCommands(
       }
 
       // --- Удаляем заказ из очереди ---
-      const idx = pendingNewOrders.findIndex(o => o.posting_number === orderId);
-      if (idx !== -1) pendingNewOrders.splice(idx, 1);
-      if (currentOrderProcessing && currentOrderProcessing.order.posting_number === orderId) {
-        currentOrderProcessing = null;
+      const idx = orderState.pendingNewOrders.findIndex(o => o.posting_number === orderId);
+      if (idx !== -1) orderState.pendingNewOrders.splice(idx, 1);
+      if (orderState.currentOrderProcessing && orderState.currentOrderProcessing.order.posting_number === orderId) {
+        orderState.currentOrderProcessing = null;
       }
 
       console.log(`[ASSIGN] Заказ ${orderId} успешно назначен сотруднику ${employee.name} (ID ${employee.id})`);
@@ -3015,8 +3035,8 @@ function registerCommands(
       }
 
       // 2. Сбрасываем текущий обрабатываемый заказ и очередь (но не pendingForms)
-      currentOrderProcessing = null;
-      pendingNewOrders.length = 0;
+      orderState.currentOrderProcessing = null;
+      orderState.pendingNewOrders.length = 0;
 
       // 3. Обновляем очередь заказов из API (заполняет pendingNewOrders)
       await safeCheckAndOfferNewOrders();
@@ -3026,7 +3046,7 @@ function registerCommands(
       const activeOrderIds = new Set(activeAssignments.map(a => a.order_id));
 
       // 5. Добавляем заказы из обновлённой очереди
-      const pendingOrderIds = new Set(pendingNewOrders.map(o => o.posting_number));
+      const pendingOrderIds = new Set(orderState.pendingNewOrders.map(o => o.posting_number));
 
       // 6. Удаляем состояния только для заказов, которые не являются активными
       const keysToRemove = [];
@@ -3047,10 +3067,10 @@ function registerCommands(
       }
 
       // 7. Если есть заказы в очереди – отправляем первый
-      if (pendingNewOrders.length) {
-        currentOrderProcessing = null;
+      if (orderState.pendingNewOrders.length) {
+        orderState.currentOrderProcessing = null;
         await safeProcessNextOrder();
-        await bot.sendMessage(msg.chat.id, `✅ Перезагрузка выполнена. Отправлен первый заказ. Осталось: ${pendingNewOrders.length}`);
+        await bot.sendMessage(msg.chat.id, `✅ Перезагрузка выполнена. Отправлен первый заказ. Осталось: ${orderState.pendingNewOrders.length}`);
       } else {
         await bot.sendMessage(msg.chat.id, '✅ Перезагрузка выполнена. Новых заказов нет.');
       }
@@ -4824,23 +4844,42 @@ async function clearOrderState(bot, orderId, userId = null) {
     if (!found) console.log(`[CLEAR] Состояние для orderId ${orderId} не найдено`);
   }
 
-  // 2. Очищаем pendingFinishConfirmations
-  if (pendingFinishConfirmations.has(orderId)) {
-    console.log(`[CLEAR] Удаляем pendingFinishConfirmations для ${orderId}`);
-    const original = pendingFinishConfirmations.get(orderId);
-    if (original) {
-      try { await bot.deleteMessage(original.originalChatId, original.originalMessageId); } catch (e) { /* ignore */ }
+  // 2. Очищаем pendingFinishConfirmations (с защитой от ошибок)
+  try {
+    if (pendingFinishConfirmations.has(orderId)) {
+      console.log(`[CLEAR] Удаляем pendingFinishConfirmations для ${orderId}`);
+      const original = pendingFinishConfirmations.get(orderId);
+      if (original) {
+        try { await bot.deleteMessage(original.originalChatId, original.originalMessageId); } catch (e) { /* ignore */ }
+      }
+      pendingFinishConfirmations.delete(orderId);
     }
-    pendingFinishConfirmations.delete(orderId);
+  } catch (e) {
+    console.warn(`[CLEAR] Ошибка при удалении pendingFinishConfirmations:`, e);
   }
 
-  // 3. Очищаем finishingOrders
-  if (finishingOrders.has(orderId)) {
-    console.log(`[CLEAR] Удаляем finishingOrders для ${orderId}`);
-    finishingOrders.delete(orderId);
+  // 3. Очищаем finishingOrders (с защитой от ошибок)
+  try {
+    if (finishingOrders.has(orderId)) {
+      console.log(`[CLEAR] Удаляем finishingOrders для ${orderId}`);
+      finishingOrders.delete(orderId);
+    }
+  } catch (e) {
+    console.warn(`[CLEAR] Ошибка при удалении finishingOrders:`, e);
   }
 
-  console.log(`[CLEAR] Завершена очистка заказа ${orderId}`);
+  // 4. Проверяем, остались ли состояния
+  const remaining = [];
+  if (pendingFinishConfirmations.has(orderId)) remaining.push('pendingFinishConfirmations');
+  if (finishingOrders.has(orderId)) remaining.push('finishingOrders');
+  if (remaining.length) {
+    console.warn(
+      `[CLEAR] ⚠️ После очистки заказа ${orderId} ` +
+      `остались состояния: ${remaining.join(', ')}`
+    );
+  } else {
+    console.log(`[CLEAR] Завершена полная очистка заказа ${orderId}`);
+  }
 }
 
 /**

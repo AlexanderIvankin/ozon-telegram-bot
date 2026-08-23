@@ -157,6 +157,21 @@ async function fetchAwaitingOrders(warehouseId = null, limit = 100) {
         }
 
         if (debugMode.isDebugMode()) console.log(`[Ozon] Успешно получено ${allOrders.length} заказов.`);
+
+        // Если нужно фильтровать заказы по offer_id
+        if (allOrders.length && process.env.FILTER_ORDER_SUFFIX) {
+            const suffix = process.env.FILTER_ORDER_SUFFIX;
+            // Фильтруем: оставляем только те заказы, у которых ВСЕ offer_id заканчиваются на suffix
+            allOrders = allOrders.filter(order => {
+                if (!order.products || !order.products.length) return false;
+                return order.products.every(product => {
+                    const offerId = product.offer_id || '';
+                    return offerId.endsWith(suffix);
+                });
+            });
+            console.log(`[Ozon] После фильтрации по суффиксу "${suffix}" осталось ${allOrders.length} заказов`);
+        }
+
         return allOrders;
     } catch (error) {
         console.error('[Ozon] Ошибка при получении заказов:', error.message);

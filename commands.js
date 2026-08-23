@@ -33,6 +33,8 @@ const TOGGLE_ORDERS_COOLDOWN_MS = 60 * 1000; // 1 минута
 
 let MIN_EARNINGS = 250; // значение по умолчанию, перезаписывается при загрузке
 
+const DISABLE_MODELS = process.env.DISABLE_MODELS === 'true';
+
 /**
  * Экспорт заработка за месяц (исторический, без корректировок) в Excel.
  * Сохраняет файл в папку outputs.
@@ -1755,88 +1757,90 @@ function registerCommands(
         }
       }
 
-      // --- Отправка 3D-моделей и уведомления ---
-      const validExtensions = ['.stl', '.3mf', '.step', '.obj', '.zip'];
-      const moderatorId = process.env.MODERATOR_ID;
+      if (!DISABLE_MODELS) {
+        // --- Отправка 3D-моделей и уведомления ---
+        const validExtensions = ['.stl', '.3mf', '.step', '.obj', '.zip'];
+        const moderatorId = process.env.MODERATOR_ID;
 
-      for (const product of orderDetails.products) {
-        try {
-          const originalOfferId = product.offer_id;
-          if (!originalOfferId) continue;
+        for (const product of orderDetails.products) {
+          try {
+            const originalOfferId = product.offer_id;
+            if (!originalOfferId) continue;
 
-          const offersToCheck = [originalOfferId];
-          const parentOfferId = db.getParentOfferId(originalOfferId);
-          if (parentOfferId) offersToCheck.push(parentOfferId);
+            const offersToCheck = [originalOfferId];
+            const parentOfferId = db.getParentOfferId(originalOfferId);
+            if (parentOfferId) offersToCheck.push(parentOfferId);
 
-          let models = [];
-          let usedOfferId = null;
-          let textFiles = [];
-          let skipped = [];
+            let models = [];
+            let usedOfferId = null;
+            let textFiles = [];
+            let skipped = [];
 
-          for (const oid of offersToCheck) {
-            models = await db.getProductModelsByExtensions(oid, validExtensions);
-            textFiles = await db.getTextFilesForOfferId(oid);
-            skipped = await db.getSkippedModels(oid);
-            if (models.length) {
-              usedOfferId = oid;
-              break;
-            }
-          }
-
-          if (!models.length) {
-            if (textFiles.length) {
-              for (const txt of textFiles) {
-                await bot.sendDocument(moderatorId, txt.file_id, {
-                  caption: `📄 Текстовый файл для товара <b>${escapeHtml(product.name)}</b> (offer_id: <code>${escapeHtml(originalOfferId)}</code>) из offer_id <code>${escapeHtml(txt.offer_id)}</code>: <b>${escapeHtml(txt.file_name)}</b>\nОтправьте его сотруднику <b>${escapeHtml(employee.name)}</b> вручную.`,
-                  parse_mode: 'HTML'
-                });
-                await new Promise(resolve => setTimeout(resolve, 300));
+            for (const oid of offersToCheck) {
+              models = await db.getProductModelsByExtensions(oid, validExtensions);
+              textFiles = await db.getTextFilesForOfferId(oid);
+              skipped = await db.getSkippedModels(oid);
+              if (models.length) {
+                usedOfferId = oid;
+                break;
               }
-              await bot.sendMessage(
-                employee.tg_user_id,
-                `ℹ️ Для товара ${product.name} (<code>${escapeHtml(originalOfferId)}</code>) нет 3D-моделей, но есть инструкция (файл .txt). Обратитесь к модератору.`,
-                { parse_mode: 'HTML' }
-              );
-            } else {
+            }
+
+            if (!models.length) {
+              if (textFiles.length) {
+                for (const txt of textFiles) {
+                  await bot.sendDocument(moderatorId, txt.file_id, {
+                    caption: `📄 Текстовый файл для товара <b>${escapeHtml(product.name)}</b> (offer_id: <code>${escapeHtml(originalOfferId)}</code>) из offer_id <code>${escapeHtml(txt.offer_id)}</code>: <b>${escapeHtml(txt.file_name)}</b>\nОтправьте его сотруднику <b>${escapeHtml(employee.name)}</b> вручную.`,
+                    parse_mode: 'HTML'
+                  });
+                  await new Promise(resolve => setTimeout(resolve, 300));
+                }
+                await bot.sendMessage(
+                  employee.tg_user_id,
+                  `ℹ️ Для товара ${product.name} (<code>${escapeHtml(originalOfferId)}</code>) нет 3D-моделей, но есть инструкция (файл .txt). Обратитесь к модератору.`,
+                  { parse_mode: 'HTML' }
+                );
+              } else {
+                await bot.sendMessage(
+                  moderatorId,
+                  `⚠️ Для товара ${product.name} (<code>${escapeHtml(originalOfferId)}</code>) отсутствуют 3D-модели.\nОтправьте их сотруднику ${employee.name} вручную.`,
+                  { parse_mode: 'HTML' }
+                );
+                await bot.sendMessage(
+                  employee.tg_user_id,
+                  `ℹ️ 3D-модели для товара ${product.name} (<code>${escapeHtml(originalOfferId)}</code>) отсутствуют. Обратитесь к модератору за выдачей.`,
+                  { parse_mode: 'HTML' }
+                );
+              }
+              continue;
+            }
+
+            for (const model of models) {
+              let caption = `📁 3D-модель для ${product.name}\noffer_id: <code>${escapeHtml(originalOfferId)}</code>`;
+              if (usedOfferId !== originalOfferId) {
+                caption += `\n(модель взята из offer_id: <code>${escapeHtml(usedOfferId)}</code>)`;
+              }
+              caption += `\nФайл: <b>${escapeHtml(model.file_name)}</b>`;
+              await bot.sendDocument(employee.tg_user_id, model.file_id, {
+                caption,
+                parse_mode: 'HTML'
+              });
+              // Записываем выдачу моделей для сотрудника к данному offerId
+              await db.addIssuedModel(employee.id, originalOfferId);
+              await new Promise(resolve => setTimeout(resolve, 500));
+            }
+
+            if (skipped.length) {
+              const fileList = skipped.map(s => s.file_name).join(', ');
               await bot.sendMessage(
                 moderatorId,
-                `⚠️ Для товара ${product.name} (<code>${escapeHtml(originalOfferId)}</code>) отсутствуют 3D-модели.\nОтправьте их сотруднику ${employee.name} вручную.`,
-                { parse_mode: 'HTML' }
-              );
-              await bot.sendMessage(
-                employee.tg_user_id,
-                `ℹ️ 3D-модели для товара ${product.name} (<code>${escapeHtml(originalOfferId)}</code>) отсутствуют. Обратитесь к модератору за выдачей.`,
+                `⚠️ Для товара ${product.name} (<code>${escapeHtml(originalOfferId)}</code>) не загружены модели: <b>${escapeHtml(fileList)}</b>.\nОтправьте их сотруднику ${employee.name} вручную.`,
                 { parse_mode: 'HTML' }
               );
             }
-            continue;
+          } catch (err) {
+            console.error(`Ошибка обработки товара ${product.name}:`, err);
           }
-
-          for (const model of models) {
-            let caption = `📁 3D-модель для ${product.name}\noffer_id: <code>${escapeHtml(originalOfferId)}</code>`;
-            if (usedOfferId !== originalOfferId) {
-              caption += `\n(модель взята из offer_id: <code>${escapeHtml(usedOfferId)}</code>)`;
-            }
-            caption += `\nФайл: <b>${escapeHtml(model.file_name)}</b>`;
-            await bot.sendDocument(employee.tg_user_id, model.file_id, {
-              caption,
-              parse_mode: 'HTML'
-            });
-            // Записываем выдачу моделей для сотрудника к данному offerId
-            await db.addIssuedModel(employee.id, originalOfferId);
-            await new Promise(resolve => setTimeout(resolve, 500));
-          }
-
-          if (skipped.length) {
-            const fileList = skipped.map(s => s.file_name).join(', ');
-            await bot.sendMessage(
-              moderatorId,
-              `⚠️ Для товара ${product.name} (<code>${escapeHtml(originalOfferId)}</code>) не загружены модели: <b>${escapeHtml(fileList)}</b>.\nОтправьте их сотруднику ${employee.name} вручную.`,
-              { parse_mode: 'HTML' }
-            );
-          }
-        } catch (err) {
-          console.error(`Ошибка обработки товара ${product.name}:`, err);
         }
       }
 
@@ -2534,6 +2538,9 @@ function registerCommands(
   // --- "/upload_model" Команда для администратора: добавление/обновление 3D-модели ---
   bot.onText(/\/upload_model/, async (msg) => {
     const userId = msg.from.id.toString();
+    if (DISABLE_MODELS) {
+      return bot.sendMessage(msg.chat.id, 'ℹ️ Работа с 3D-моделями отключена для этого магазина.');
+    }
     if (!isAdmin(userId)) {
       return bot.sendMessage(msg.chat.id, '⛔ Только администратор может загружать модели.');
     }
@@ -2548,6 +2555,9 @@ function registerCommands(
   // --- "/remove_model" Команда для администратора: удаление модели ---
   bot.onText(/\/remove_model (\S+) (.+)/, async (msg, match) => {
     const userId = msg.from.id.toString();
+    if (DISABLE_MODELS) {
+      return bot.sendMessage(msg.chat.id, 'ℹ️ Работа с 3D-моделями отключена для этого магазина.');
+    }
     if (!isAdmin(userId)) {
       return bot.sendMessage(msg.chat.id, '⛔ Только администратор может удалять модели.');
     }
@@ -2572,6 +2582,9 @@ function registerCommands(
   // --- "/list_models" Команда для администратора: список моделей для offer_id ---
   bot.onText(/\/list_models (\S+)/, async (msg, match) => {
     const userId = msg.from.id.toString();
+    if (DISABLE_MODELS) {
+      return bot.sendMessage(msg.chat.id, 'ℹ️ Работа с 3D-моделями отключена для этого магазина.');
+    }
     if (!isAdmin(userId)) {
       return bot.sendMessage(msg.chat.id, '⛔ Только администратор может смотреть список моделей.');
     }
@@ -2597,6 +2610,9 @@ function registerCommands(
   // --- "/cancel_model" Команда для администратора: отмена ожидания заливки модели ---
   bot.onText(/\/cancel_model/, async (msg) => {
     const userId = msg.from.id.toString();
+    if (DISABLE_MODELS) {
+      return bot.sendMessage(msg.chat.id, 'ℹ️ Работа с 3D-моделями отключена для этого магазина.');
+    }
     if (!isAdmin(userId)) {
       return bot.sendMessage(msg.chat.id, '⛔ Только администратор может отменить заливку модели.');
     }
@@ -2617,6 +2633,9 @@ function registerCommands(
   // --- "/add_model" Команда для администратора: добавление/обновление 3D-модели ---
   bot.onText(/\/add_model (\S+)/, async (msg, match) => {
     const userId = msg.from.id.toString();
+    if (DISABLE_MODELS) {
+      return bot.sendMessage(msg.chat.id, 'ℹ️ Работа с 3D-моделями отключена для этого магазина.');
+    }
     if (!isAdmin(userId)) {
       return bot.sendMessage(msg.chat.id, '⛔ Только администратор может добавлять модели.');
     }
@@ -2634,6 +2653,9 @@ function registerCommands(
   // Формат: /bind_model <offer_id> <file_id> [имя_файла]
   bot.onText(/\/bind_model (\S+) (\S+)(?: (.+))?/, async (msg, match) => {
     const userId = msg.from.id.toString();
+    if (DISABLE_MODELS) {
+      return bot.sendMessage(msg.chat.id, 'ℹ️ Работа с 3D-моделями отключена для этого магазина.');
+    }
     if (!isAdmin(userId)) {
       return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
     }
@@ -2660,6 +2682,9 @@ function registerCommands(
   // --- "/get_file_id" Команда для администратора: получить file_id пересланного файла ---
   bot.onText(/\/get_file_id/, async (msg) => {
     const userId = msg.from.id.toString();
+    if (DISABLE_MODELS) {
+      return bot.sendMessage(msg.chat.id, 'ℹ️ Работа с 3D-моделями отключена для этого магазина.');
+    }
     if (!isAdmin(userId)) {
       return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
     }
@@ -2672,6 +2697,9 @@ function registerCommands(
   // --- "/cancel_bind" Команда для администратора: отменить привязку файла ---
   bot.onText(/\/cancel_bind/, async (msg) => {
     const userId = msg.from.id.toString();
+    if (DISABLE_MODELS) {
+      return bot.sendMessage(msg.chat.id, 'ℹ️ Работа с 3D-моделями отключена для этого магазина.');
+    }
     if (!isAdmin(userId)) {
       return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
     }
@@ -2681,6 +2709,93 @@ function registerCommands(
     } else {
       bot.sendMessage(msg.chat.id, 'Нет активной операции.');
     }
+  });
+
+  // --- "/send_models" Команда для администратора: отправить все модели для offer_id сотруднику (или себе) ---
+  bot.onText(/\/send_models (\S+)(?:\s+(\d+))?/, async (msg, match) => {
+    const userId = msg.from.id.toString();
+    if (DISABLE_MODELS) {
+      return bot.sendMessage(msg.chat.id, 'ℹ️ Работа с 3D-моделями отключена для этого магазина.');
+    }
+    if (!isAdmin(userId)) {
+      return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
+    }
+    if (isModerator(userId) && typeof updateModeratorActivity === 'function') {
+      updateModeratorActivity();
+    }
+
+    const offerId = match[1];
+    const targetEmployeeId = match[2] ? parseInt(match[2]) : null;
+
+    let targetChatId = msg.chat.id;
+    let targetName = 'себе';
+
+    if (targetEmployeeId) {
+      const employee = await db.getEmployeeById(targetEmployeeId);
+      if (!employee) {
+        return bot.sendMessage(
+          msg.chat.id,
+          `❌ Сотрудник с ID <code>${escapeHtml(targetEmployeeId)}</code> не найден.`,
+          { parse_mode: 'HTML' }
+        );
+      }
+      targetChatId = employee.tg_user_id;
+      targetName = employee.name;
+    }
+
+    const models = await db.getAllProductModels(offerId);
+    if (!models || models.length === 0) {
+      return bot.sendMessage(
+        msg.chat.id,
+        `📭 Нет моделей для offer_id <code>${escapeHtml(offerId)}</code>.`,
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    try {
+      await bot.sendChatAction(targetChatId, 'typing');
+    } catch (err) {
+      return bot.sendMessage(
+        msg.chat.id,
+        `❌ Не удалось отправить сообщение сотруднику <b>${escapeHtml(targetName)}</b>. Возможно, он не начал диалог с ботом.`,
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    await bot.sendMessage(
+      msg.chat.id,
+      `📤 Отправляю <b>${models.length}</b> моделей для offer_id <code>${escapeHtml(offerId)}</code> ${targetEmployeeId ? `сотруднику <b>${escapeHtml(targetName)}</b>` : 'себе'}...`,
+      { parse_mode: 'HTML' }
+    );
+
+    let sentCount = 0;
+    for (const model of models) {
+      try {
+        const caption = `📁 Модель для offer_id: <code>${escapeHtml(offerId)}</code>\nФайл: <b>${escapeHtml(model.file_name)}</b>`;
+        await bot.sendDocument(targetChatId, model.file_id, {
+          caption,
+          parse_mode: 'HTML'
+        });
+        sentCount++;
+        if (targetEmployeeId) {
+          await db.addIssuedModel(targetEmployeeId, offerId);
+        }
+        await new Promise(resolve => setTimeout(resolve, 300));
+      } catch (err) {
+        console.error(`Ошибка отправки модели ${model.file_name}:`, err.message);
+        await bot.sendMessage(
+          msg.chat.id,
+          `❌ Ошибка при отправке файла <b>${escapeHtml(model.file_name)}</b>: <b>${escapeHtml(err.message)}</b>`,
+          { parse_mode: 'HTML' }
+        );
+      }
+    }
+
+    await bot.sendMessage(
+      msg.chat.id,
+      `✅ Отправлено <b>${sentCount}</b> из <b>${models.length}</b> моделей для offer_id <code>${escapeHtml(offerId)}</code> ${targetEmployeeId ? `сотруднику <b>${escapeHtml(targetName)}</b>` : 'себе'}.`,
+      { parse_mode: 'HTML' }
+    );
   });
 
   // ---------------------- ЕДИНЫЙ ОБРАБОТЧИК ДОКУМЕНТОВ ----------------------
@@ -2780,244 +2895,162 @@ function registerCommands(
       return;
     }
 
-    // Приоритет 1: /upload_model
-    if (pendingUploadModel && pendingUploadModel.has(userId)) {
-      const pending = pendingUploadModel.get(userId);
-      if (pending.step !== 'waiting_file') return;
+    if (!DISABLE_MODELS) {
+      // Приоритет 1: /upload_model
+      if (pendingUploadModel && pendingUploadModel.has(userId)) {
+        const pending = pendingUploadModel.get(userId);
+        if (pending.step !== 'waiting_file') return;
 
-      const file = msg.document;
-      const fileName = file.file_name;
-      console.log(`[UPLOAD_MODEL] Имя файла: "${fileName}"`);
-
-      const underscoreIndex = fileName.indexOf('_');
-      if (underscoreIndex === -1) {
-        await bot.sendMessage(
-          msg.chat.id,
-          '❌ Имя файла должно содержать символ "_" после offer_id (например, <code>2001867564-N_avs.stl</code>).',
-          { parse_mode: 'HTML' }
-        );
-        pendingUploadModel.delete(userId);
-        return;
-      }
-
-      let offerId = fileName.substring(0, underscoreIndex);
-      const rest = fileName.substring(underscoreIndex + 1);
-
-      const suffixMatch = rest.match(/^([A-Z]+)(?:-|_|\.)/);
-      if (!offerId.includes('-') && suffixMatch) {
-        const possibleSuffix = suffixMatch[1];
-        if (possibleSuffix === 'N' || possibleSuffix === 'NR' || possibleSuffix === 'NL') {
-          const newOfferId = offerId + '-' + possibleSuffix;
-          console.log(`[UPLOAD_MODEL] Обнаружен суффикс, восстанавливаем: "${newOfferId}"`);
-          offerId = newOfferId;
-        }
-      }
-
-      if (!/^[A-Z0-9-]+$/.test(offerId)) {
-        await bot.sendMessage(
-          msg.chat.id,
-          '❌ Артикул может содержать только буквы, цифры и дефис. Проверьте имя файла.',
-          { parse_mode: 'HTML' }
-        );
-        pendingUploadModel.delete(userId);
-        return;
-      }
-
-      console.log(`[UPLOAD_MODEL] Итоговый offerId: "${offerId}"`);
-
-      try {
-        const sent = await bot.sendDocument(process.env.MODELS_CHAT_ID, file.file_id, {
-          caption: `offer_id: <code>${escapeHtml(offerId)}</code>\nФайл: <b>${escapeHtml(fileName)}</b>`,
-          parse_mode: 'HTML'
-        });
-        const newFileId = sent.document.file_id;
-        await db.deleteProductModel(offerId, fileName);
-        await db.upsertProductModel(offerId, newFileId, fileName, file.file_size);
-        await bot.sendMessage(
-          msg.chat.id,
-          `✅ Модель <b>${escapeHtml(fileName)}</b> для offer_id <code>${escapeHtml(offerId)}</code> успешно загружена/обновлена.`,
-          { parse_mode: 'HTML' }
-        );
-      } catch (err) {
-        console.error('Ошибка загрузки модели:', err);
-        await bot.sendMessage(
-          msg.chat.id,
-          `❌ Ошибка загрузки: <b>${escapeHtml(err.message)}</b>`,
-          { parse_mode: 'HTML' }
-        );
-      }
-      pendingUploadModel.delete(userId);
-      return;
-    }
-
-    // Приоритет 2: /add_model
-    if (pendingModelAdd && pendingModelAdd.has(userId)) {
-      const pending = pendingModelAdd.get(userId);
-      if (pending.step !== 'waiting_file') return;
-
-      const file = msg.document;
-      const fileSizeMB = file.file_size / (1024 * 1024);
-      if (fileSizeMB > 50) {
-        await bot.sendMessage(
-          msg.chat.id,
-          `❌ Файл слишком большой (<b>${fileSizeMB.toFixed(2)} МБ</b>). Максимум 50 МБ.`,
-          { parse_mode: 'HTML' }
-        );
-        return;
-      }
-      const fileName = file.file_name;
-      const offerId = pending.offerId;
-
-      try {
-        const sent = await bot.sendDocument(process.env.MODELS_CHAT_ID, file.file_id, {
-          caption: `offer_id: <code>${escapeHtml(offerId)}</code>\nФайл: <b>${escapeHtml(fileName)}</b>`,
-          parse_mode: 'HTML'
-        });
-        const newFileId = sent.document.file_id;
-        await db.deleteProductModel(offerId, fileName);
-        await db.upsertProductModel(offerId, newFileId, fileName, file.file_size);
-        await bot.sendMessage(
-          msg.chat.id,
-          `✅ Модель <b>${escapeHtml(fileName)}</b> для offer_id <code>${escapeHtml(offerId)}</code> успешно добавлена/обновлена.`,
-          { parse_mode: 'HTML' }
-        );
-      } catch (err) {
-        console.error('Ошибка добавления модели:', err);
-        await bot.sendMessage(
-          msg.chat.id,
-          `❌ Ошибка добавления модели: <b>${escapeHtml(err.message)}</b>`,
-          { parse_mode: 'HTML' }
-        );
-      }
-      pendingModelAdd.delete(userId);
-      return;
-    }
-
-    // Приоритет 3: /get_file_id
-    if (pendingFileId && pendingFileId.has(userId)) {
-      const pending = pendingFileId.get(userId);
-      if (pending.step === 'waiting_file') {
         const file = msg.document;
-        const fileId = file.file_id;
         const fileName = file.file_name;
-        const fileSize = file.file_size;
-        await bot.sendMessage(
-          msg.chat.id,
-          `✅ file_id: <code>${escapeHtml(fileId)}</code>\nИмя: <b>${escapeHtml(fileName)}</b>\nРазмер: <b>${(fileSize / 1024 / 1024).toFixed(2)} МБ</b>\n\nИспользуйте /bind_model <code>offer_id</code> <code>${escapeHtml(fileId)}</code> "<b>${escapeHtml(fileName)}</b>"`,
-          { parse_mode: 'HTML' }
-        );
-        pendingFileId.delete(userId);
-      }
-      return;
-    }
+        console.log(`[UPLOAD_MODEL] Имя файла: "${fileName}"`);
 
-    // Приоритет 4: пересылка из канала (без активного состояния)
-    if (msg.forward_from_chat || msg.forward_from) {
-      const caption = msg.caption || '';
-      const offerIdMatch = caption.match(/offer_id:\s*(\S+)/i);
-      const fileNameMatch = caption.match(/Файл:\s*(.+)/i);
+        const underscoreIndex = fileName.indexOf('_');
+        if (underscoreIndex === -1) {
+          await bot.sendMessage(
+            msg.chat.id,
+            '❌ Имя файла должно содержать символ "_" после offer_id (например, <code>2001867564-N_avs.stl</code>).',
+            { parse_mode: 'HTML' }
+          );
+          pendingUploadModel.delete(userId);
+          return;
+        }
 
-      if (!offerIdMatch || !fileNameMatch) {
+        let offerId = fileName.substring(0, underscoreIndex);
+        const rest = fileName.substring(underscoreIndex + 1);
+
+        const suffixMatch = rest.match(/^([A-Z]+)(?:-|_|\.)/);
+        if (!offerId.includes('-') && suffixMatch) {
+          const possibleSuffix = suffixMatch[1];
+          if (possibleSuffix === 'N' || possibleSuffix === 'NR' || possibleSuffix === 'NL') {
+            const newOfferId = offerId + '-' + possibleSuffix;
+            console.log(`[UPLOAD_MODEL] Обнаружен суффикс, восстанавливаем: "${newOfferId}"`);
+            offerId = newOfferId;
+          }
+        }
+
+        if (!/^[A-Z0-9-]+$/.test(offerId)) {
+          await bot.sendMessage(
+            msg.chat.id,
+            '❌ Артикул может содержать только буквы, цифры и дефис. Проверьте имя файла.',
+            { parse_mode: 'HTML' }
+          );
+          pendingUploadModel.delete(userId);
+          return;
+        }
+
+        console.log(`[UPLOAD_MODEL] Итоговый offerId: "${offerId}"`);
+
+        try {
+          const sent = await bot.sendDocument(process.env.MODELS_CHAT_ID, file.file_id, {
+            caption: `offer_id: <code>${escapeHtml(offerId)}</code>\nФайл: <b>${escapeHtml(fileName)}</b>`,
+            parse_mode: 'HTML'
+          });
+          const newFileId = sent.document.file_id;
+          await db.deleteProductModel(offerId, fileName);
+          await db.upsertProductModel(offerId, newFileId, fileName, file.file_size);
+          await bot.sendMessage(
+            msg.chat.id,
+            `✅ Модель <b>${escapeHtml(fileName)}</b> для offer_id <code>${escapeHtml(offerId)}</code> успешно загружена/обновлена.`,
+            { parse_mode: 'HTML' }
+          );
+        } catch (err) {
+          console.error('Ошибка загрузки модели:', err);
+          await bot.sendMessage(
+            msg.chat.id,
+            `❌ Ошибка загрузки: <b>${escapeHtml(err.message)}</b>`,
+            { parse_mode: 'HTML' }
+          );
+        }
+        pendingUploadModel.delete(userId);
         return;
       }
 
-      const offerId = offerIdMatch[1].trim();
-      const fileName = fileNameMatch[1].trim();
-      const fileId = msg.document.file_id;
-      const fileSize = msg.document.file_size;
+      // Приоритет 2: /add_model
+      if (pendingModelAdd && pendingModelAdd.has(userId)) {
+        const pending = pendingModelAdd.get(userId);
+        if (pending.step !== 'waiting_file') return;
 
-      await db.upsertProductModel(offerId, fileId, fileName, fileSize);
-      await bot.sendMessage(
-        msg.chat.id,
-        `✅ Модель <b>${escapeHtml(fileName)}</b> для offer_id <code>${escapeHtml(offerId)}</code> успешно привязана/обновлена.`,
-        { parse_mode: 'HTML' }
-      );
-      return;
-    }
-  });
-
-  // --- "/send_models" Команда для администратора: отправить все модели для offer_id сотруднику (или себе) ---
-  bot.onText(/\/send_models (\S+)(?:\s+(\d+))?/, async (msg, match) => {
-    const userId = msg.from.id.toString();
-    if (!isAdmin(userId)) {
-      return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
-    }
-    if (isModerator(userId) && typeof updateModeratorActivity === 'function') {
-      updateModeratorActivity();
-    }
-
-    const offerId = match[1];
-    const targetEmployeeId = match[2] ? parseInt(match[2]) : null;
-
-    let targetChatId = msg.chat.id;
-    let targetName = 'себе';
-
-    if (targetEmployeeId) {
-      const employee = await db.getEmployeeById(targetEmployeeId);
-      if (!employee) {
-        return bot.sendMessage(
-          msg.chat.id,
-          `❌ Сотрудник с ID <code>${escapeHtml(targetEmployeeId)}</code> не найден.`,
-          { parse_mode: 'HTML' }
-        );
-      }
-      targetChatId = employee.tg_user_id;
-      targetName = employee.name;
-    }
-
-    const models = await db.getAllProductModels(offerId);
-    if (!models || models.length === 0) {
-      return bot.sendMessage(
-        msg.chat.id,
-        `📭 Нет моделей для offer_id <code>${escapeHtml(offerId)}</code>.`,
-        { parse_mode: 'HTML' }
-      );
-    }
-
-    try {
-      await bot.sendChatAction(targetChatId, 'typing');
-    } catch (err) {
-      return bot.sendMessage(
-        msg.chat.id,
-        `❌ Не удалось отправить сообщение сотруднику <b>${escapeHtml(targetName)}</b>. Возможно, он не начал диалог с ботом.`,
-        { parse_mode: 'HTML' }
-      );
-    }
-
-    await bot.sendMessage(
-      msg.chat.id,
-      `📤 Отправляю <b>${models.length}</b> моделей для offer_id <code>${escapeHtml(offerId)}</code> ${targetEmployeeId ? `сотруднику <b>${escapeHtml(targetName)}</b>` : 'себе'}...`,
-      { parse_mode: 'HTML' }
-    );
-
-    let sentCount = 0;
-    for (const model of models) {
-      try {
-        const caption = `📁 Модель для offer_id: <code>${escapeHtml(offerId)}</code>\nФайл: <b>${escapeHtml(model.file_name)}</b>`;
-        await bot.sendDocument(targetChatId, model.file_id, {
-          caption,
-          parse_mode: 'HTML'
-        });
-        sentCount++;
-        if (targetEmployeeId) {
-          await db.addIssuedModel(targetEmployeeId, offerId);
+        const file = msg.document;
+        const fileSizeMB = file.file_size / (1024 * 1024);
+        if (fileSizeMB > 50) {
+          await bot.sendMessage(
+            msg.chat.id,
+            `❌ Файл слишком большой (<b>${fileSizeMB.toFixed(2)} МБ</b>). Максимум 50 МБ.`,
+            { parse_mode: 'HTML' }
+          );
+          return;
         }
-        await new Promise(resolve => setTimeout(resolve, 300));
-      } catch (err) {
-        console.error(`Ошибка отправки модели ${model.file_name}:`, err.message);
+        const fileName = file.file_name;
+        const offerId = pending.offerId;
+
+        try {
+          const sent = await bot.sendDocument(process.env.MODELS_CHAT_ID, file.file_id, {
+            caption: `offer_id: <code>${escapeHtml(offerId)}</code>\nФайл: <b>${escapeHtml(fileName)}</b>`,
+            parse_mode: 'HTML'
+          });
+          const newFileId = sent.document.file_id;
+          await db.deleteProductModel(offerId, fileName);
+          await db.upsertProductModel(offerId, newFileId, fileName, file.file_size);
+          await bot.sendMessage(
+            msg.chat.id,
+            `✅ Модель <b>${escapeHtml(fileName)}</b> для offer_id <code>${escapeHtml(offerId)}</code> успешно добавлена/обновлена.`,
+            { parse_mode: 'HTML' }
+          );
+        } catch (err) {
+          console.error('Ошибка добавления модели:', err);
+          await bot.sendMessage(
+            msg.chat.id,
+            `❌ Ошибка добавления модели: <b>${escapeHtml(err.message)}</b>`,
+            { parse_mode: 'HTML' }
+          );
+        }
+        pendingModelAdd.delete(userId);
+        return;
+      }
+
+      // Приоритет 3: /get_file_id
+      if (pendingFileId && pendingFileId.has(userId)) {
+        const pending = pendingFileId.get(userId);
+        if (pending.step === 'waiting_file') {
+          const file = msg.document;
+          const fileId = file.file_id;
+          const fileName = file.file_name;
+          const fileSize = file.file_size;
+          await bot.sendMessage(
+            msg.chat.id,
+            `✅ file_id: <code>${escapeHtml(fileId)}</code>\nИмя: <b>${escapeHtml(fileName)}</b>\nРазмер: <b>${(fileSize / 1024 / 1024).toFixed(2)} МБ</b>\n\nИспользуйте /bind_model <code>offer_id</code> <code>${escapeHtml(fileId)}</code> "<b>${escapeHtml(fileName)}</b>"`,
+            { parse_mode: 'HTML' }
+          );
+          pendingFileId.delete(userId);
+        }
+        return;
+      }
+
+      // Приоритет 4: пересылка из канала (без активного состояния)
+      if (msg.forward_from_chat || msg.forward_from) {
+        const caption = msg.caption || '';
+        const offerIdMatch = caption.match(/offer_id:\s*(\S+)/i);
+        const fileNameMatch = caption.match(/Файл:\s*(.+)/i);
+
+        if (!offerIdMatch || !fileNameMatch) {
+          return;
+        }
+
+        const offerId = offerIdMatch[1].trim();
+        const fileName = fileNameMatch[1].trim();
+        const fileId = msg.document.file_id;
+        const fileSize = msg.document.file_size;
+
+        await db.upsertProductModel(offerId, fileId, fileName, fileSize);
         await bot.sendMessage(
           msg.chat.id,
-          `❌ Ошибка при отправке файла <b>${escapeHtml(model.file_name)}</b>: <b>${escapeHtml(err.message)}</b>`,
+          `✅ Модель <b>${escapeHtml(fileName)}</b> для offer_id <code>${escapeHtml(offerId)}</code> успешно привязана/обновлена.`,
           { parse_mode: 'HTML' }
         );
+        return;
       }
     }
-
-    await bot.sendMessage(
-      msg.chat.id,
-      `✅ Отправлено <b>${sentCount}</b> из <b>${models.length}</b> моделей для offer_id <code>${escapeHtml(offerId)}</code> ${targetEmployeeId ? `сотруднику <b>${escapeHtml(targetName)}</b>` : 'себе'}.`,
-      { parse_mode: 'HTML' }
-    );
   });
 
   // --- "/reload_queue" Команда для администратора: Принудительная инициализация синхронизации (вне таймера) и перезапуска очереди заказов ---

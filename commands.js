@@ -620,8 +620,8 @@ function registerCommands(
 
       // Сохраняем исходное сообщение для последующего удаления при подтверждении
       pendingFinishConfirmations.set(orderId, {
-        originalChatId,
-        originalMessageId,
+        originalChatId: callbackQuery.message.chat.id,
+        originalMessageId: callbackQuery.message.message_id,
         startedAt: Date.now()
       });
 

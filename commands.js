@@ -3171,17 +3171,28 @@ function registerCommands(
         for (const order of chunk) {
           const orderNumber = order.posting_number;
           const productsCount = order.products ? order.products.length : (order.products_count || '?');
-          let whId = order.warehouse_id || order.delivery_method?.warehouse_id || null;
+
+          let whId = order.warehouse_id || null;
+          if (order.delivery_method && order.delivery_method.warehouse_id) {
+            whId = order.delivery_method.warehouse_id;
+          }
+
           let whDisplay = `<b>не указан</b>`;
           if (whId) {
             whId = String(whId);
-            const whName = await db.getWarehouseNameById(whId);
-            if (whName === whId) {
+            try {
+              const whName = await db.getWarehouseNameById(whId);
+              if (whName && whName !== whId) {
+                whDisplay = `<b>${escapeHtml(whName)}</b> (ID: <code>${escapeHtml(whId)}</code>)`;
+              } else {
+                whDisplay = `ID: <code>${escapeHtml(whId)}</code>`;
+              }
+            } catch (err) {
+              console.error(`[ORDERS] Ошибка получения склада для ${whId}:`, err);
               whDisplay = `ID: <code>${escapeHtml(whId)}</code>`;
-            } else {
-              whDisplay = `<b>${escapeHtml(whName)}</b> (ID: <code>${escapeHtml(whId)}</code>)`;
             }
           }
+
           reply += `• Заказ <code>${escapeHtml(orderNumber)}</code>\n`;
           reply += `  Товаров: ${productsCount}\n`;
           reply += `  Склад: ${whDisplay}\n\n`;

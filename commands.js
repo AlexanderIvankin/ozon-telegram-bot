@@ -3138,10 +3138,14 @@ function registerCommands(
       }
 
       if (!orders || orders.length === 0) {
-        let msg = warehouseId
-          ? `📭 Нет заказов в статусе "awaiting_packaging" для склада ${warehouseNotFound ? `ID: <code>${escapeHtml(warehouseId)}</code>` : `«<b>${escapeHtml(warehouseName)}</b>»`}.`
+        const emptyMessage = warehouseId
+          ? `📭 Нет заказов в статусе "awaiting_packaging" для склада ${warehouseNotFound
+            ? `ID: <code>${escapeHtml(warehouseId)}</code>`
+            : `«<b>${escapeHtml(warehouseName)}</b>»`
+          }.`
           : '📭 Нет заказов в статусе "awaiting_packaging".';
-        return bot.sendMessage(msg.chat.id, msg, { parse_mode: 'HTML' });
+
+        return bot.sendMessage(msg.chat.id, emptyMessage, { parse_mode: 'HTML' });
       }
 
       let reply = `📋 <b>Список заказов (awaiting_packaging)</b>`;

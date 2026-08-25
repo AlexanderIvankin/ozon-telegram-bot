@@ -3638,7 +3638,7 @@ function registerCommands(
       // Основная информация
       if (details.substatus) reply += ` (${escapeHtml(details.substatus)})`;
       reply += `\n`;
-      if (details.order_number) reply += `<b>Номер заказа:</b> ${escapeHtml(details.order_number)}\n`;
+      if (details.order_number) reply += `<b>Номер заказа:</b> <code>${escapeHtml(details.order_number)}</code>\n`;
       if (details.delivery_method) {
         reply += `<b>Метод доставки:</b> ${escapeHtml(details.delivery_method.name || '—')}\n`;
         if (details.delivery_method.warehouse_id) {
@@ -3653,8 +3653,8 @@ function registerCommands(
         for (let i = 0; i < details.products.length; i++) {
           const p = details.products[i];
           reply += `${i + 1}. ${escapeHtml(p.name || '—')}`;
-          if (p.sku) reply += ` (SKU: ${escapeHtml(p.sku)})`;
-          if (p.offer_id) reply += `, offer_id: ${escapeHtml(p.offer_id)}`;
+          if (p.sku) reply += ` (<b>SKU:</b> <code>${escapeHtml(p.sku)}</code>)`;
+          if (p.offer_id) reply += `, <b>offer_id:</b> <code>${escapeHtml(p.offer_id)}</code>`;
           reply += ` — ${escapeHtml(p.quantity)} шт.\n`;
           if (p.price && p.price.amount) {
             reply += `   Цена: ${escapeHtml(p.price.amount)} ${escapeHtml(p.price.currency || 'RUB')}\n`;

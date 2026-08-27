@@ -3425,7 +3425,7 @@ function registerCommands(
       // Приоритет 4: пересылка из канала (без активного состояния)
       if (msg.forward_from_chat || msg.forward_from) {
         const caption = msg.caption || '';
-        const plainCaption = caption.replace(/<[^>]*>/g, '');
+        const plainCaption = stripHtml(caption);
         const offerIdMatch = plainCaption.match(/offer_id:\s*(\S+)/i);
         const fileNameMatch = plainCaption.match(/Файл:\s*(.+)/i);
 

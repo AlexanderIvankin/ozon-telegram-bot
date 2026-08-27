@@ -42,6 +42,11 @@ function escapeHtml(text) {
     .replace(/>/g, '&gt;');
 }
 
+// Функция для удаления HTML тегов из регулярных выражений
+function stripHtml(html) {
+    return html.replace(/<[^>]*>/g, '');
+}
+
 /**
  * Форматирует дату для имени файла: YYYY-MM-DD_HH-MM-SS в указанном часовом поясе
  */
@@ -144,6 +149,7 @@ module.exports = {
   mergePdfs,
   colToLetter,
   escapeHtml,
+  stripHtml,
   formatLocalTimestamp,
   formatDateDDMMYYYY,
   getLocalDate,

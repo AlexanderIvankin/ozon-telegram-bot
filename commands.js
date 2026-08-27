@@ -5,7 +5,7 @@ const axios = require('axios');
 const bwipjs = require('bwip-js');
 const { syncEmployeesFromExcel, exportTeamInfoXlsx, exportTeamInfoXlsxAll } = require('./syncEmployees');
 const { getAdminCommandsOnly, getAdminStartMessage, getEmployeeCommandsOnly, getEmployeeStartMessage, getUnauthorizedMessage } = require('./helpText');
-const { mergePdfs, escapeHtml, formatLocalTimestamp, formatDateDDMMYYYY } = require('./utils');
+const { mergePdfs, escapeHtml, stripHtml, formatLocalTimestamp, formatDateDDMMYYYY } = require('./utils');
 const { finishingOrders, pendingFinishConfirmations } = require('./state');
 
 // Локальные хранилища для состояний
@@ -3338,7 +3338,7 @@ function registerCommands(
 
         try {
           const sent = await bot.sendDocument(process.env.MODELS_CHAT_ID, file.file_id, {
-            caption: `offer_id: <code>${escapeHtml(offerId)}</code>\nФайл: <b>${escapeHtml(fileName)}</b>`,
+            caption: `<b>offer_id:</b> <code>${escapeHtml(offerId)}</code>\n<b>Файл:</b> ${escapeHtml(fileName)}`,
             parse_mode: 'HTML'
           });
           const newFileId = sent.document.file_id;
@@ -3381,7 +3381,7 @@ function registerCommands(
 
         try {
           const sent = await bot.sendDocument(process.env.MODELS_CHAT_ID, file.file_id, {
-            caption: `offer_id: <code>${escapeHtml(offerId)}</code>\nФайл: <b>${escapeHtml(fileName)}</b>`,
+            caption: `<b>offer_id:</b> <code>${escapeHtml(offerId)}</code>\n<b>Файл:</b> ${escapeHtml(fileName)}`,
             parse_mode: 'HTML'
           });
           const newFileId = sent.document.file_id;
@@ -3425,8 +3425,9 @@ function registerCommands(
       // Приоритет 4: пересылка из канала (без активного состояния)
       if (msg.forward_from_chat || msg.forward_from) {
         const caption = msg.caption || '';
-        const offerIdMatch = caption.match(/offer_id:\s*(\S+)/i);
-        const fileNameMatch = caption.match(/Файл:\s*(.+)/i);
+        const plainCaption = caption.replace(/<[^>]*>/g, '');
+        const offerIdMatch = plainCaption.match(/offer_id:\s*(\S+)/i);
+        const fileNameMatch = plainCaption.match(/Файл:\s*(.+)/i);
 
         if (!offerIdMatch || !fileNameMatch) {
           return;
@@ -3914,7 +3915,7 @@ function registerCommands(
       }
 
       await bot.sendMessage(msg.chat.id,
-        `✅ Корректировка для сотрудника <b>${escapeHtml(employee.name)}</b> (ID ${employee.id}) на сумму ${amount > 0 ? '+' : ''}${amount.toFixed(2)} руб. добавлена.`
+        `✅ Корректировка для сотрудника <b>${escapeHtml(employee.name)}</b> (ID ${employee.id}) на сумму <b>${amount > 0 ? '+' : ''}${amount.toFixed(2)}</b> руб. добавлена.`
       );
     } catch (err) {
       console.error('[EDIT_EARNINGS] Ошибка:', err);

@@ -1,4 +1,5 @@
 require('dotenv').config();
+const { escapeHtml } = require('./utils');
 const path = require('path');
 const fs = require('fs');
 const TelegramBot = require('node-telegram-bot-api');
@@ -24,9 +25,10 @@ function getOfferIdFromFolder(folderName) {
 
 // Отправка с повторными попытками (до 5 раз, нарастающая задержка)
 async function sendWithRetry(chatId, filePath, caption, attempt = 1) {
+    const { caption, parse_mode = 'HTML' } = options;
     const maxAttempts = 5;
     try {
-        return await bot.sendDocument(chatId, filePath, { caption });
+        return await bot.sendDocument(chatId, filePath, { caption, parse_mode });
     } catch (err) {
         // Если ошибка 429 (Too Many Requests) – используем указанное время
         if (err.response?.body?.error_code === 429) {
@@ -74,7 +76,10 @@ async function uploadAll() {
             }
 
             try {
-                const msg = await sendWithRetry(MODELS_CHAT_ID, filePath, `offer_id: ${offerId}\nФайл: ${file}`);
+                const msg = await sendWithRetry(MODELS_CHAT_ID, filePath, {
+                    caption: `<b>offer_id:</b> <code>${escapeHtml(offerId)}</code>\n<b>Файл:</b> ${escapeHtml(file)}`,
+                    parse_mode: 'HTML'
+                });
                 const fileId = msg.document.file_id;
                 await db.upsertProductModel(offerId, fileId, file, stats.size);
                 const logMsg = `[UPLOADED] ${offerId}/${file} — ${sizeMB.toFixed(2)} MB, file_id: ${fileId}\n`;
@@ -86,7 +91,7 @@ async function uploadAll() {
             } catch (err) {
                 const relativePath = path.join(folder, file);
                 const errMsg = `[ERROR] ${relativePath} — ${err.message}\n`;
-//                const errMsg = `[ERROR] ${offerId}/${file} — ${err.message}\n`;
+                //                const errMsg = `[ERROR] ${offerId}/${file} — ${err.message}\n`;
                 skippedLog.write(errMsg);
                 console.error(`✗ Ошибка загрузки ${offerId}/${file}:`, err.message);
             }

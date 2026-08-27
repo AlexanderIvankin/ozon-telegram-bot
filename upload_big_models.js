@@ -1,5 +1,6 @@
 require('dotenv').config();
 
+const { escapeHtml } = require('./utils');
 const { TelegramClient } = require('telegram');
 const { StringSession } = require('telegram/sessions');
 const fs = require('fs');
@@ -176,13 +177,14 @@ async function run() {
                 MODELS_CHAT_ID,
                 {
                     file: filePath,
-                    caption: `offer_id: ${entry.offerId}\nФайл: ${entry.fileName}`,
+                    caption: `<b>offer_id:</b> <code>${escapeHtml(entry.offerId)}</code>\n<b>Файл:</b> ${escapeHtml(entry.fileName)}`,
                     forceDocument: true,
                     chunkSize: 1024 * 1024, // 1 МБ
                     progressCallback: (downloaded, total) => {
                         const percent = (downloaded / total * 100).toFixed(1);
                         console.log(`⏳ Загрузка ${entry.fileName}: ${percent}% (${(downloaded / 1024 / 1024).toFixed(1)} / ${(total / 1024 / 1024).toFixed(1)} MB)`);
-                    }
+                    },
+                    parseMode: 'html'
                 }
             );
 

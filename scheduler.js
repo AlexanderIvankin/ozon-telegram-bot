@@ -3,6 +3,70 @@ const { createDbBackup } = require('./db');
 const { getLocalTime, getLocalDate } = require('./utils');
 const debugMode = require('./debugMode');
 
+let warehouseSyncInterval = null;
+let isWarehouseSyncRunning = false;
+
+/**
+ * Запускает периодическую синхронизацию складов из Ozon.
+ * @param {Object} ozon - модуль ozon
+ * @param {Object} db - модуль базы данных
+ * @param {Object} bot - экземпляр бота для уведомлений
+ * @param {number} intervalHours - интервал в часах (по умолчанию 24)
+ */
+function startWarehouseSyncChecker(ozon, db, bot = null, intervalHours = 24) {
+    if (warehouseSyncInterval) {
+        clearInterval(warehouseSyncInterval);
+        warehouseSyncInterval = null;
+    }
+
+    // Конвертируем часы в миллисекунды
+    const intervalMs = intervalHours * 60 * 60 * 1000;
+
+    warehouseSyncInterval = setInterval(async () => {
+        if (isWarehouseSyncRunning) {
+            console.log('[SCHEDULER] Синхронизация складов уже выполняется, пропускаем');
+            return;
+        }
+
+        isWarehouseSyncRunning = true;
+        try {
+            console.log('[SCHEDULER] Запуск плановой синхронизации складов...');
+            const warehouses = await ozon.fetchWarehousesFromOzon();
+            if (warehouses.length) {
+                await db.syncWarehouses(warehouses);
+                console.log(`[SCHEDULER] Синхронизация складов завершена, обновлено ${warehouses.length} складов`);
+                if (bot) {
+                    const moderatorId = process.env.MODERATOR_ID;
+                    if (moderatorId) {
+                        await bot.sendMessage(moderatorId, `🏭 Синхронизация складов выполнена. Обновлено <b>${warehouses.length}</b> складов.`, { parse_mode: 'HTML' });
+                    }
+                }
+            } else {
+                console.warn('[SCHEDULER] Синхронизация складов: получен пустой список');
+            }
+        } catch (err) {
+            console.error('[SCHEDULER] Ошибка при синхронизации складов:', err);
+            if (bot) {
+                const moderatorId = process.env.MODERATOR_ID;
+                if (moderatorId) {
+                    await bot.sendMessage(moderatorId, `❌ Ошибка синхронизации складов: ${err.message}`);
+                }
+            }
+        } finally {
+            isWarehouseSyncRunning = false;
+        }
+    }, intervalMs);
+
+    console.log(`[SCHEDULER] Плановая синхронизация складов запланирована каждые ${intervalHours} час(ов)`);
+}
+
+function stopWarehouseSyncChecker() {
+    if (warehouseSyncInterval) {
+        clearInterval(warehouseSyncInterval);
+        warehouseSyncInterval = null;
+    }
+}
+
 let checkInterval = null;
 let isPaused = false;
 
@@ -61,15 +125,19 @@ function startDailyBackupChecker(bot = null) {
 
     backupInterval = setInterval(async () => {
         try {
-            const localTime = getLocalTime();
+            const now = getLocalDate(); // возвращает объект Date с локальным временем
+            const hours = now.getHours();
+            const minutes = now.getMinutes();
 
-            if (localTime.hours !== 0 || localTime.minutes !== 0) {
+            if (hours !== 0 || minutes !== 0) {
                 return;
             }
 
-            const today = `${localTime.year}-${String(localTime.month).padStart(2, '0')}-${String(localTime.day).padStart(2, '0')}`;
+            const year = now.getFullYear();
+            const month = String(now.getMonth() + 1).padStart(2, '0');
+            const day = String(now.getDate()).padStart(2, '0');
+            const today = `${year}-${month}-${day}`;
 
-            // Защита от повторного запуска в течение одной минуты
             if (lastBackupDate === today) {
                 return;
             }
@@ -78,23 +146,15 @@ function startDailyBackupChecker(bot = null) {
 
             console.log('[SCHEDULER] Запуск ежедневного автобэкапа БД...');
 
-            await createDbBackup();
+            const backupPath = await createDbBackup();
 
             if (bot) {
                 const moderatorId = process.env.MODERATOR_ID;
-
                 if (moderatorId) {
-                    try {
-                        await bot.sendMessage(
-                            moderatorId,
-                            '🗄️ Ежедневный бэкап БД создан.'
-                        );
-                    } catch (e) {
-                        console.error(
-                            '[SCHEDULER] Не удалось отправить уведомление о бэкапе:',
-                            e
-                        );
-                    }
+                    const message = backupPath
+                        ? `🗄️ Ежедневный бэкап БД создан: <code>${path.basename(backupPath)}</code>`
+                        : '🗄️ Ежедневный бэкап БД создан.';
+                    await bot.sendMessage(moderatorId, message, { parse_mode: 'HTML' });
                 }
             }
         } catch (err) {
@@ -162,7 +222,8 @@ function startDailyPromotionCleaner(ozon, bot = null) {
                     if (moderatorId) {
                         await bot.sendMessage(
                             moderatorId,
-                            `✅ Ежедневная очистка акций завершена.\nОбработано акций: ${result.actionsProcessed}\nУдалено товаров: ${result.totalProductsRemoved}`
+                            `✅ Ежедневная очистка акций завершена.\nОбработано акций: <b>${result.actionsProcessed}</b>\nУдалено товаров: <b>${result.totalProductsRemoved}</b>`,
+                            { parse_mode: 'HTML' }
                         );
                     }
                 }
@@ -244,7 +305,8 @@ function startMonthlyExportChecker(db, bot = null) {
                 if (moderatorId) {
                     await bot.sendMessage(
                         moderatorId,
-                        `📊 Автоматический экспорт за ${monthStr} выполнен.`
+                        `📊 Автоматический экспорт за <b>${monthStr}</b> выполнен.`,
+                        { parse_mode: 'HTML' }
                     );
                 }
             }
@@ -268,7 +330,20 @@ function stopMonthlyExportChecker() {
     }
 }
 
+function stopAll() {
+    stopWarehouseSyncChecker();
+    stopOrderChecker();
+    stopCooldownCleaner();
+    stopDailyBackupChecker();
+    stopDailyPromotionCleaner();
+    stopMonthlyExportChecker();
+    // остановка других, если есть
+    console.log('[SCHEDULER] Все планировщики остановлены');
+}
+
 module.exports = {
+    startWarehouseSyncChecker,
+    stopWarehouseSyncChecker,
     startOrderChecker,
     stopOrderChecker,
     pauseChecker,
@@ -282,4 +357,5 @@ module.exports = {
     stopDailyPromotionCleaner,
     startMonthlyExportChecker,
     stopMonthlyExportChecker,
+    stopAll,
 };

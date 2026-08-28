@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { escapeHtml } = require('./utils');
+const { getVersionedFileName, escapeHtml } = require('./utils');
 const path = require('path');
 const fs = require('fs');
 const TelegramBot = require('node-telegram-bot-api');
@@ -11,8 +11,10 @@ const MODELS_ROOT = './Ozon';
 
 const bot = new TelegramBot(BOT_TOKEN);
 
-const uploadedLog = fs.createWriteStream('uploaded_models.log', { flags: 'a' });
-const skippedLog = fs.createWriteStream('skipped_models.log', { flags: 'a' });
+const uploadedLogName = `${getVersionedFileName('uploaded_models', '.log')}`;
+const skippedLogName = `${getVersionedFileName('skipped_models', '.log')}`;
+const uploadedLog = fs.createWriteStream(uploadedLogName, { flags: 'a' });
+const skippedLog = fs.createWriteStream(skippedLogName, { flags: 'a' });
 
 function getOfferIdFromFolder(folderName) {
     // Если есть пробел, берём часть до него
@@ -25,23 +27,20 @@ function getOfferIdFromFolder(folderName) {
 
 // Отправка с повторными попытками (до 5 раз, нарастающая задержка)
 async function sendWithRetry(chatId, filePath, caption, attempt = 1) {
-    const { caption, parse_mode = 'HTML' } = options;
     const maxAttempts = 5;
     try {
-        return await bot.sendDocument(chatId, filePath, { caption, parse_mode });
+        return await bot.sendDocument(chatId, filePath, { caption, parse_mode: 'HTML' });
     } catch (err) {
-        // Если ошибка 429 (Too Many Requests) – используем указанное время
+        // Обработка ошибок с использованием caption и attempt
         if (err.response?.body?.error_code === 429) {
             const retryAfter = err.response.body.parameters?.retry_after || 5;
-            console.log(`⚠️ 429 Too Many Requests, повтор через ${retryAfter} сек (попытка ${attempt}/${maxAttempts})`);
+            console.log(`⚠️ 429, повтор через ${retryAfter} сек (попытка ${attempt}/${maxAttempts})`);
             await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
             if (attempt < maxAttempts) {
                 return sendWithRetry(chatId, filePath, caption, attempt + 1);
             }
-        }
-        // Другие ошибки (например, 400 Bad Request) – пробуем с нарастающей задержкой
-        else if (attempt < maxAttempts) {
-            const delay = attempt * 2000; // 2, 4, 6, 8 секунд
+        } else if (attempt < maxAttempts) {
+            const delay = attempt * 2000;
             console.log(`⚠️ Ошибка: ${err.message}. Повтор через ${delay / 1000} сек (попытка ${attempt}/${maxAttempts})`);
             await new Promise(resolve => setTimeout(resolve, delay));
             return sendWithRetry(chatId, filePath, caption, attempt + 1);

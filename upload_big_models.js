@@ -1,6 +1,6 @@
 require('dotenv').config();
 
-const { escapeHtml } = require('./utils');
+const { getVersionedFileName, escapeHtml } = require('./utils');
 const { TelegramClient } = require('telegram');
 const { StringSession } = require('telegram/sessions');
 const fs = require('fs');
@@ -83,11 +83,11 @@ async function run() {
 
     console.log('🤖 Бот найден');
 
-    const logPath = './skipped_models.log';
+    const logPath = `./${getVersionedFileName('skipped_models', '.log')}`;
 
     if (!fs.existsSync(logPath)) {
         throw new Error(
-            'Файл skipped_models.log не найден'
+            `Файл ${logPath} не найден`
         );
     }
 

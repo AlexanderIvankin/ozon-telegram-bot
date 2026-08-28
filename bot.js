@@ -86,6 +86,8 @@ if (MODERATOR_ID && !ADMIN_IDS.includes(MODERATOR_ID)) {
     ADMIN_IDS.push(MODERATOR_ID);
 }
 
+const WAREHOUSE_SYNC_INTERVAL_HOURS = 24; // время автоматической синхроанизации списка складов
+
 const SYNC_ORDERS_TIME = 60; // время проверки новых заказов в минутах
 const AUTO_SKIP_MINUTES = 15; // минут без ответа заказ пропускается автоматически
 
@@ -599,8 +601,18 @@ async function forceReloadQueue() {
 }
 
 async function gracefulShutdown() {
-    console.log('Получен сигнал завершения, удаляем последнее сообщение...');
+    console.log('Получен сигнал завершения, останавливаем планировщики...');
+    scheduler.stopAll(); // остановить все таймеры
+
+    console.log('Удаляем последнее сообщение...');
     await deleteLastOrderMessages();
+
+    console.log('Закрываем соединение с БД...');
+    if (db.getDB()) {
+        await db.getDB().close();
+    }
+
+    console.log('Завершение процесса.');
     process.exit(0);
 }
 
@@ -615,6 +627,7 @@ process.on('SIGTERM', gracefulShutdown);
     if (warehouses.length) {
         await db.syncWarehouses(warehouses);
     }
+    scheduler.startWarehouseSyncChecker(ozon, db, bot, WAREHOUSE_SYNC_INTERVAL_HOURS);
     await syncEmployeesFromExcel(db);
     scheduler.startOrderChecker(SYNC_ORDERS_TIME, safeCheckAndOfferNewOrders);
     startInactivityTimer();

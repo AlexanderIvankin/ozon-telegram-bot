@@ -1,5 +1,32 @@
+const path = require('path');
 const { PDFDocument } = require('pdf-lib');
 require('dotenv').config();
+
+/**
+ * Возвращает имя файла с суффиксом версии бота, если BOT_VERSION задан.
+ * @param {string} baseName - базовое имя файла (без расширения)
+ * @param {string} extension - расширение с точкой (например, '.json')
+ * @returns {string} - имя файла с версией или без
+ */
+function getVersionedFileName(baseName, extension = '') {
+  const version = process.env.BOT_VERSION;
+  if (version) {
+    return `${baseName}-${version}${extension}`;
+  }
+  return `${baseName}${extension}`;
+}
+
+/**
+ * Возвращает путь к файлу с суффиксом версии бота, если BOT_VERSION задан.
+ * @param {string} filePath - полный путь к файлу
+ * @returns {string} - путь с версией или без
+ */
+function getVersionedPath(filePath) {
+  const version = process.env.BOT_VERSION;
+  if (!version) return filePath;
+  const parsed = path.parse(filePath);
+  return path.join(parsed.dir, `${parsed.name}-${version}${parsed.ext}`);
+}
 
 const TIMEZONE = process.env.TIMEZONE || 'Europe/Moscow';
 
@@ -44,7 +71,7 @@ function escapeHtml(text) {
 
 // Функция для удаления HTML тегов из регулярных выражений
 function stripHtml(html) {
-    return html.replace(/<[^>]*>/g, '');
+  return html.replace(/<[^>]*>/g, '');
 }
 
 /**
@@ -146,6 +173,8 @@ function getLocalTimestamp() {
 }
 
 module.exports = {
+  getVersionedFileName,
+  getVersionedPath,
   mergePdfs,
   colToLetter,
   escapeHtml,

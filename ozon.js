@@ -79,7 +79,7 @@ async function requestWithRetry(requestFn, options = {}) {
  */
 async function fetchWarehousesFromOzon() {
     if (MOCK_MODE) {
-        console.log('[Ozon] Запрос списка складов...');
+        console.log('[Ozon] Запрос списка складов (MOCK)...');
         return [
             { warehouse_id: "1234567890", name: "Склад 'Северный' (FBS)", address: "г. Москва, ул. Северная, д.1", is_rfbs: false },
             { warehouse_id: "9876543210", name: "Склад 'Южный' (realFBS)", address: "г. Подольск, ул. Южная, д.10", is_rfbs: true }
@@ -87,20 +87,36 @@ async function fetchWarehousesFromOzon() {
     }
 
     try {
-        if (debugMode.isDebugMode()) console.log('[Ozon] Запрос списка складов...');
-        const response = await requestWithRetry(
-            () => apiClient.post('/v2/warehouse/list', { limit: 100 }),
-            { context: 'fetchWarehouses' }
-        );
-        const warehousesRaw = response.data.warehouses || [];
-        const warehouses = warehousesRaw.map(wh => ({
-            warehouse_id: String(wh.warehouse_id),
-            name: wh.name,
-            address: wh.address_info?.address || null,
-            is_rfbs: wh.is_rfbs || false
-        }));
-        if (debugMode.isDebugMode()) console.log(`[Ozon] Успешно получено ${warehouses.length} складов.`);
-        return warehouses;
+        if (debugMode.isDebugMode()) console.log('[Ozon] Запрос списка складов с пагинацией...');
+        let allWarehouses = [];
+        let offset = 0;
+        const limit = 100; // по 100 за раз
+        let hasMore = true;
+
+        while (hasMore) {
+            const response = await requestWithRetry(
+                () => apiClient.post('/v2/warehouse/list', { limit, offset }),
+                { context: 'fetchWarehouses' }
+            );
+            const warehousesRaw = response.data.warehouses || [];
+            const total = response.data.total || 0;
+
+            const mapped = warehousesRaw.map(wh => ({
+                warehouse_id: String(wh.warehouse_id),
+                name: wh.name,
+                address: wh.address_info?.address || null,
+                is_rfbs: wh.is_rfbs || false
+            }));
+            allWarehouses = allWarehouses.concat(mapped);
+
+            // Проверяем, есть ли ещё страницы
+            offset += limit;
+            hasMore = (offset < total);
+            if (debugMode.isDebugMode()) console.log(`[Ozon] Получено ${mapped.length} складов, всего ${total}, offset=${offset}`);
+        }
+
+        if (debugMode.isDebugMode()) console.log(`[Ozon] Успешно получено ${allWarehouses.length} складов.`);
+        return allWarehouses;
     } catch (error) {
         console.error('[Ozon] Ошибка при получении списка складов:', error.message);
         return [];

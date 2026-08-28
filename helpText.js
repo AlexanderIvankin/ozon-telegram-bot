@@ -1,4 +1,4 @@
-const { escapeHtml } = require('./utils');
+const { getVersionedFileName, escapeHtml } = require('./utils');
 
 /**
  * Генерирует ТОЛЬКО список административных команд (без приветствия).
@@ -6,17 +6,27 @@ const { escapeHtml } = require('./utils');
  * @returns {Object} { adminMessagePart1, adminMessagePart2 } - две части сообщения (для избежания переполнения)
  */
 function getAdminCommandsOnly(debugMode) {
+
+  // Имена файлов
+  const materialsPricesFile = getVersionedFileName('materials-prices', '.json');
+  const teamInfoFile = getVersionedFileName('team-info', '.xlsx');
+  const productStatsFile = getVersionedFileName('product-stats', '.xlsx');
+  const employeesDbFile = getVersionedFileName('employees-db', '.xlsx');
+  const dbFile = getVersionedFileName('bot', '.db');
+
   // Часть 1: Основные команды
   let adminMessagePart1 = `🔧 Доступные административные команды:\n\n`;
 
   adminMessagePart1 += `/status_all [--include_fired] — показать всех сотрудников (опционально включить уволенных)\n`;
   adminMessagePart1 += `/active_orders — активные заказы\n`;
-  adminMessagePart1 += `/warehouses — список складов Ozon\n`;
+  adminMessagePart1 += `/warehouses — список складов Ozon (с синхронизацией)\n`;
   adminMessagePart1 += `/orders [warehouse_id] — показать очередь заказов из API (с фильтром по складу)\n`;
   adminMessagePart1 += `/order_details <номер_заказа> — показать детали заказа\n`;
   adminMessagePart1 += `/employee_warehouses <id_сотрудника> — показать склады сотрудника\n`;
   adminMessagePart1 += `/employee_stats <id_сотрудника> — статистика сотрудника (заказы, сумма)\n`;
   adminMessagePart1 += `/employee_orders <id_сотрудника> — показать активные заказы сотрудника\n\n`;
+
+  adminMessagePart1 += `/sync_warehouses — принудильная синхронизация списка складов Ozon\n\n`;
 
   adminMessagePart1 += `/admin_assign_order <номер_заказа> [id_сотрудника] — назначить заказ сотруднику (если ID не указан – показать список сотрудников)\n`;
   adminMessagePart1 += `/admin_cancel_order <номер_заказа> — снять заказ с сотрудника\n\n`;
@@ -62,16 +72,16 @@ function getAdminCommandsOnly(debugMode) {
   adminMessagePart2 += `/pause — приостановить авто-проверку очереди заказов\n`;
   adminMessagePart2 += `/resume — возобновить авто-проверку очереди заказов\n\n`;
 
-  adminMessagePart2 += `/download_materials — скачать файл цен материала за грамм "materials-prices.json"\n`;
-  adminMessagePart2 += `/download_team_info — скачать файл сотрудников "team-info.xlsx"\n`;
-  adminMessagePart2 += `/download_product_stats — скачать файл статистики продуктов "product-stats.xlsx" (с принудительной выгрузкой статистики из bot.db)\n`;
-  adminMessagePart2 += `/download_employees_db — скачать файл "employees-db.xlsx" со ВСЕМИ сотрудниками (включая уволенных)\n`;
-  adminMessagePart2 += `/download_db — скачать файл базы данных "bot.db"\n\n`;
+  adminMessagePart2 += `/download_materials_prices — скачать файл настроек цвета материалов, цены за грамм, минимального заработка и спецпредложений "${materialsPricesFile}"\n`;
+  adminMessagePart2 += `/download_team_info — скачать актуальный файл сотрудников и приоритетов складов "${teamInfoFile}"\n`;
+  adminMessagePart2 += `/download_product_stats — скачать файл статистики продуктов "${productStatsFile}" (с принудительной выгрузкой статистики из ${dbFile})\n`;
+  adminMessagePart2 += `/download_employees_db — скачать файл "${employeesDbFile}" со ВСЕМИ сотрудниками (включая уволенных)\n`;
+  adminMessagePart2 += `/download_db — скачать файл базы данных "${dbFile}"\n\n`;
 
-  adminMessagePart2 += `/upload_employees — загрузить новый файл "team-info.xlsx" с сотрудниками (автоматически синхронизирует БД)\n`;
-  adminMessagePart2 += `/upload_materials — загрузить новый файл "materials-prices.json" с ценами материалов\n\n`;
+  adminMessagePart2 += `/upload_employees — загрузить новый файл "${teamInfoFile}" сотрудников и приоритетов складов (автоматически синхронизирует БД)\n`;
+  adminMessagePart2 += `/upload_materials — загрузить новый файл "${materialsPricesFile}" с настройками материалов и формирования цен\n\n`;
 
-  adminMessagePart2 += `/backup_db — создать бэкап базы данных "bot.db"\n\n`;
+  adminMessagePart2 += `/backup_db — создать бэкап базы данных "${dbFile}"\n\n`;
 
   adminMessagePart2 += `/remove_all_promotions — удаление ВСЕХ товаров из ВСЕХ акций Ozon (с подтверждением)\n\n`;
 

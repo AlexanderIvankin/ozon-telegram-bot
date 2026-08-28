@@ -5,8 +5,9 @@ const axios = require('axios');
 const bwipjs = require('bwip-js');
 const { syncEmployeesFromExcel, exportTeamInfoXlsx, exportTeamInfoXlsxAll } = require('./syncEmployees');
 const { getAdminCommandsOnly, getAdminStartMessage, getEmployeeCommandsOnly, getEmployeeStartMessage, getUnauthorizedMessage } = require('./helpText');
-const { mergePdfs, escapeHtml, stripHtml, formatLocalTimestamp, formatDateDDMMYYYY } = require('./utils');
+const { getVersionedFileName, mergePdfs, escapeHtml, stripHtml, formatLocalTimestamp, formatDateDDMMYYYY } = require('./utils');
 const { finishingOrders, pendingFinishConfirmations } = require('./state');
+require('dotenv').config();
 
 // Локальные хранилища для состояний
 const processingOrders = new Set();       // orderId -> заказ сейчас назначается
@@ -114,7 +115,8 @@ async function exportMonthlyEarnings(db, monthStr = null) {
   });
 
   const buffer = await workbook.xlsx.writeBuffer();
-  const fileName = `monthly_earnings_${monthStr || (new Date(fromDate).toISOString().slice(0, 7))}.xlsx`;
+  const baseName = getVersionedFileName('monthly_earnings');
+  const fileName = `${baseName}_${monthStr || (new Date(fromDate).toISOString().slice(0, 7))}`;
   const outputPath = path.join(__dirname, 'outputs', fileName);
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   fs.writeFileSync(outputPath, buffer);
@@ -124,8 +126,10 @@ async function exportMonthlyEarnings(db, monthStr = null) {
 
 // Загружаем справочники при старте
 function loadMaterials() {
+  const fileName = getVersionedFileName('materials-prices', '.json');
   try {
-    const raw = fs.readFileSync(path.join(__dirname, 'materials-prices.json'), 'utf8');
+    const raw = fs.readFileSync(path.join(__dirname, fileName), 'utf8');
+
     const data = JSON.parse(raw);
     materialsData = data;
     // Загружаем специальные предложения
@@ -141,7 +145,7 @@ function loadMaterials() {
       console.log(`✅ Загружено специальных предложений: ${Object.keys(specialOffers).length}`);
     }
   } catch (err) {
-    console.error('❌ Ошибка загрузки materials-prices.json:', err.message);
+    console.error(`❌ Ошибка загрузки ${fileName}:`, err.message);
     // Задаём дефолтные значения
     materialsData = {
       colors: ["Черный", "Белый", "Серый", "Прозрачный", "Красный", "Желтый", "Зеленый"],
@@ -232,7 +236,8 @@ function registerCommands(
         });
 
         const buffer = await workbook.xlsx.writeBuffer();
-        const outputPath = path.join(__dirname, 'exports', 'product-stats.xlsx');
+        const fileName = getVersionedFileName('product-stats', '.xlsx');
+        const outputPath = path.join(__dirname, 'exports', fileName);
         fs.mkdirSync(path.dirname(outputPath), { recursive: true });
         fs.writeFileSync(outputPath, buffer);
 
@@ -1527,8 +1532,6 @@ function registerCommands(
         );
       }
 
-      // После успешного завершения устанавливаем флаг
-      isCompleted = true;
       console.log(`[FINISH] Заказ ${postingNumber} успешно завершён, вызываем очистку состояний`);
       await clearOrderState(bot, postingNumber, employee.tg_user_id);
       console.log(`[FINISH] === Выполнено завершение заказа ${postingNumber} ===`);
@@ -2559,9 +2562,24 @@ function registerCommands(
       updateModeratorActivity();
     }
 
+    // Принудительная синхронизация складов перед показом
+    try {
+      await bot.sendMessage(msg.chat.id, '🔄 Синхронизация складов с Ozon...');
+      const warehousesFromOzon = await ozon.fetchWarehousesFromOzon();
+      if (warehousesFromOzon.length) {
+        await db.syncWarehouses(warehousesFromOzon);
+      }
+    } catch (err) {
+      console.error('[WAREHOUSES] Ошибка синхронизации:', err);
+      await bot.sendMessage(msg.chat.id, `⚠️ Не удалось синхронизировать склады: ${escapeHtml(err.message)}`, { parse_mode: 'HTML' });
+      // Продолжаем показывать то, что есть в БД
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 300));
+
     const warehouses = await db.getAllWarehouses();
     if (!warehouses.length) {
-      return bot.sendMessage(msg.chat.id, 'Склады не найдены. Возможно, не удалось выполнить синхронизацию.');
+      return bot.sendMessage(msg.chat.id, 'Склады не найдены.', { parse_mode: 'HTML' });
     }
 
     let reply = '';
@@ -2593,6 +2611,40 @@ function registerCommands(
       if (i + CHUNK_SIZE < warehouses.length) {
         await new Promise(resolve => setTimeout(resolve, 300));
       }
+    }
+  });
+
+  // --- "/sync_warehouses" Команда для администратора: принудительная синхронизация складов ---
+  bot.onText(/\/sync_warehouses/, async (msg) => {
+    const userId = msg.from.id.toString();
+    if (!isAdmin(userId)) {
+      await bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.', { parse_mode: 'HTML' });
+      return;
+    }
+
+    try {
+      await bot.sendMessage(msg.chat.id, '🔄 Синхронизация складов с Ozon...');
+      const warehouses = await ozon.fetchWarehousesFromOzon();
+
+      await new Promise(resolve => setTimeout(resolve, 300));
+
+      if (!warehouses.length) {
+        await bot.sendMessage(msg.chat.id, '⚠️ Не удалось получить список складов (пустой ответ).', { parse_mode: 'HTML' });
+        return;
+      }
+      await db.syncWarehouses(warehouses);
+      await bot.sendMessage(
+        msg.chat.id,
+        `✅ Синхронизация складов завершена. Обновлено <b>${warehouses.length}</b> складов.`,
+        { parse_mode: 'HTML' }
+      );
+    } catch (err) {
+      console.error('[SYNC_WAREHOUSES] Ошибка:', err);
+      await bot.sendMessage(
+        msg.chat.id,
+        `❌ Ошибка синхронизации: <b>${escapeHtml(err.message)}</b>`,
+        { parse_mode: 'HTML' }
+      );
     }
   });
 
@@ -2693,7 +2745,8 @@ function registerCommands(
       return;
     }
     pendingEmployeeUpload.set(userId, { step: 'waiting_file' });
-    await bot.sendMessage(msg.chat.id, '📤 Отправьте файл team-info.xlsx с сотрудниками.');
+    const fileName = getVersionedFileName('team-info', '.xlsx');
+    await bot.sendMessage(msg.chat.id, `📤 Отправьте акитуальный файл <b>${fileName}</b> сотрудников и приоритетов складов.`, { parse_mode: 'HTML' });
   });
 
   // --- "/upload_materials" Команда для администратора: загрузить новый файл materials-prices.json с ценами материалов ---
@@ -2704,7 +2757,8 @@ function registerCommands(
       return;
     }
     pendingMaterialsUpload.set(userId, { step: 'waiting_file' });
-    await bot.sendMessage(msg.chat.id, '📤 Отправьте файл materials-prices.json с настройками материалов.');
+    const fileName = getVersionedFileName('materials-prices', '.json');
+    await bot.sendMessage(msg.chat.id, `📤 Отправьте файл <b>${fileName}</b> с настройками материалов.`, { parse_mode: 'HTML' });
   });
 
   // --- "/admin_assign_order" Команда для администратора: назначить заказ сотруднику вручную ---
@@ -3210,10 +3264,11 @@ function registerCommands(
     if (pendingEmployeeUpload && pendingEmployeeUpload.has(userId)) {
       const pending = pendingEmployeeUpload.get(userId);
       if (pending.step !== 'waiting_file') return;
-      if (fileName !== 'team-info.xlsx') {
+      const expectedFileName = getVersionedFileName('team-info', '.xlsx');
+      if (fileName !== expectedFileName) {
         await bot.sendMessage(
           msg.chat.id,
-          '❌ Пожалуйста, отправьте файл с именем <b>team-info.xlsx</b>.',
+          `❌ Пожалуйста, отправьте файл с именем <b>${expectedFileName}</b>.`,
           { parse_mode: 'HTML' }
         );
         pendingEmployeeUpload.delete(userId);
@@ -3229,12 +3284,13 @@ function registerCommands(
           writer.on('finish', resolve);
           writer.on('error', reject);
         });
-        const targetPath = path.join(__dirname, 'team-info.xlsx');
+        const targetFileName = getVersionedFileName('team-info', '.xlsx');
+        const targetPath = path.join(__dirname, targetFileName);
         fs.renameSync(tempPath, targetPath);
         await syncEmployeesFromExcel(db);
         await bot.sendMessage(
           msg.chat.id,
-          '✅ Сотрудники успешно обновлены из загруженного файла.'
+          '✅ Сотрудники и приоритеты складов успешно обновлены из загруженного файла.'
         );
       } catch (err) {
         console.error('[UPLOAD_EMPLOYEES] Ошибка:', err);
@@ -3252,10 +3308,11 @@ function registerCommands(
     if (pendingMaterialsUpload && pendingMaterialsUpload.has(userId)) {
       const pending = pendingMaterialsUpload.get(userId);
       if (pending.step !== 'waiting_file') return;
-      if (fileName !== 'materials-prices.json') {
+      const expectedFileName = getVersionedFileName('materials-prices', '.json');
+      if (fileName !== expectedFileName) {
         await bot.sendMessage(
           msg.chat.id,
-          '❌ Пожалуйста, отправьте файл с именем <b>materials-prices.json</b>.',
+          `❌ Пожалуйста, отправьте файл с именем <b>${expectedFileName}</b>.`,
           { parse_mode: 'HTML' }
         );
         pendingMaterialsUpload.delete(userId);
@@ -3271,7 +3328,8 @@ function registerCommands(
           writer.on('finish', resolve);
           writer.on('error', reject);
         });
-        const targetPath = path.join(__dirname, 'materials-prices.json');
+        const targetFileName = getVersionedFileName('materials-prices', '.json');;
+        const targetPath = path.join(__dirname, targetFileName);
         fs.renameSync(tempPath, targetPath);
         loadMaterials();
         await bot.sendMessage(
@@ -3825,7 +3883,8 @@ function registerCommands(
     });
 
     const buffer = await workbook.xlsx.writeBuffer();
-    const fileName = `earnings_active_${Date.now()}.xlsx`;
+    const baseName = getVersionedFileName('earnings_active');
+    const fileName = `${baseName}_${Date.now()}.xlsx`;
     const outputPath = path.join(__dirname, 'exports', fileName);
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
     fs.writeFileSync(outputPath, buffer);
@@ -4047,13 +4106,17 @@ function registerCommands(
     bot.sendMessage(msg.chat.id, '▶️ Автоматическая проверка заказов возобновлена.');
   });
 
-  // --- "/download_materials" Команда для администратора: скачать файл materials-prices.json ---
-  bot.onText(/\/download_materials/, async (msg) => {
+  // --- "/download_materials_prices" Команда для администратора: скачать файл materials-prices.json ---
+  bot.onText(/\/download_materials_prices/, async (msg) => {
     const userId = msg.from.id.toString();
     if (!isAdmin(userId)) return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
-    const filePath = path.join(__dirname, 'materials-prices.json');
-    if (!fs.existsSync(filePath)) return bot.sendMessage(msg.chat.id, '❌ Файл materials-prices.json не найден.');
-    await bot.sendDocument(msg.chat.id, filePath, { caption: '🧾 Актуальный файл цен материалов за грамм.' });
+    const fileName = getVersionedFileName('materials-prices', '.json');
+    const filePath = path.join(__dirname, fileName);
+    if (!fs.existsSync(filePath)) return bot.sendMessage(msg.chat.id, `❌ Файл ${fileName} не найден.`, { parse_mode: 'HTML' });
+    await bot.sendDocument(msg.chat.id, filePath, {
+      caption: '🧾 Актуальный файл настроек цвета материалов, цены за грамм, минимального заработка и спецпредложений.',
+      filename: fileName
+    });
   });
 
   // --- "/download_team_info" Команда для администратора: скачать файл team-info.xlsx ---
@@ -4061,9 +4124,10 @@ function registerCommands(
     const userId = msg.from.id.toString();
     if (!isAdmin(userId)) return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
     try {
-      const filePath = await exportTeamInfoXlsx(db);
+      const filePath = await exportTeamInfoXlsx(db, ozon);
+      const fileName = getVersionedFileName('team-info', '.xlsx');
       await bot.sendDocument(msg.chat.id, filePath, {
-        caption: `📄 Актуальный файл сотрудников и складов "team-info.xlsx".`
+        caption: `📄 Актуальный файл сотрудников и приоритетов складов "${fileName}".`
       });
       // Можно удалить файл после отправки, но оставим для дальнейшего использования
     } catch (err) {
@@ -4080,13 +4144,15 @@ function registerCommands(
     }
     try {
       await exportProductStats(); // пересоздаёт файл
-      const filePath = path.join(__dirname, 'exports', 'product-stats.xlsx');
+      const fileName = getVersionedFileName('product-stats', '.xlsx');
+      const filePath = path.join(__dirname, 'exports', fileName);
       if (!fs.existsSync(filePath)) {
         return bot.sendMessage(msg.chat.id, '❌ Файл статистики не создан.');
       }
+      const baseName = getVersionedFileName('product-stats');
       await bot.sendDocument(msg.chat.id, filePath, {
         caption: '📊 Актуальная полная выгрузка статистики по артикулам.',
-        filename: `product-stats_${Date.now()}.xlsx`
+        filename: `${baseName}_${Date.now()}.xlsx`
       });
     } catch (err) {
       console.error('[EXPORT_PRODUCT_STATS] Ошибка:', err);
@@ -4105,7 +4171,7 @@ function registerCommands(
     }
 
     try {
-      const filePath = await exportTeamInfoXlsxAll(db);
+      const filePath = await exportTeamInfoXlsxAll(db, ozon);
       await bot.sendDocument(msg.chat.id, filePath, {
         caption: `📄 Полный список ВСЕХ (включая уволенных) сотрудников.`
       });
@@ -4120,46 +4186,42 @@ function registerCommands(
   bot.onText(/\/download_db/, async (msg) => {
     const userId = msg.from.id.toString();
     if (!isAdmin(userId)) return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
-    const filePath = path.join(__dirname, 'bot.db');
-    if (!fs.existsSync(filePath)) return bot.sendMessage(msg.chat.id, '❌ Файл базы данных bot.db не найден.');
-    await bot.sendDocument(msg.chat.id, filePath, { caption: '🗃️ Актуальный файл базы данных.' });
+    const fileName = getVersionedFileName('bot', '.db');
+    const filePath = path.join(__dirname, fileName);
+    if (!fs.existsSync(filePath)) {
+      return bot.sendMessage(msg.chat.id, `❌ Файл <b>${fileName}</b> не найден.`, { parse_mode: 'HTML' });
+    }
+    await bot.sendDocument(msg.chat.id, filePath, { caption: '🗃️ Актуальный файл базы данных.', filename: fileName });
   });
 
   // --- "/backup_db" Команда для администратора: создание бэкапа базы данных ---
   bot.onText(/\/backup_db/, async (msg) => {
     const userId = msg.from.id.toString();
     if (!isAdmin(userId)) {
-      return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
+      return bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.', { parse_mode: 'HTML' });
     }
 
     if (isModerator(userId) && typeof updateModeratorActivity === 'function') {
       updateModeratorActivity();
     }
 
-    const fs = require('fs');
-    const path = require('path');
-    const backupDir = path.join(__dirname, 'backups');
-
-    // Создаём папку, если её нет
-    if (!fs.existsSync(backupDir)) {
-      fs.mkdirSync(backupDir, { recursive: true });
-    }
-
-    const dbPath = path.join(__dirname, 'bot.db');
-    if (!fs.existsSync(dbPath)) {
-      return bot.sendMessage(msg.chat.id, '❌ Файл базы данных не найден.');
-    }
-
-    const timestamp = formatLocalTimestamp();
-    const backupPath = path.join(backupDir, `bot_${timestamp}.db`);
-
     try {
-      fs.copyFileSync(dbPath, backupPath);
-      await bot.sendMessage(msg.chat.id, `✅ Бэкап создан: <code>${escapeHtml(backupPath)}</code>`, { parse_mode: 'HTML' });
-      console.log(`[BACKUP] Создан бэкап: ${backupPath}`);
+      await bot.sendMessage(msg.chat.id, '🔄 Создаю бэкап базы данных...');
+      const backupPath = await db.createDbBackup();
+
+      if (backupPath) {
+        const fileName = path.basename(backupPath);
+        await bot.sendMessage(
+          msg.chat.id,
+          `✅ Бэкап создан: <code>${escapeHtml(fileName)}</code>`,
+          { parse_mode: 'HTML' }
+        );
+      } else {
+        await bot.sendMessage(msg.chat.id, '❌ Не удалось создать бэкап.', { parse_mode: 'HTML' });
+      }
     } catch (err) {
-      console.error('Ошибка создания бэкапа:', err);
-      await bot.sendMessage(msg.chat.id, `❌ Ошибка создания бэкапа: ${err.message}`);
+      console.error('[BACKUP] Ошибка:', err);
+      await bot.sendMessage(msg.chat.id, `❌ Ошибка: ${escapeHtml(err.message)}`, { parse_mode: 'HTML' });
     }
   });
 

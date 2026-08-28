@@ -2,12 +2,16 @@ const sqlite3 = require('sqlite3').verbose();
 const { open } = require('sqlite');
 const fs = require('fs');
 const path = require('path');
+require('dotenv').config();
+
+const DB_VERSION = process.env.BOT_VERSION ? `-${process.env.BOT_VERSION}` : '';
+const DB_FILENAME = `bot${DB_VERSION}.db`;
 
 let database; // внутреннее хранилище соединения
 
 async function initDB() {
     database = await open({
-        filename: path.join(__dirname, 'bot.db'),
+        filename: path.join(__dirname, DB_FILENAME),
         driver: sqlite3.Database,
         trace: process.env.NODE_ENV === 'development' ? console.log : undefined
     });
@@ -864,30 +868,34 @@ async function getIssuedCount(employeeId) {
  * Создаёт ежедневный бэкап базы данных в папку backups.
  * Если бэкап за сегодня уже существует — пропускает.
  */
-
 async function createDbBackup() {
-    const dbPath = path.join(__dirname, 'bot.db');
+    const dbPath = path.join(__dirname, DB_FILENAME);
     const backupDir = path.join(__dirname, 'backups');
     try {
         if (!fs.existsSync(backupDir)) {
             fs.mkdirSync(backupDir, { recursive: true });
             console.log(`[DB] Создана папка бэкапов: ${backupDir}`);
         }
-        const dateStr = new Date().toISOString().slice(0, 10);  // YYYY-MM-DD
-        const backupPath = path.join(backupDir, `bot_${dateStr}.db`);
+        const dateStr = new Date().toISOString().slice(0, 10);   // YYYY-MM-DD
+        const backupName = `bot${DB_VERSION}_${dateStr}.db`;  // bot-{VERSION}_YYYY-MM-DD.db
+        const backupPath = path.join(backupDir, backupName);
+
         if (fs.existsSync(backupPath)) {
             console.log(`[DB] Бэкап за сегодня уже существует: ${backupPath}`);
-            return;
+            return backupPath; // возвращаем существующий путь
         }
+
         // Проверяем, что database доступна
         if (!database) {
             console.error('[DB] Ошибка: database не инициализирована!');
-            return;
+            return null;
         }
+
         // Принудительно синхронизируем WAL в основной файл
         await database.run('PRAGMA wal_checkpoint;');
         fs.copyFileSync(dbPath, backupPath);
         console.log(`[DB] Бэкап создан: ${backupPath}`);
+        return backupPath;
     } catch (err) {
         console.error('[DB] Ошибка создания бэкапа:', err);
         throw err;

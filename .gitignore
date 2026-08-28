@@ -4,15 +4,15 @@ backups/
 exports/
 ServerFiles/
 
-bot.db
-bot.db-journal
+bot*.db
+bot*.db-journal
 
-team-info.xlsx
+team-info*.xlsx
 *.xlsx~
 *.xls~
 ~$*.xlsx
 
-materials-prices.json
+materials-prices*.json
 
 skipped_models.log
 uploaded_models.log

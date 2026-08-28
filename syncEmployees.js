@@ -1,11 +1,12 @@
 const XLSX = require('xlsx');
 const ExcelJS = require('exceljs');
 const path = require('path');
-const { colToLetter } = require('./utils');
+const { colToLetter, getVersionedFileName } = require('./utils');
 const debugMode = require('./debugMode');
 
 async function syncEmployeesFromExcel(db) {
-    const filePath = path.join(__dirname, 'team-info.xlsx');
+    const fileName = getVersionedFileName('team-info', '.xlsx');
+    const filePath = path.join(__dirname, fileName);
     console.log('[SYNC] Загрузка сотрудников из', filePath);
 
     const workbook = XLSX.readFile(filePath);
@@ -150,7 +151,11 @@ async function syncEmployeesFromExcel(db) {
  * @param {string} outputFileName - имя файла (по умолчанию team-info.xlsx)
  * @returns {Promise<string>} - путь к созданному файлу
  */
-async function exportTeamInfoXlsx(db, includeFired = false, outputFileName = 'team-info.xlsx') {
+async function exportTeamInfoXlsx(db, ozon, includeFired = false, outputFileName = null) {
+    if (!outputFileName) {
+        outputFileName = getVersionedFileName('team-info', '.xlsx');
+    }
+
     const dbConn = db.db;
 
     // 1. Получаем список сотрудников (только активных или включая уволенных)
@@ -163,6 +168,19 @@ async function exportTeamInfoXlsx(db, includeFired = false, outputFileName = 'te
     `);
 
     // 2. Получаем все склады
+
+    // Синхронизируем склады перед экспортом, чтобы данные были свежими
+    try {
+        const warehousesFromOzon = await ozon.fetchWarehousesFromOzon();
+        if (warehousesFromOzon.length) {
+            await db.syncWarehouses(warehousesFromOzon);
+            console.log('[EXPORT] Склады синхронизированы перед экспортом team-info');
+        }
+    } catch (err) {
+        console.warn('[EXPORT] Не удалось синхронизировать склады перед экспортом:', err.message);
+        // Продолжаем с теми, что есть в БД
+    }
+
     const warehouses = await dbConn.all('SELECT warehouse_id, name FROM warehouses ORDER BY name');
     const warehouseIds = warehouses.map(w => w.warehouse_id);
 
@@ -274,8 +292,9 @@ async function exportTeamInfoXlsx(db, includeFired = false, outputFileName = 'te
     return outputPath;
 }
 
-async function exportTeamInfoXlsxAll(db) {
-    return exportTeamInfoXlsx(db, true, 'employees-db.xlsx');
+async function exportTeamInfoXlsxAll(db, ozon) {
+    const fileName = getVersionedFileName('employees-db', '.xlsx');
+    return exportTeamInfoXlsx(db, ozon, true, fileName);
 }
 
 module.exports = { syncEmployeesFromExcel, exportTeamInfoXlsx, exportTeamInfoXlsxAll };

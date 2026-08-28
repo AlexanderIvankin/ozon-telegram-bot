@@ -659,7 +659,12 @@ process.on('SIGTERM', gracefulShutdown);
     // Ежедневный бэкап базы данных bot.db
     scheduler.startDailyBackupChecker(bot);
     // Ежедневная очистка акций (по умолчанию в 3:00)
-    scheduler.startDailyPromotionCleaner(ozon, bot);
+    if (process.env.CLEAN_PROMOTIONS === 'true') {
+        scheduler.startDailyPromotionCleaner(ozon, bot);
+        console.log('✅ Ежедневная очистка акций включена');
+    } else {
+        console.log('⏭️ Ежедневная очистка акций отключена (CLEAN_PROMOTIONS != true)');
+    }
     // Eжемесячный экспорт статистики заработков в Excel
     scheduler.startMonthlyExportChecker(db, bot);
 

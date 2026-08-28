@@ -2758,7 +2758,7 @@ function registerCommands(
     }
     pendingMaterialsUpload.set(userId, { step: 'waiting_file' });
     const fileName = getVersionedFileName('materials-prices', '.json');
-    await bot.sendMessage(msg.chat.id, `📤 Отправьте файл <b>${fileName}</b> с настройками материалов.`, { parse_mode: 'HTML' });
+    await bot.sendMessage(msg.chat.id, `📤 Отправьте актуальный файл <b>${fileName}</b> настроек цвета материалов, цен и спецпредложений.`, { parse_mode: 'HTML' });
   });
 
   // --- "/admin_assign_order" Команда для администратора: назначить заказ сотруднику вручную ---
@@ -3334,7 +3334,7 @@ function registerCommands(
         loadMaterials();
         await bot.sendMessage(
           msg.chat.id,
-          '✅ Справочник материалов обновлён.'
+          '✅ Справочник настроек материалов, цен и спецпредложений обновлён.'
         );
       } catch (err) {
         console.error('[UPLOAD_MATERIALS] Ошибка:', err);
@@ -4112,7 +4112,7 @@ function registerCommands(
     if (!isAdmin(userId)) return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
     const fileName = getVersionedFileName('materials-prices', '.json');
     const filePath = path.join(__dirname, fileName);
-    if (!fs.existsSync(filePath)) return bot.sendMessage(msg.chat.id, `❌ Файл ${fileName} не найден.`, { parse_mode: 'HTML' });
+    if (!fs.existsSync(filePath)) return bot.sendMessage(msg.chat.id, `❌ Файл <b>${fileName}</b> не найден.`, { parse_mode: 'HTML' });
     await bot.sendDocument(msg.chat.id, filePath, {
       caption: '🧾 Актуальный файл настроек цвета материалов, цены за грамм, минимального заработка и спецпредложений.',
       filename: fileName

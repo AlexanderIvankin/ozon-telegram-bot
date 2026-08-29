@@ -72,14 +72,14 @@ function getAdminCommandsOnly(debugMode) {
   adminMessagePart2 += `/pause — приостановить авто-проверку очереди заказов\n`;
   adminMessagePart2 += `/resume — возобновить авто-проверку очереди заказов\n\n`;
 
-  adminMessagePart2 += `/download_materials_prices — скачать файл настроек цвета материалов, цены за грамм, минимального заработка и спецпредложений "${materialsPricesFile}"\n`;
-  adminMessagePart2 += `/download_team_info — скачать актуальный файл сотрудников и приоритетов складов "${teamInfoFile}"\n`;
+  adminMessagePart2 += `/download_team_info — скачать файл со списком активных сотрудников и приоритетами складов "${teamInfoFile}"\n`;
+  adminMessagePart2 += `/download_materials_prices — скачать файл с настройками цветов материалов, цен за грамм, минимального заработка и спецпредложений "${materialsPricesFile}"\n`;
   adminMessagePart2 += `/download_product_stats — скачать файл статистики продуктов "${productStatsFile}" (с принудительной выгрузкой статистики из ${dbFile})\n`;
-  adminMessagePart2 += `/download_employees_db — скачать файл "${employeesDbFile}" со ВСЕМИ сотрудниками (включая уволенных)\n`;
+  adminMessagePart2 += `/download_employees_db — скачать файл "${employeesDbFile}" со списком ВСЕХ сотрудников (включая уволенных)\n`;
   adminMessagePart2 += `/download_db — скачать файл базы данных "${dbFile}"\n\n`;
 
-  adminMessagePart2 += `/upload_employees — загрузить новый файл "${teamInfoFile}" сотрудников и приоритетов складов (автоматически синхронизирует БД)\n`;
-  adminMessagePart2 += `/upload_materials — загрузить новый файл "${materialsPricesFile}" с настройками материалов и формирования цен\n\n`;
+  adminMessagePart2 += `/upload_team_info — загрузить новый файл "${teamInfoFile}" с актуальным списком активных сотрудников и приоритетами складов (автоматически синхронизирует БД)\n`;
+  adminMessagePart2 += `/upload_materials_prices — загрузить новый файл "${materialsPricesFile}" с актуальными настройками цветов материалов, цен за грамм, минимального заработка и спецпредложений\n\n`;
 
   adminMessagePart2 += `/backup_db — создать бэкап базы данных "${dbFile}"\n\n`;
 

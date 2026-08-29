@@ -140,7 +140,7 @@ function loadMaterials() {
     } else {
       MIN_EARNINGS = 250; // значение по умолчанию
     }
-    console.log(`✅ Справочники материалов загружены. MIN_EARNINGS = ${MIN_EARNINGS}`);
+    console.log(`✅ Конфигурация цветов материалов и цен за грамм загружена. MIN_EARNINGS = ${MIN_EARNINGS}`);
     if (specialOffers) {
       console.log(`✅ Загружено специальных предложений: ${Object.keys(specialOffers).length}`);
     }
@@ -2737,8 +2737,8 @@ function registerCommands(
   });
 
 
-  // --- "/upload_employees" Команда для администратора: загрузить новый файл team-info.xlsx с сотрудниками (автоматически синхронизирует БД) ---
-  bot.onText(/\/upload_employees/, async (msg) => {
+  // --- "/upload_team_info" Команда для администратора: загрузить новый файл team-info.xlsx с сотрудниками (автоматически синхронизирует БД) ---
+  bot.onText(/\/upload_team_info/, async (msg) => {
     const userId = msg.from.id.toString();
     if (!isAdmin(userId)) {
       await bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
@@ -2746,11 +2746,11 @@ function registerCommands(
     }
     pendingEmployeeUpload.set(userId, { step: 'waiting_file' });
     const fileName = getVersionedFileName('team-info', '.xlsx');
-    await bot.sendMessage(msg.chat.id, `📤 Отправьте акитуальный файл <b>${fileName}</b> сотрудников и приоритетов складов.`, { parse_mode: 'HTML' });
+    await bot.sendMessage(msg.chat.id, `📤 Отправьте актуальный файл <b>${fileName}</b> со списком активных сотрудников и приоритетами складов.`, { parse_mode: 'HTML' });
   });
 
-  // --- "/upload_materials" Команда для администратора: загрузить новый файл materials-prices.json с ценами материалов ---
-  bot.onText(/\/upload_materials/, async (msg) => {
+  // --- "/upload_materials_prices" Команда для администратора: загрузить новый файл materials-prices.json с ценами материалов ---
+  bot.onText(/\/upload_materials_prices/, async (msg) => {
     const userId = msg.from.id.toString();
     if (!isAdmin(userId)) {
       await bot.sendMessage(msg.chat.id, '⛔ Только администратор может использовать эту команду.');
@@ -2758,7 +2758,7 @@ function registerCommands(
     }
     pendingMaterialsUpload.set(userId, { step: 'waiting_file' });
     const fileName = getVersionedFileName('materials-prices', '.json');
-    await bot.sendMessage(msg.chat.id, `📤 Отправьте актуальный файл <b>${fileName}</b> настроек цвета материалов, цен и спецпредложений.`, { parse_mode: 'HTML' });
+    await bot.sendMessage(msg.chat.id, `📤 Отправьте актуальный файл <b>${fileName}</b> с настройками цветов материалов, цен за грамм, минимального заработка и спецпредложений.`, { parse_mode: 'HTML' });
   });
 
   // --- "/admin_assign_order" Команда для администратора: назначить заказ сотруднику вручную ---
@@ -3260,7 +3260,7 @@ function registerCommands(
     const file = msg.document;
     const fileName = file.file_name;
 
-    // Приоритет 0: /upload_employees (загрузка team-info.xlsx)
+    // Приоритет 0: /upload_team_info (загрузка team-info.xlsx)
     if (pendingEmployeeUpload && pendingEmployeeUpload.has(userId)) {
       const pending = pendingEmployeeUpload.get(userId);
       if (pending.step !== 'waiting_file') return;
@@ -3290,10 +3290,10 @@ function registerCommands(
         await syncEmployeesFromExcel(db);
         await bot.sendMessage(
           msg.chat.id,
-          '✅ Сотрудники и приоритеты складов успешно обновлены из загруженного файла.'
+          '✅ Список активных сотрудников и приоритеты складов успешно обновлены из загруженного файла.'
         );
       } catch (err) {
-        console.error('[UPLOAD_EMPLOYEES] Ошибка:', err);
+        console.error('[UPLOAD_TEAM_INFO] Ошибка:', err);
         await bot.sendMessage(
           msg.chat.id,
           `❌ Ошибка: <b>${escapeHtml(err.message)}</b>`,
@@ -3304,7 +3304,7 @@ function registerCommands(
       return;
     }
 
-    // Приоритет 0.5: загрузка материалов (команда /upload_materials)
+    // Приоритет 0.5: загрузка материалов (команда /upload_materials_prices)
     if (pendingMaterialsUpload && pendingMaterialsUpload.has(userId)) {
       const pending = pendingMaterialsUpload.get(userId);
       if (pending.step !== 'waiting_file') return;
@@ -3334,10 +3334,10 @@ function registerCommands(
         loadMaterials();
         await bot.sendMessage(
           msg.chat.id,
-          '✅ Справочник настроек материалов, цен и спецпредложений обновлён.'
+          '✅ Конфигурация цветов материалов, цен за грамм, минимального заработка и спецпредложений обновлена.'
         );
       } catch (err) {
-        console.error('[UPLOAD_MATERIALS] Ошибка:', err);
+        console.error('[UPLOAD_MATERIALS_PRICES] Ошибка:', err);
         await bot.sendMessage(
           msg.chat.id,
           `❌ Ошибка: <b>${escapeHtml(err.message)}</b>`,
@@ -4114,7 +4114,7 @@ function registerCommands(
     const filePath = path.join(__dirname, fileName);
     if (!fs.existsSync(filePath)) return bot.sendMessage(msg.chat.id, `❌ Файл <b>${fileName}</b> не найден.`, { parse_mode: 'HTML' });
     await bot.sendDocument(msg.chat.id, filePath, {
-      caption: '🧾 Актуальный файл настроек цвета материалов, цены за грамм, минимального заработка и спецпредложений.',
+      caption: '🧾 Актуальный файл настроек цветов материалов, цен за грамм, минимального заработка и спецпредложений.',
       filename: fileName
     });
   });
@@ -4127,7 +4127,7 @@ function registerCommands(
       const filePath = await exportTeamInfoXlsx(db, ozon);
       const fileName = getVersionedFileName('team-info', '.xlsx');
       await bot.sendDocument(msg.chat.id, filePath, {
-        caption: `📄 Актуальный файл сотрудников и приоритетов складов "${fileName}".`
+        caption: `📄 Актуальный файл со списком активных сотрудников и приоритетами складов "${fileName}".`
       });
       // Можно удалить файл после отправки, но оставим для дальнейшего использования
     } catch (err) {

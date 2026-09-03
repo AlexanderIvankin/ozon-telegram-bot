@@ -372,6 +372,81 @@ function registerCommands(
     return { total: totalEarnings, details: earningsDetails, allHaveStats };
   }
 
+  /**
+ * Форматирует детали заказа в HTML-строку для отправки.
+ * @param {Object} details - объект, возвращённый ozon.getOrderDetails()
+ * @param {Object} db - объект базы данных для получения названия склада (опционально)
+ * @returns {Promise<string>} - строка с HTML-разметкой
+ */
+  async function formatOrderDetails(details, db = null) {
+    let reply = `📄 <b>Детали заказа <code>${escapeHtml(details.posting_number)}</code></b>\n\n`;
+
+    // Основная информация
+    if (details.substatus) {
+      reply += `Статус: (${escapeHtml(details.substatus)})\n`;
+    }
+    if (details.order_number) {
+      reply += `<b>Номер заказа:</b> <code>${escapeHtml(details.order_number)}</code>\n`;
+    }
+    if (details.delivery_method) {
+      reply += `<b>Метод доставки:</b> ${escapeHtml(details.delivery_method.name || '—')}\n`;
+      if (details.delivery_method.warehouse_id && db) {
+        const warehouseName = await db.getWarehouseNameById(String(details.delivery_method.warehouse_id));
+        reply += `<b>Склад:</b> ${escapeHtml(warehouseName)} (ID: <code>${escapeHtml(details.delivery_method.warehouse_id)}</code>)\n`;
+      } else if (details.delivery_method.warehouse_id) {
+        reply += `<b>Склад ID:</b> <code>${escapeHtml(details.delivery_method.warehouse_id)}</code>\n`;
+      }
+    }
+
+    // Товары
+    if (details.products && details.products.length) {
+      reply += `\n<b>Товары:</b>\n`;
+      for (let i = 0; i < details.products.length; i++) {
+        const p = details.products[i];
+        reply += `${i + 1}. ${escapeHtml(p.name || '—')}`;
+        if (p.sku) reply += ` (<b>SKU:</b> <code>${escapeHtml(p.sku)}</code>)`;
+        if (p.offer_id) reply += `, <b>offer_id:</b> <code>${escapeHtml(p.offer_id)}</code>`;
+        reply += ` — ${escapeHtml(p.quantity)} шт.\n`;
+        if (p.price && p.price.amount) {
+          reply += `   Цена: ${escapeHtml(p.price.amount)} ${escapeHtml(p.price.currency || 'RUB')}\n`;
+        }
+      }
+    } else {
+      reply += `\n<b>Товары:</b> не указаны\n`;
+    }
+
+    // Получатель
+    if (details.customer) {
+      reply += `\n<b>Получатель:</b> ${escapeHtml(details.customer.name || '—')}`;
+      if (details.customer.phone) {
+        reply += `, тел: ${escapeHtml(details.customer.phone)}`;
+      }
+      reply += `\n`;
+      if (details.customer.address) {
+        const addr = details.customer.address;
+        let addrStr = '';
+        if (addr.address_tail) addrStr += addr.address_tail;
+        if (addr.city) addrStr += (addrStr ? ', ' : '') + addr.city;
+        if (addr.region) addrStr += (addrStr ? ', ' : '') + addr.region;
+        if (addr.zip_code) addrStr += (addrStr ? ', ' : '') + addr.zip_code;
+        if (addrStr) {
+          reply += `<b>Адрес:</b> ${escapeHtml(addrStr)}\n`;
+        }
+      }
+    }
+    
+    // Дополнительно
+    if (details.tracking_number) {
+      reply += `\n<b>Трек-номер:</b> ${escapeHtml(details.tracking_number)}\n`;
+    }
+    if (details.in_process_at) {
+      const date = new Date(details.in_process_at).toLocaleString();
+      reply += `\n<b>Дата создания:</b> ${escapeHtml(date)}\n`;
+    }
+
+    return reply;
+  }
+
   // --- Вспомогательные функции для административного заполнения статистики (без Markdown) ---
   async function askAdminMaterial(userId, offerId) {
     const state = pendingStatsFill.get(userId);
@@ -2155,7 +2230,6 @@ function registerCommands(
       // 11. УСПЕШНОЕ ЗАВЕРШЕНИЕ
 
       if (adminChatId) {
-
         await bot.sendMessage(
           adminChatId,
           `✅ Заказ <code>${escapeHtml(orderId)}</code> ` +
@@ -2164,58 +2238,15 @@ function registerCommands(
           `(ID: <code>${employee.id}</code>).`,
           { parse_mode: 'HTML' }
         ).catch(() => { });
+      }
 
-        await new Promise(
-          resolve => setTimeout(resolve, 300)
-        );
+      await new Promise(
+        resolve => setTimeout(resolve, 300)
+      );
 
+      if (adminChatId && orderDetails) {
         try {
-          const details = orderDetails; // уже получены ранее
-          let reply = `📄 <b>Детали заказа <code>${escapeHtml(orderId)}</code></b>\n\n`;
-          if (details.substatus) reply += ` (${escapeHtml(details.substatus)})\n`;
-          if (details.order_number) reply += `<b>Номер заказа:</b> <code>${escapeHtml(details.order_number)}</code>\n`;
-          if (details.delivery_method) {
-            reply += `<b>Метод доставки:</b> ${escapeHtml(details.delivery_method.name || '—')}\n`;
-            if (details.delivery_method.warehouse_id) {
-              const warehouseName = await db.getWarehouseNameById(String(details.delivery_method.warehouse_id));
-              reply += `<b>Склад:</b> ${escapeHtml(warehouseName)} (ID: <code>${escapeHtml(details.delivery_method.warehouse_id)}</code>)\n`;
-            }
-          }
-          if (details.products && details.products.length) {
-            reply += `\n<b>Товары:</b>\n`;
-            for (let i = 0; i < details.products.length; i++) {
-              const p = details.products[i];
-              reply += `${i + 1}. ${escapeHtml(p.name || '—')}`;
-              if (p.sku) reply += ` (<b>SKU:</b> <code>${escapeHtml(p.sku)}</code>)`;
-              if (p.offer_id) reply += `, <b>offer_id:</b> <code>${escapeHtml(p.offer_id)}</code>`;
-              reply += ` — ${escapeHtml(p.quantity)} шт.\n`;
-              if (p.price && p.price.amount) {
-                reply += `   Цена: ${escapeHtml(p.price.amount)} ${escapeHtml(p.price.currency || 'RUB')}\n`;
-              }
-            }
-          } else {
-            reply += `\n<b>Товары:</b> не указаны\n`;
-          }
-          if (details.customer) {
-            reply += `\n<b>Получатель:</b> ${escapeHtml(details.customer.name || '—')}`;
-            if (details.customer.phone) reply += `, тел: ${escapeHtml(details.customer.phone)}`;
-            reply += `\n`;
-            if (details.customer.address) {
-              const addr = details.customer.address;
-              let addrStr = '';
-              if (addr.address_tail) addrStr += addr.address_tail;
-              if (addr.city) addrStr += (addrStr ? ', ' : '') + addr.city;
-              if (addr.region) addrStr += (addrStr ? ', ' : '') + addr.region;
-              if (addr.zip_code) addrStr += (addrStr ? ', ' : '') + addr.zip_code;
-              if (addrStr) reply += `<b>Адрес:</b> ${escapeHtml(addrStr)}\n`;
-            }
-          }
-          if (details.tracking_number) reply += `\n<b>Трек-номер:</b> ${escapeHtml(details.tracking_number)}\n`;
-          if (details.in_process_at) {
-            const date = new Date(details.in_process_at).toLocaleString();
-            reply += `\n<b>Дата создания:</b> ${escapeHtml(date)}\n`;
-          }
-
+          const reply = await formatOrderDetails(orderDetails, db);
           await bot.sendMessage(adminChatId, reply, { parse_mode: 'HTML' });
         } catch (err) {
           console.error(`[ASSIGN] Не удалось отправить детали заказа ${orderId} модератору:`, err);
@@ -3747,61 +3778,7 @@ function registerCommands(
       if (!details) {
         return bot.sendMessage(msg.chat.id, `❌ Не удалось получить детали заказа ${postingNumber}.`);
       }
-
-      let reply = `📄 <b>Детали заказа <code>${escapeHtml(postingNumber)}</code></b>\n\n`;
-
-      // Основная информация
-      if (details.substatus) reply += ` (${escapeHtml(details.substatus)})`;
-      reply += `\n`;
-      if (details.order_number) reply += `<b>Номер заказа:</b> <code>${escapeHtml(details.order_number)}</code>\n`;
-      if (details.delivery_method) {
-        reply += `<b>Метод доставки:</b> ${escapeHtml(details.delivery_method.name || '—')}\n`;
-        if (details.delivery_method.warehouse_id) {
-          const warehouseName = await db.getWarehouseNameById(String(details.delivery_method.warehouse_id));
-          reply += `<b>Склад:</b> ${escapeHtml(warehouseName)} (ID: <code>${escapeHtml(details.delivery_method.warehouse_id)}</code>)\n`;
-        }
-      }
-
-      // Товары
-      if (details.products && details.products.length) {
-        reply += `\n<b>Товары:</b>\n`;
-        for (let i = 0; i < details.products.length; i++) {
-          const p = details.products[i];
-          reply += `${i + 1}. ${escapeHtml(p.name || '—')}`;
-          if (p.sku) reply += ` (<b>SKU:</b> <code>${escapeHtml(p.sku)}</code>)`;
-          if (p.offer_id) reply += `, <b>offer_id:</b> <code>${escapeHtml(p.offer_id)}</code>`;
-          reply += ` — ${escapeHtml(p.quantity)} шт.\n`;
-          if (p.price && p.price.amount) {
-            reply += `   Цена: ${escapeHtml(p.price.amount)} ${escapeHtml(p.price.currency || 'RUB')}\n`;
-          }
-        }
-      } else {
-        reply += `\n<b>Товары:</b> не указаны\n`;
-      }
-
-      // Получатель
-      if (details.customer) {
-        reply += `\n<b>Получатель:</b> ${escapeHtml(details.customer.name || '—')}`;
-        if (details.customer.phone) reply += `, тел: ${escapeHtml(details.customer.phone)}`;
-        reply += `\n`;
-        if (details.customer.address) {
-          const addr = details.customer.address;
-          let addrStr = '';
-          if (addr.address_tail) addrStr += addr.address_tail;
-          if (addr.city) addrStr += (addrStr ? ', ' : '') + addr.city;
-          if (addr.region) addrStr += (addrStr ? ', ' : '') + addr.region;
-          if (addr.zip_code) addrStr += (addrStr ? ', ' : '') + addr.zip_code;
-          if (addrStr) reply += `<b>Адрес:</b> ${escapeHtml(addrStr)}\n`;
-        }
-      }
-
-      // Дополнительно
-      if (details.tracking_number) reply += `\n<b>Трек-номер:</b> ${escapeHtml(details.tracking_number)}\n`;
-      if (details.in_process_at) {
-        const date = new Date(details.in_process_at).toLocaleString();
-        reply += `\n<b>Дата создания:</b> ${escapeHtml(date)}\n`;
-      }
-
+      const reply = await formatOrderDetails(details, db);
       await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'HTML' });
     } catch (err) {
       console.error('Ошибка в /order_details:', err);

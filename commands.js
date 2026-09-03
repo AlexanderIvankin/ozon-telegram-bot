@@ -434,7 +434,7 @@ function registerCommands(
         }
       }
     }
-    
+
     // Дополнительно
     if (details.tracking_number) {
       reply += `\n<b>Трек-номер:</b> ${escapeHtml(details.tracking_number)}\n`;
@@ -4240,7 +4240,7 @@ function registerCommands(
 
     try {
       await bot.sendMessage(msg.chat.id, '🔄 Создаю бэкап базы данных...');
-      const backupPath = await db.createDbBackup();
+      const backupPath = await db.createDbBackup({ includeTime: true });
 
       if (backupPath) {
         const fileName = path.basename(backupPath);

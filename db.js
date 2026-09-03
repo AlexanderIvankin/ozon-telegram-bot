@@ -2,6 +2,7 @@ const sqlite3 = require('sqlite3').verbose();
 const { open } = require('sqlite');
 const fs = require('fs');
 const path = require('path');
+const { formatLocalTimestamp } = require('./utils');
 require('dotenv').config();
 
 const DB_VERSION = process.env.BOT_VERSION ? `-${process.env.BOT_VERSION}` : '';
@@ -865,37 +866,52 @@ async function getIssuedCount(employeeId) {
 }
 
 /**
- * Создаёт ежедневный бэкап базы данных в папку backups.
- * Если бэкап за сегодня уже существует — пропускает.
+ * Создаёт бэкап базы данных.
+ * @param {Object} options - настройки
+ * @param {boolean} options.includeTime - если true, добавляет время в имя файла (для ручных бэкапов)
+ * @returns {Promise<string|null>} - путь к созданному бэкапу или null при ошибке
  */
-async function createDbBackup() {
+async function createDbBackup(options = {}) {
+    const { includeTime = false } = options;
     const dbPath = path.join(__dirname, DB_FILENAME);
     const backupDir = path.join(__dirname, 'backups');
+
     try {
         if (!fs.existsSync(backupDir)) {
             fs.mkdirSync(backupDir, { recursive: true });
             console.log(`[DB] Создана папка бэкапов: ${backupDir}`);
         }
-        const dateStr = new Date().toISOString().slice(0, 10);   // YYYY-MM-DD
-        const backupName = `bot${DB_VERSION}_${dateStr}.db`;  // bot-{VERSION}_YYYY-MM-DD.db
-        const backupPath = path.join(backupDir, backupName);
 
-        if (fs.existsSync(backupPath)) {
-            console.log(`[DB] Бэкап за сегодня уже существует: ${backupPath}`);
-            return backupPath; // возвращаем существующий путь
+        let backupName;
+        if (includeTime) {
+            // Используем formatLocalTimestamp для локального времени: YYYY-MM-DD_HH-MM-SS
+            const timestamp = formatLocalTimestamp();
+            backupName = `bot${DB_VERSION}_${timestamp}.db`; // bot-2_2025-01-01_12-30-45.db
+        } else {
+            // Ежедневный бэкап: только дата
+            const dateStr = new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
+            backupName = `bot${DB_VERSION}_${dateStr}.db`; // bot-2_2025-01-01.db
         }
 
-        // Проверяем, что database доступна
+        const backupPath = path.join(backupDir, backupName);
+
+        // Проверяем существование только для ежедневных бэкапов (без времени)
+        if (!includeTime && fs.existsSync(backupPath)) {
+            console.log(`[DB] Бэкап за сегодня уже существует: ${backupPath}`);
+            return backupPath;
+        }
+
         if (!database) {
             console.error('[DB] Ошибка: database не инициализирована!');
             return null;
         }
 
-        // Принудительно синхронизируем WAL в основной файл
+        // Принудительная синхронизация WAL
         await database.run('PRAGMA wal_checkpoint;');
         fs.copyFileSync(dbPath, backupPath);
         console.log(`[DB] Бэкап создан: ${backupPath}`);
         return backupPath;
+
     } catch (err) {
         console.error('[DB] Ошибка создания бэкапа:', err);
         throw err;

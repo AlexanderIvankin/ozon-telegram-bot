@@ -3564,14 +3564,35 @@ function registerCommands(
         const pending = pendingFileId.get(userId);
         if (pending.step === 'waiting_file') {
           const file = msg.document;
+          const caption = msg.caption || '';
+          const plainCaption = stripHtml(caption);
+          const offerIdMatch = plainCaption.match(/offer_id:\s*(\S+)/i);
+          // const fileNameMatch = plainCaption.match(/Файл:\s*(.+)/i); // не используется
+
           const fileId = file.file_id;
           const fileName = file.file_name;
           const fileSize = file.file_size;
+
+          // Определяем часть с offer_id
+          let offerIdPart;
+          if (offerIdMatch) {
+            // Если найден, экранируем и используем
+            offerIdPart = escapeHtml(offerIdMatch[1]);
+          } else {
+            // Иначе — плейсхолдер в HTML-сущностях
+            offerIdPart = '&lt;offer_id&gt;';
+          }
+
           await bot.sendMessage(
             msg.chat.id,
-            `✅ <b>file_id:</b> <code>${escapeHtml(fileId)}</code>\n<b>Имя:</b> <code>${escapeHtml(fileName)}</code>\n<b>Размер:</b> <b>${(fileSize / 1024 / 1024).toFixed(2)} МБ</b>\n\nИспользуйте /bind_model &lt;offer_id&gt; <code>${escapeHtml(fileId)}</code> <code>${escapeHtml(fileName)}</code>`,
+            `✅ <b>file_id:</b> <code>${escapeHtml(fileId)}</code>\n` +
+            `<b>Имя:</b> <code>${escapeHtml(fileName)}</code>\n` +
+            `<b>Размер:</b> <b>${(fileSize / 1024 / 1024).toFixed(2)} МБ</b>\n\n` +
+            `Используйте:\n` +
+            `<code>/bind_model ${offerIdPart} ${escapeHtml(fileId)} ${escapeHtml(fileName)}</code>`,
             { parse_mode: 'HTML' }
           );
+
           pendingFileId.delete(userId);
         }
         return;

@@ -2041,7 +2041,7 @@ function registerCommands(
                         `<b>${escapeHtml(product.name)}</b> ` +
                         `(offer_id: <code>${escapeHtml(originalOfferId)}</code>) ` +
                         `из offer_id <code>${escapeHtml(txt.offer_id)}</code>: ` +
-                        `<b>${escapeHtml(txt.file_name)}</b>\n` +
+                        `<code>${escapeHtml(txt.file_name)}</code>\n` +
                         `Отправьте его сотруднику ` +
                         `<b>${escapeHtml(employee.name)}</b> вручную.`,
                       parse_mode: 'HTML'
@@ -2068,18 +2068,18 @@ function registerCommands(
                 await bot.sendMessage(
                   moderatorId,
                   `⚠️ Для товара ` +
-                  `${escapeHtml(product.name)} ` +
+                  `<b>${escapeHtml(product.name)}</b> ` +
                   `(<code>${escapeHtml(originalOfferId)}</code>) ` +
                   `отсутствуют 3D-модели.\n` +
                   `Отправьте их сотруднику ` +
-                  `${escapeHtml(employee.name)} вручную.`,
+                  `<b>${escapeHtml(employee.name)}</b> вручную.`,
                   { parse_mode: 'HTML' }
                 );
 
                 await bot.sendMessage(
                   employee.tg_user_id,
                   `ℹ️ 3D-модели для товара ` +
-                  `${escapeHtml(product.name)} ` +
+                  `<b>${escapeHtml(product.name)}</b> ` +
                   `(<code>${escapeHtml(originalOfferId)}</code>) ` +
                   `отсутствуют. Обратитесь к модератору.`,
                   { parse_mode: 'HTML' }
@@ -2093,8 +2093,8 @@ function registerCommands(
             for (const model of models) {
 
               let captionModel =
-                `📁 3D-модель для ${escapeHtml(product.name)}\n` +
-                `offer_id: <code>${escapeHtml(originalOfferId)}</code>`;
+                `📁 3D-модель для <b>${escapeHtml(product.name)}</b>\n` +
+                `<b>offer_id:</b> <code>${escapeHtml(originalOfferId)}</code>`;
 
               if (usedOfferId !== originalOfferId) {
                 captionModel +=
@@ -2103,7 +2103,7 @@ function registerCommands(
               }
 
               captionModel +=
-                `\nФайл: <b>${escapeHtml(model.file_name)}</b>`;
+                `\n<b>Файл:</b> <code>${escapeHtml(model.file_name)}</code>`;
 
               await bot.sendDocument(
                 employee.tg_user_id,
@@ -2133,12 +2133,12 @@ function registerCommands(
               await bot.sendMessage(
                 moderatorId,
                 `⚠️ Для товара ` +
-                `${escapeHtml(product.name)} ` +
+                `<b>${escapeHtml(product.name)}</b> ` +
                 `(<code>${escapeHtml(originalOfferId)}</code>) ` +
                 `не загружены модели: ` +
                 `<b>${escapeHtml(fileList)}</b>.\n` +
                 `Отправьте их сотруднику ` +
-                `${escapeHtml(employee.name)} вручную.`,
+                `<b>${escapeHtml(employee.name)}</b> вручную.`,
                 { parse_mode: 'HTML' }
               );
             }
@@ -3101,7 +3101,7 @@ function registerCommands(
       await db.deleteProductModel(offerId, fileName);
       bot.sendMessage(
         msg.chat.id,
-        `✅ Модель <b>${escapeHtml(fileName)}</b> для offer_id <code>${escapeHtml(offerId)}</code> удалена из базы.`,
+        `✅ Модель <code>${escapeHtml(fileName)}</code> для offer_id <code>${escapeHtml(offerId)}</code> удалена из базы.`,
         { parse_mode: 'HTML' }
       );
     } catch (err) {
@@ -3136,7 +3136,7 @@ function registerCommands(
     }
     let reply = `📋 Модели для offer_id <code>${escapeHtml(offerId)}</code>:\n`;
     for (const m of models) {
-      reply += `• <b>${escapeHtml(m.file_name)}</b> (${(m.file_size / 1024 / 1024).toFixed(2)} МБ)\n`;
+      reply += `• <code>${escapeHtml(m.file_name)}</code> (${(m.file_size / 1024 / 1024).toFixed(2)} МБ)\n`;
     }
     await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'HTML' });
   });
@@ -3201,7 +3201,7 @@ function registerCommands(
       await db.upsertProductModel(offerId, fileId, fileName, 0);
       bot.sendMessage(
         msg.chat.id,
-        `✅ Модель <b>${escapeHtml(fileName)}</b> для offer_id <code>${escapeHtml(offerId)}</code> успешно привязана (file_id: <code>${escapeHtml(fileId)}</code>).`,
+        `✅ Модель <code>${escapeHtml(fileName)}</code> для offer_id <code>${escapeHtml(offerId)}</code> успешно привязана (file_id: <code>${escapeHtml(fileId)}</code>).`,
         { parse_mode: 'HTML' }
       );
     } catch (err) {
@@ -3305,7 +3305,7 @@ function registerCommands(
     let sentCount = 0;
     for (const model of models) {
       try {
-        const caption = `📁 Модель для offer_id: <code>${escapeHtml(offerId)}</code>\nФайл: <b>${escapeHtml(model.file_name)}</b>`;
+        const caption = `📁 Модель для <b>offer_id:</b> <code>${escapeHtml(offerId)}</code>\n<b>Файл:</b> <code>${escapeHtml(model.file_name)}</code>`;
         await bot.sendDocument(targetChatId, model.file_id, {
           caption,
           parse_mode: 'HTML'
@@ -3319,7 +3319,7 @@ function registerCommands(
         console.error(`Ошибка отправки модели ${model.file_name}:`, err.message);
         await bot.sendMessage(
           msg.chat.id,
-          `❌ Ошибка при отправке файла <b>${escapeHtml(model.file_name)}</b>: <b>${escapeHtml(err.message)}</b>`,
+          `❌ Ошибка при отправке файла <code>${escapeHtml(model.file_name)}</code>: <b>${escapeHtml(err.message)}</b>`,
           { parse_mode: 'HTML' }
         );
       }
@@ -3483,7 +3483,7 @@ function registerCommands(
 
         try {
           const sent = await bot.sendDocument(process.env.MODELS_CHAT_ID, file.file_id, {
-            caption: `<b>offer_id:</b> <code>${escapeHtml(offerId)}</code>\n<b>Файл:</b> ${escapeHtml(fileName)}`,
+            caption: `<b>offer_id:</b> <code>${escapeHtml(offerId)}</code>\n<b>Файл:</b> <code>${escapeHtml(fileName)}</code>`,
             parse_mode: 'HTML'
           });
           const newFileId = sent.document.file_id;
@@ -3491,7 +3491,7 @@ function registerCommands(
           await db.upsertProductModel(offerId, newFileId, fileName, file.file_size);
           await bot.sendMessage(
             msg.chat.id,
-            `✅ Модель <b>${escapeHtml(fileName)}</b> для offer_id <code>${escapeHtml(offerId)}</code> успешно загружена/обновлена.`,
+            `✅ Модель <code>${escapeHtml(fileName)}</code> для offer_id <code>${escapeHtml(offerId)}</code> успешно загружена/обновлена.`,
             { parse_mode: 'HTML' }
           );
         } catch (err) {
@@ -3526,7 +3526,7 @@ function registerCommands(
 
         try {
           const sent = await bot.sendDocument(process.env.MODELS_CHAT_ID, file.file_id, {
-            caption: `<b>offer_id:</b> <code>${escapeHtml(offerId)}</code>\n<b>Файл:</b> ${escapeHtml(fileName)}`,
+            caption: `<b>offer_id:</b> <code>${escapeHtml(offerId)}</code>\n<b>Файл:</b> <code>${escapeHtml(fileName)}</code>`,
             parse_mode: 'HTML'
           });
           const newFileId = sent.document.file_id;
@@ -3534,7 +3534,7 @@ function registerCommands(
           await db.upsertProductModel(offerId, newFileId, fileName, file.file_size);
           await bot.sendMessage(
             msg.chat.id,
-            `✅ Модель <b>${escapeHtml(fileName)}</b> для offer_id <code>${escapeHtml(offerId)}</code> успешно добавлена/обновлена.`,
+            `✅ Модель <code>${escapeHtml(fileName)}</code> для offer_id <code>${escapeHtml(offerId)}</code> успешно добавлена/обновлена.`,
             { parse_mode: 'HTML' }
           );
         } catch (err) {
@@ -3559,7 +3559,7 @@ function registerCommands(
           const fileSize = file.file_size;
           await bot.sendMessage(
             msg.chat.id,
-            `✅ file_id: <code>${escapeHtml(fileId)}</code>\nИмя: <b>${escapeHtml(fileName)}</b>\nРазмер: <b>${(fileSize / 1024 / 1024).toFixed(2)} МБ</b>\n\nИспользуйте /bind_model <code>offer_id</code> <code>${escapeHtml(fileId)}</code> "<b>${escapeHtml(fileName)}</b>"`,
+            `✅ <b>file_id:</b> <code>${escapeHtml(fileId)}</code>\n<b>Имя:</b> <code>${escapeHtml(fileName)}</code>\n<b>Размер:</b> <b>${(fileSize / 1024 / 1024).toFixed(2)} МБ</b>\n\nИспользуйте /bind_model <code>offer_id</code> <code>${escapeHtml(fileId)}</code> "<code>${escapeHtml(fileName)}</code>"`,
             { parse_mode: 'HTML' }
           );
           pendingFileId.delete(userId);
@@ -3586,7 +3586,7 @@ function registerCommands(
         await db.upsertProductModel(offerId, fileId, fileName, fileSize);
         await bot.sendMessage(
           msg.chat.id,
-          `✅ Модель <b>${escapeHtml(fileName)}</b> для offer_id <code>${escapeHtml(offerId)}</code> успешно привязана/обновлена.`,
+          `✅ Модель <code>${escapeHtml(fileName)}</code> для offer_id <code>${escapeHtml(offerId)}</code> успешно привязана/обновлена.`,
           { parse_mode: 'HTML' }
         );
         return;

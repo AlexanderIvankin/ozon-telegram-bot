@@ -687,6 +687,18 @@ async function getProductStats(offerId) {
  * Вставить новую запись по товару (только если её нет)
  */
 async function upsertProductStats(offerId, material, color, weight, employeeId) {
+    console.log(`[DB] Вызов upsertProductStats сотрудником ${employeeId} с offerId=${offerId}, material=${material}, color=${color}, weight=${weight}`);
+    // Валидация обязательных полей
+    if (!offerId) throw new Error('offerId обязателен');
+    if (!material || typeof material !== 'string') {
+        throw new Error(`material для offer_id ${offerId} не может быть пустым (получено: ${material})`);
+    }
+    if (!color || typeof color !== 'string') {
+        throw new Error(`color для offer_id ${offerId} не может быть пустым (получено: ${color})`);
+    }
+    if (!weight || isNaN(weight) || weight <= 0) {
+        throw new Error(`weight для offer_id ${offerId} должно быть положительным числом (получено: ${weight})`);
+    }
     // Используем INSERT OR REPLACE – если запись существует, обновим (но по заданию не нужно)
     // Вместо этого можно просто INSERT, но чтобы избежать ошибки, сделаем UPSERT
     await database.run(`

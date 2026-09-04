@@ -850,12 +850,20 @@ function registerCommands(
         const existingStats = await db.getProductStats(offerId);
         if (existingStats) {
           await bot.sendMessage(msg.chat.id, `⚠️ Статистика для товара <code>${escapeHtml(offerId)}</code> уже существует.`, { parse_mode: 'HTML' });
+
           if (offerState.stepMessageId) {
             try { await bot.deleteMessage(userId, offerState.stepMessageId); } catch (e) { }
-            try { await bot.deleteMessage(userId, offerState.messageId); } catch (e) { }
-            try { await bot.deleteMessage(userId, msg.message_id); } catch (e) { }
           }
-          delete state.offers[offerId];
+          if (offerState.messageId) {
+            try { await bot.deleteMessage(userId, offerState.messageId); } catch (e) { }
+          }
+          // msg.message_id — сообщение с callback-кнопкой
+          try { await bot.deleteMessage(userId, msg.message_id); } catch (e) { }
+
+          // Статистика уже существует — считаем товар завершённым
+          offerState.status = 'completed';
+          offerState.waitingForWeight = false;
+
           const allCompleted = Object.values(state.offers).every(o => o.status === 'completed');
           state.allCompleted = allCompleted;
           if (allCompleted) {
@@ -3195,7 +3203,9 @@ function registerCommands(
     }
     const offerId = match[1];
     const fileId = match[2];
-    const fileName = match[3] || `привязанный_файл_${Date.now()}`;
+    const fileName = match[3]
+      ? match[3].trim().replace(/^["']|["']$/g, '')
+      : `привязанный_файл_${Date.now()}`;
 
     try {
       await db.upsertProductModel(offerId, fileId, fileName, 0);
@@ -3559,7 +3569,7 @@ function registerCommands(
           const fileSize = file.file_size;
           await bot.sendMessage(
             msg.chat.id,
-            `✅ <b>file_id:</b> <code>${escapeHtml(fileId)}</code>\n<b>Имя:</b> <code>${escapeHtml(fileName)}</code>\n<b>Размер:</b> <b>${(fileSize / 1024 / 1024).toFixed(2)} МБ</b>\n\nИспользуйте /bind_model <code>offer_id</code> <code>${escapeHtml(fileId)}</code> "<code>${escapeHtml(fileName)}</code>"`,
+            `✅ <b>file_id:</b> <code>${escapeHtml(fileId)}</code>\n<b>Имя:</b> <code>${escapeHtml(fileName)}</code>\n<b>Размер:</b> <b>${(fileSize / 1024 / 1024).toFixed(2)} МБ</b>\n\nИспользуйте /bind_model &lt;offer_id&gt; <code>${escapeHtml(fileId)}</code> <code>${escapeHtml(fileName)}</code>`,
             { parse_mode: 'HTML' }
           );
           pendingFileId.delete(userId);
@@ -4572,7 +4582,7 @@ function registerCommands(
       if (hasIncomplete || !state.allCompleted) {
         return bot.sendMessage(
           msg.chat.id,
-          `❌ Сначала заполните статистику для всех товаров в заказе <code>${escapeHtml(postingNumber)}</code>. Используйте /my_orders, чтобы продолжить.`,
+          `❌ Сначала заполните статистику для всех товаров в заказе <code>${escapeHtml(postingNumber)}</code>. Используйте <code>/my_orders</code>, чтобы продолжить.`,
           { parse_mode: 'HTML' }
         );
       }
@@ -5108,8 +5118,10 @@ function registerCommands(
 
     // Обработка заполнения веса пластика для заказа
     if (state) {
-      const weight = parseFloat(msg.text.trim().replace(',', '.'));
-      if (isNaN(weight) || weight <= 0) {
+      const weightText = msg.text.trim().replace(',', '.');
+
+      // Строгая проверка числа
+      if (!/^\d+(?:\.\d+)?$/.test(weightText)) {
         await bot.sendMessage(
           userId,
           '❌ Введите корректное положительное число (например, <b>12.5</b>).',
@@ -5118,8 +5130,21 @@ function registerCommands(
         return;
       }
 
-      // Найти offerId, для которого ожидается вес
-      const offerId = Object.keys(state.offers).find(oid => state.offers[oid].waitingForWeight === true);
+      const weight = Number(weightText);
+
+      if (!Number.isFinite(weight) || weight <= 0) {
+        await bot.sendMessage(
+          userId,
+          '❌ Введите корректное положительное число (например, <b>12.5</b>).',
+          { parse_mode: 'HTML' }
+        );
+        return;
+      }
+
+      // Найти товар, для которого ожидается вес
+      const offerId = Object.keys(state.offers)
+        .find(oid => state.offers[oid].waitingForWeight === true);
+
       if (!offerId) {
         await bot.sendMessage(
           userId,
@@ -5130,88 +5155,199 @@ function registerCommands(
       }
 
       const offerState = state.offers[offerId];
-      // Проверка дублирования
+
+      // Проверка существующей статистики
       const existingStats = await db.getProductStats(offerId);
+
       if (existingStats) {
         await bot.sendMessage(
           userId,
           `⚠️ Статистика для товара <code>${escapeHtml(offerId)}</code> уже существует. Запись не будет изменена.`,
           { parse_mode: 'HTML' }
         );
-        // Удаляем этот товар из состояния
-        delete state.offers[offerId];
-        // Проверяем, все ли товары завершены
-        const allCompleted = Object.values(state.offers).every(o => o.status === 'completed');
-        state.allCompleted = allCompleted;
-        if (allCompleted) {
-          await sendFinishButton(userId, state.orderId);
-          pendingForms.delete(currentKey);
-        }
-        // Удаляем сообщение с кнопкой
+
+        // Этот товар уже имеет статистику — считаем его завершённым
+        offerState.status = 'completed';
+        offerState.waitingForWeight = false;
+
+        // Удаляем сообщения опроса
+        try {
+          await bot.deleteMessage(userId, offerState.stepMessageId);
+        } catch (e) { }
+
         try {
           await bot.deleteMessage(userId, offerState.messageId);
         } catch (e) { }
-        state.waitingForWeight = false;
+
+        // Проверяем завершение всех товаров
+        const allCompleted = Object.values(state.offers)
+          .every(o => o.status === 'completed');
+
+        state.allCompleted = allCompleted;
+
+        if (allCompleted) {
+          await sendFinishButton(userId, state.orderId);
+        }
+
         return;
       }
 
-      // Сохраняем данные
+      // Получаем сотрудника
       const employee = await db.getEmployee(userId);
-      await db.upsertProductStats(offerId, offerState.material, offerState.color, weight, employee.id);
-      await exportProductStats();
 
-      // Обновляем статус
-      offerState.weight = weight;
-      offerState.status = 'completed';
-      offerState.waitingForWeight = false;
+      if (!employee) {
+        console.error(`[STATS] Не найден сотрудник Telegram ID ${userId}`);
 
-      // Удаляем сообщение с запросом веса (оно хранится в stepMessageId)
-      try {
-        await bot.deleteMessage(userId, offerState.stepMessageId);
-      } catch (e) { }
-      // Удаляем исходное сообщение с кнопкой "Заполнить статистику"
-      try {
-        await bot.deleteMessage(userId, offerState.messageId);
-      } catch (e) { }
-      // Удаляем сообщение пользователя с числом (текущее msg)
-      try {
-        await bot.deleteMessage(userId, msg.message_id);
-      } catch (e) { }
+        await bot.sendMessage(
+          userId,
+          '❌ Не удалось определить сотрудника. Попробуйте заново через /my_orders.',
+          { parse_mode: 'HTML' }
+        );
 
-      // Отправляем подтверждение
-      await bot.sendMessage(
-        userId,
-        `✅ Статистика для товара <code>${escapeHtml(offerId)}</code> сохранена.`,
-        { parse_mode: 'HTML' }
-      );
+        return;
+      }
 
-      // Проверяем, все ли товары завершены
-      const allCompleted = Object.values(state.offers).every(o => o.status === 'completed');
-      state.allCompleted = allCompleted;
-      if (allCompleted) {
-        await sendFinishButton(userId, state.orderId);
+      // Защита от повреждённого состояния
+      if (!offerState.material || !offerState.color) {
+        const errorMsg =
+          '❌ Не удалось сохранить статистику: не выбраны материал или цвет. ' +
+          'Заполните статистику заново через <code>/my_orders</code>.';
+
+        await bot.sendMessage(
+          userId,
+          errorMsg,
+          { parse_mode: 'HTML' }
+        );
+
+        // Уведомляем модератора
+        const moderatorId = process.env.MODERATOR_ID;
+
+        if (moderatorId) {
+          await bot.sendMessage(
+            moderatorId,
+            `⚠️ Ошибка заполнения статистики для товара ` +
+            `<code>${escapeHtml(offerId)}</code> пользователем ` +
+            `<b>${escapeHtml(employee.name)}</b>: отсутствуют материал или цвет. ` +
+            `Состояние заказа сброшено.`,
+            { parse_mode: 'HTML' }
+          ).catch(() => { });
+        }
+
+        // Полностью удаляем состояние для этого заказа.
+        // /my_orders при необходимости восстановит его по данным из БД.
         pendingForms.delete(currentKey);
-      } else {
-        // Если остались незавершённые, предлагаем продолжить
-        const nextIncomplete = Object.keys(state.offers).find(oid => state.offers[oid].status !== 'completed');
-        if (nextIncomplete) {
-          // Можно предложить заполнить следующий, но лучше через /my_orders
+
+        // Удаляем связанные сообщения
+        try {
+          await bot.deleteMessage(userId, offerState.stepMessageId);
+        } catch (e) { }
+
+        try {
+          await bot.deleteMessage(userId, offerState.messageId);
+        } catch (e) { }
+
+        try {
+          await bot.deleteMessage(userId, msg.message_id);
+        } catch (e) { }
+
+        return;
+      }
+
+      // Сохраняем статистику
+      try {
+        await db.upsertProductStats(
+          offerId,
+          offerState.material,
+          offerState.color,
+          weight,
+          employee.id
+        );
+
+        await exportProductStats();
+
+        // Обновляем состояние товара
+        offerState.weight = weight;
+        offerState.status = 'completed';
+        offerState.waitingForWeight = false;
+
+        // Удаляем сообщения опроса
+        try {
+          await bot.deleteMessage(userId, offerState.stepMessageId);
+        } catch (e) { }
+
+        try {
+          await bot.deleteMessage(userId, offerState.messageId);
+        } catch (e) { }
+
+        try {
+          await bot.deleteMessage(userId, msg.message_id);
+        } catch (e) { }
+
+        // Подтверждение
+        await bot.sendMessage(
+          userId,
+          `✅ Статистика для товара <code>${escapeHtml(offerId)}</code> сохранена.`,
+          { parse_mode: 'HTML' }
+        );
+
+        // Проверяем завершение всех товаров
+        const allCompleted = Object.values(state.offers)
+          .every(o => o.status === 'completed');
+
+        state.allCompleted = allCompleted;
+
+        if (allCompleted) {
+          await sendFinishButton(userId, state.orderId);
+        } else {
           await bot.sendMessage(
             userId,
-            `ℹ️ Остались товары без статистики. Используйте /my_orders, чтобы продолжить.`,
+            'ℹ️ Остались товары без статистики. Используйте <code>/my_orders</code>, чтобы продолжить.',
             { parse_mode: 'HTML' }
           );
         }
+
+      } catch (err) {
+        console.error(
+          `[ERROR] Ошибка сохранения статистики для ${offerId}:`,
+          err
+        );
+
+        await bot.sendMessage(
+          userId,
+          `❌ Ошибка сохранения статистики для товара ` +
+          `<code>${escapeHtml(offerId)}</code>: ` +
+          `<b>${escapeHtml(err.message)}</b>`,
+          { parse_mode: 'HTML' }
+        );
+
+        // Уведомляем модератора
+        const moderatorId = process.env.MODERATOR_ID;
+
+        if (moderatorId) {
+          await bot.sendMessage(
+            moderatorId,
+            `⚠️ Ошибка сохранения статистики для товара ` +
+            `<code>${escapeHtml(offerId)}</code> пользователем ` +
+            `<b>${escapeHtml(employee.name)}</b>: ` +
+            `${escapeHtml(err.message)}`,
+            { parse_mode: 'HTML' }
+          ).catch(() => { });
+        }
+
+        // При ошибке БД состояние НЕ удаляем.
+        // Пользователь сможет повторить ввод или восстановить процесс через /my_orders.
+        offerState.waitingForWeight = true;
+
+        return;
       }
-      return;
     }
 
     // --- Администраторское заполнение статистики (через /admin_fill_stats) ---
     const adminState = pendingStatsFill.get(userId);
+
     if (adminState) {
-      // Если шаг не равен 3 (ожидание веса) – игнорируем (пользователь должен нажимать кнопки)
+      // Ожидаем только ввод веса
       if (adminState.step !== 3) {
-        // Если пользователь вводит текст, когда не ожидается – напоминаем
         await bot.sendMessage(
           userId,
           '❌ Сейчас ожидается выбор из списка. Используйте кнопки.',
@@ -5220,10 +5356,10 @@ function registerCommands(
         return;
       }
 
-      // Шаг 3: ввод веса
-      const value = text.trim().replace(',', '.');
-      const weight = parseFloat(value);
-      if (isNaN(weight) || weight <= 0) {
+      const weightText = text.trim().replace(',', '.');
+
+      // Строгая проверка числа
+      if (!/^\d+(?:\.\d+)?$/.test(weightText)) {
         await bot.sendMessage(
           userId,
           '❌ Введите корректное положительное число (например, <b>12.5</b>).',
@@ -5232,39 +5368,115 @@ function registerCommands(
         return;
       }
 
-      // Сохраняем
+      const weight = Number(weightText);
+
+      if (!Number.isFinite(weight) || weight <= 0) {
+        await bot.sendMessage(
+          userId,
+          '❌ Введите корректное положительное число (например, <b>12.5</b>).',
+          { parse_mode: 'HTML' }
+        );
+        return;
+      }
+
+      // Проверяем обязательные данные состояния
+      if (!adminState.data.material || !adminState.data.color) {
+        await bot.sendMessage(
+          userId,
+          `❌ Не удалось сохранить статистику: не выбраны материал или цвет. Начните заново через <code>/admin_fill_stats ${escapeHtml(adminState.offerId)}</code>.`,
+          { parse_mode: 'HTML' }
+        );
+
+        // Удаляем сообщение с запросом веса
+        if (adminState.lastMessageId) {
+          try {
+            await bot.deleteMessage(userId, adminState.lastMessageId);
+          } catch (e) { }
+        }
+
+        // Удаляем введённый администратором вес
+        try {
+          await bot.deleteMessage(userId, msg.message_id);
+        } catch (e) { }
+
+        // Сбрасываем состояние
+        pendingStatsFill.delete(userId);
+
+        return;
+      }
+
+      // Получаем сотрудника/администратора
+      const employee = await db.getEmployee(userId);
+
+      if (!employee) {
+        console.error(
+          `[ADMIN_FILL_STATS] Администратор ${userId} не найден в таблице employees`
+        );
+
+        await bot.sendMessage(
+          userId,
+          '❌ Не удалось определить администратора как сотрудника. ' +
+          'Статистика не была изменена.',
+          { parse_mode: 'HTML' }
+        );
+
+        // Состояние НЕ удаляем — администратор может исправить проблему
+        return;
+      }
+
       try {
-        const employee = await db.getEmployee(userId);
         await db.upsertProductStats(
           adminState.offerId,
           adminState.data.material,
           adminState.data.color,
           weight,
-          employee ? employee.id : null
+          employee.id
         );
+
         await exportProductStats();
-        // Удаляем последнее сообщение (запрос веса)
+
+        // Удаляем сообщение с запросом веса
         if (adminState.lastMessageId) {
-          try { await bot.deleteMessage(userId, adminState.lastMessageId); } catch (e) { }
+          try {
+            await bot.deleteMessage(
+              userId,
+              adminState.lastMessageId
+            );
+          } catch (e) { }
         }
+
+        // Удаляем сообщение администратора с введённым весом
+        try {
+          await bot.deleteMessage(userId, msg.message_id);
+        } catch (e) { }
+
         await bot.sendMessage(
           userId,
-          `✅ Статистика для offer_id <code>${escapeHtml(adminState.offerId)}</code> успешно сохранена/обновлена.\n` +
+          `✅ Статистика для offer_id ` +
+          `<code>${escapeHtml(adminState.offerId)}</code> успешно сохранена/обновлена.\n` +
           `Материал: <b>${escapeHtml(adminState.data.material)}</b>\n` +
           `Цвет: <b>${escapeHtml(adminState.data.color)}</b>\n` +
           `Вес: <b>${weight}</b> г`,
           { parse_mode: 'HTML' }
         );
-        // Удаляем состояние
+
+        // Завершаем административный процесс
         pendingStatsFill.delete(userId);
+
       } catch (err) {
         console.error('[ADMIN_FILL_STATS] Ошибка сохранения:', err);
+
         await bot.sendMessage(
           userId,
           `❌ Ошибка сохранения: <b>${escapeHtml(err.message)}</b>`,
           { parse_mode: 'HTML' }
         );
+
+        // ВАЖНО: состояние не удаляем.
+        // Администратор может повторить ввод веса.
+        return;
       }
+
       return;
     }
   });

@@ -3675,7 +3675,7 @@ function registerCommands(
       if (orderState.pendingNewOrders.length) {
         orderState.currentOrderProcessing = null;
         await safeProcessNextOrder();
-        await bot.sendMessage(msg.chat.id, `✅ Перезагрузка выполнена. Отправлен первый заказ. Осталось: ${orderState.pendingNewOrders.length}`);
+        await bot.sendMessage(msg.chat.id, `✅ Перезагрузка выполнена. Отправлен первый заказ. Осталось: <b>${orderState.pendingNewOrders.length}</b>`, { parse_mode: 'HTML' });
       } else {
         await bot.sendMessage(msg.chat.id, '✅ Перезагрузка выполнена. Новых заказов нет.');
       }
@@ -3807,7 +3807,7 @@ function registerCommands(
     try {
       const details = await ozon.getOrderDetails(postingNumber);
       if (!details) {
-        return bot.sendMessage(msg.chat.id, `❌ Не удалось получить детали заказа ${postingNumber}.`);
+        return bot.sendMessage(msg.chat.id, `❌ Не удалось получить детали заказа <code>${postingNumber}</code>.`, { parse_mode: 'HTML' });
       }
       const reply = await formatOrderDetails(details, db);
       await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'HTML' });
@@ -4581,7 +4581,7 @@ function registerCommands(
         const missingList = missingStats.map(id => `<code>${escapeHtml(id)}</code>`).join(', ');
         return bot.sendMessage(
           msg.chat.id,
-          `❌ Для заказа <code>${escapeHtml(postingNumber)}</code> отсутствует статистика для товаров: ${missingList}. Заполните статистику через /my_orders.`,
+          `❌ Для заказа <code>${escapeHtml(postingNumber)}</code> отсутствует статистика для товаров: ${missingList}. Заполните статистику через <code>/my_orders</code>.`,
           { parse_mode: 'HTML' }
         );
       }
@@ -5221,7 +5221,7 @@ function registerCommands(
 
         await bot.sendMessage(
           userId,
-          '❌ Не удалось определить сотрудника. Попробуйте заново через /my_orders.',
+          '❌ Не удалось определить сотрудника. Попробуйте заново через <code>/my_orders</code>.',
           { parse_mode: 'HTML' }
         );
 

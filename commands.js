@@ -4215,9 +4215,10 @@ function registerCommands(
         return bot.sendMessage(msg.chat.id, '❌ Файл статистики не создан.');
       }
       const baseName = getVersionedFileName('product-stats');
+      const timestamp = formatLocalTimestamp();
       await bot.sendDocument(msg.chat.id, filePath, {
         caption: '📊 Актуальная полная выгрузка статистики по артикулам.',
-        filename: `${baseName}_${Date.now()}.xlsx`
+        filename: `${baseName}_${timestamp}.xlsx`
       });
     } catch (err) {
       console.error('[EXPORT_PRODUCT_STATS] Ошибка:', err);

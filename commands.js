@@ -3948,7 +3948,8 @@ function registerCommands(
 
     const buffer = await workbook.xlsx.writeBuffer();
     const baseName = getVersionedFileName('earnings_active');
-    const fileName = `${baseName}_${Date.now()}.xlsx`;
+    const timestamp = formatLocalTimestamp();
+    const fileName = `${baseName}_${timestamp}.xlsx`;
     const outputPath = path.join(__dirname, 'exports', fileName);
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
     fs.writeFileSync(outputPath, buffer);

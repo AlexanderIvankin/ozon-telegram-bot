@@ -177,7 +177,7 @@ async function run() {
                 MODELS_CHAT_ID,
                 {
                     file: filePath,
-                    caption: `<b>offer_id:</b> <code>${escapeHtml(entry.offerId)}</code>\n<b>Файл:</b> ${escapeHtml(entry.fileName)}`,
+                    caption: `<b>offer_id:</b> <code>${escapeHtml(entry.offerId)}</code>\n<b>Файл:</b> <code>${escapeHtml(entry.fileName)}</code>`,
                     forceDocument: true,
                     chunkSize: 1024 * 1024, // 1 МБ
                     progressCallback: (downloaded, total) => {

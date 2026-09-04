@@ -76,7 +76,7 @@ async function uploadAll() {
 
             try {
                 const msg = await sendWithRetry(MODELS_CHAT_ID, filePath, {
-                    caption: `<b>offer_id:</b> <code>${escapeHtml(offerId)}</code>\n<b>Файл:</b> ${escapeHtml(file)}`,
+                    caption: `<b>offer_id:</b> <code>${escapeHtml(offerId)}</code>\n<b>Файл:</b> <code>${escapeHtml(file)}</code>`,
                     parse_mode: 'HTML'
                 });
                 const fileId = msg.document.file_id;

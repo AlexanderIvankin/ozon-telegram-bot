@@ -116,7 +116,7 @@ async function exportMonthlyEarnings(db, monthStr = null) {
 
   const buffer = await workbook.xlsx.writeBuffer();
   const baseName = getVersionedFileName('monthly_earnings');
-  const fileName = `${baseName}_${monthStr || (new Date(fromDate).toISOString().slice(0, 7))}`;
+  const fileName = `${baseName}_${monthStr || (new Date(fromDate).toISOString().slice(0, 7))}.xlsx`;
   const outputPath = path.join(__dirname, 'outputs', fileName);
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   fs.writeFileSync(outputPath, buffer);

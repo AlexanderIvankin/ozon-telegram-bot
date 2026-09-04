@@ -2867,7 +2867,7 @@ function registerCommands(
       return bot.sendMessage(msg.chat.id, `❌ Ошибка получения заказа: ${err.message}`);
     }
     if (!orderDetails || orderDetails.status !== 'awaiting_packaging') {
-      return bot.sendMessage(msg.chat.id, `❌ Заказ ${postingNumber} не в статусе "awaiting_packaging".`);
+      return bot.sendMessage(msg.chat.id, `❌ Заказ <code>${escapeHtml(postingNumber)}</code> не в статусе "awaiting_packaging".`, { parse_mode: 'HTML' });
     }
 
     if (employeeId) {

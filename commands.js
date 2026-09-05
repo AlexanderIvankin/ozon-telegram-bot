@@ -36,6 +36,9 @@ const TOGGLE_ORDERS_COOLDOWN_MS = 60 * 1000; // 1 минута
 
 let MIN_EARNINGS = 250; // значение по умолчанию, перезаписывается при загрузке
 
+// Строгое ограничение веса пластика в граммах (10 кг)
+const MAX_WEIGHT_GRAMS = 10000;
+
 const DISABLE_MODELS = process.env.DISABLE_MODELS === 'true';
 
 /**
@@ -520,8 +523,10 @@ function registerCommands(
       ]
     };
     const sentMsg = await bot.sendMessage(userId,
-      `⚖️ Введите вес в граммах (только число) для артикула ${offerId}:`,
-      { reply_markup: keyboard }
+      `⚖️ Введите вес в граммах для артикула <code>${escapeHtml(offerId)}</code>:\n\n` +
+      `• Только положительное число (например, <b>12.5</b>)\n` +
+      `• Не больше <b>${MAX_WEIGHT_GRAMS} г (10 кг)</b>`,
+      { reply_markup: keyboard, parse_mode: 'HTML' }
     );
     if (state) state.lastMessageId = sentMsg.message_id;
   }
@@ -615,9 +620,15 @@ function registerCommands(
         [{ text: '🔄 Сбросить', callback_data: `reset_stats_${orderId}_${offerId}` }]
       ]
     };
-    const sentMsg = await bot.sendMessage(employeeId, `⚖️ Введите вес пластика в граммах (только число) для товара ${offerId}:`, {
-      reply_markup: keyboard
-    });
+    const sentMsg = await bot.sendMessage(employeeId,
+      `⚖️ Введите вес пластика в граммах для товара <code>${escapeHtml(offerId)}</code>:\n\n` +
+      `• Только положительное число (например, <b>12.5</b>)\n` +
+      `• Не больше <b>${MAX_WEIGHT_GRAMS} г (10 кг)</b>`,
+      {
+        reply_markup: keyboard,
+        parse_mode: 'HTML'
+      }
+    );
 
     if (state && state.offers[offerId]) {
       state.offers[offerId].waitingForWeight = true;
@@ -5147,7 +5158,8 @@ function registerCommands(
       if (!/^\d+(?:\.\d+)?$/.test(weightText)) {
         await bot.sendMessage(
           userId,
-          '❌ Введите корректное положительное число (например, <b>12.5</b>).',
+          `❌ Введите корректное положительное число (например, <b>12.5</b>).\n` +
+          `Лимит: не больше <b>${MAX_WEIGHT_GRAMS} г (10 кг)</b>.`,
           { parse_mode: 'HTML' }
         );
         return;
@@ -5155,10 +5167,12 @@ function registerCommands(
 
       const weight = Number(weightText);
 
-      if (!Number.isFinite(weight) || weight <= 0) {
+      // Строгое ограничение: максимум MAX_WEIGHT_GRAMS г (10 кг)
+      if (!Number.isFinite(weight) || weight <= 0 || weight > MAX_WEIGHT_GRAMS) {
         await bot.sendMessage(
           userId,
-          '❌ Введите корректное положительное число (например, <b>12.5</b>).',
+          `❌ Вес должен быть от 1 до <b>${MAX_WEIGHT_GRAMS} г (10 кг)</b>.\n` +
+          `Введите число ещё раз (например, <b>12.5</b>).`,
           { parse_mode: 'HTML' }
         );
         return;
@@ -5385,7 +5399,8 @@ function registerCommands(
       if (!/^\d+(?:\.\d+)?$/.test(weightText)) {
         await bot.sendMessage(
           userId,
-          '❌ Введите корректное положительное число (например, <b>12.5</b>).',
+          `❌ Введите корректное положительное число (например, <b>12.5</b>).\n` +
+          `Лимит: не больше <b>${MAX_WEIGHT_GRAMS} г (10 кг)</b>.`,
           { parse_mode: 'HTML' }
         );
         return;
@@ -5393,10 +5408,12 @@ function registerCommands(
 
       const weight = Number(weightText);
 
-      if (!Number.isFinite(weight) || weight <= 0) {
+      // Строгое ограничение: максимум MAX_WEIGHT_GRAMS г (10 кг)
+      if (!Number.isFinite(weight) || weight <= 0 || weight > MAX_WEIGHT_GRAMS) {
         await bot.sendMessage(
           userId,
-          '❌ Введите корректное положительное число (например, <b>12.5</b>).',
+          `❌ Вес должен быть от 1 до <b>${MAX_WEIGHT_GRAMS} г (10 кг)</b>.\n` +
+          `Введите число ещё раз (например, <b>12.5</b>).`,
           { parse_mode: 'HTML' }
         );
         return;

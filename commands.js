@@ -4157,13 +4157,13 @@ function registerCommands(
       if (result.changes > 0) {
         await bot.sendMessage(
           msg.chat.id,
-          `✅ Статистика для offer_id: <code>${escapeHtml(offerId)}</code> удалена.`,
+          `✅ Статистика для товара <code>${escapeHtml(offerId)}</code> удалена.`,
           { parse_mode: 'HTML' }
         );
       } else {
         await bot.sendMessage(
           msg.chat.id,
-          `ℹ️ Статистика для offer_id: <code>${escapeHtml(offerId)}</code> не найдена.`,
+          `ℹ️ Статистика для товара <code>${escapeHtml(offerId)}</code> не найдена.`,
           { parse_mode: 'HTML' }
         );
       }

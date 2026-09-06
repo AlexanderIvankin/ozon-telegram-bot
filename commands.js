@@ -39,6 +39,35 @@ let MIN_EARNINGS = 250; // значение по умолчанию, перез�
 // Строгое ограничение веса пластика в граммах (10 кг)
 const MAX_WEIGHT_GRAMS = 10000;
 
+// Единый текст правил ввода веса (подсказка для сотрудника и администратора)
+const WEIGHT_RULES_TEXT =
+  `• Только положительное число, например <b>12.5</b> или <b>12,5</b>\n` +
+  `• Не больше <b>одной цифры</b> после запятой или точки\n` +
+  `• Не больше <b>${MAX_WEIGHT_GRAMS} г (10 кг)</b>`;
+
+/**
+ * ЖЁСТКАЯ валидация веса пластика.
+ *  - поддерживает оба формата ввода: "12,5" и "12.5"
+ *  - только положительное число
+ *  - максимум ОДНА цифра после запятой/точки
+ *  - не больше MAX_WEIGHT_GRAMS г (10 кг)
+ * @param {string} text - исходный текст сообщения пользователя
+ * @returns {{ok: true, weight: number, normalized: string}
+ *          | {ok: false, reason: 'format'|'limit', normalized: string, weight?: number}}
+ */
+function validateWeightInput(text) {
+  const normalized = String(text).trim().replace(',', '.');
+  // Строгая проверка формата: целая часть + максимум 1 цифра после точки
+  if (!/^\d+(?:\.\d)?$/.test(normalized)) {
+    return { ok: false, reason: 'format', normalized };
+  }
+  const weight = Number(normalized);
+  if (!Number.isFinite(weight) || weight <= 0 || weight > MAX_WEIGHT_GRAMS) {
+    return { ok: false, reason: 'limit', normalized, weight };
+  }
+  return { ok: true, weight, normalized };
+}
+
 const DISABLE_MODELS = process.env.DISABLE_MODELS === 'true';
 
 /**
@@ -524,8 +553,7 @@ function registerCommands(
     };
     const sentMsg = await bot.sendMessage(userId,
       `⚖️ Введите вес в граммах для артикула <code>${escapeHtml(offerId)}</code>:\n\n` +
-      `• Только положительное число (например, <b>12.5</b>)\n` +
-      `• Не больше <b>${MAX_WEIGHT_GRAMS} г (10 кг)</b>`,
+      WEIGHT_RULES_TEXT,
       { reply_markup: keyboard, parse_mode: 'HTML' }
     );
     if (state) state.lastMessageId = sentMsg.message_id;
@@ -622,8 +650,7 @@ function registerCommands(
     };
     const sentMsg = await bot.sendMessage(employeeId,
       `⚖️ Введите вес пластика в граммах для товара <code>${escapeHtml(offerId)}</code>:\n\n` +
-      `• Только положительное число (например, <b>12.5</b>)\n` +
-      `• Не больше <b>${MAX_WEIGHT_GRAMS} г (10 кг)</b>`,
+      WEIGHT_RULES_TEXT,
       {
         reply_markup: keyboard,
         parse_mode: 'HTML'
@@ -5152,31 +5179,26 @@ function registerCommands(
 
     // Обработка заполнения веса пластика для заказа
     if (state) {
-      const weightText = msg.text.trim().replace(',', '.');
+      // ЖЁСТКАЯ валидация веса: поддерживаем форматы "12,5" и "12.5",
+      // максимум 1 цифра после запятой/точки, лимит MAX_WEIGHT_GRAMS г
+      const validation = validateWeightInput(msg.text);
 
-      // Строгая проверка числа
-      if (!/^\d+(?:\.\d+)?$/.test(weightText)) {
+      if (!validation.ok) {
+        const errorText = validation.reason === 'limit'
+          ? `❌ Вес должен быть больше 0 и не больше <b>${MAX_WEIGHT_GRAMS} г (10 кг)</b>.`
+          : `❌ Некорректный формат веса.`;
+
         await bot.sendMessage(
           userId,
-          `❌ Введите корректное положительное число (например, <b>12.5</b>).\n` +
-          `Лимит: не больше <b>${MAX_WEIGHT_GRAMS} г (10 кг)</b>.`,
+          `${errorText}\n\n` +
+          `Введите вес ещё раз:\n\n` +
+          WEIGHT_RULES_TEXT,
           { parse_mode: 'HTML' }
         );
         return;
       }
 
-      const weight = Number(weightText);
-
-      // Строгое ограничение: максимум MAX_WEIGHT_GRAMS г (10 кг)
-      if (!Number.isFinite(weight) || weight <= 0 || weight > MAX_WEIGHT_GRAMS) {
-        await bot.sendMessage(
-          userId,
-          `❌ Вес должен быть от 1 до <b>${MAX_WEIGHT_GRAMS} г (10 кг)</b>.\n` +
-          `Введите число ещё раз (например, <b>12.5</b>).`,
-          { parse_mode: 'HTML' }
-        );
-        return;
-      }
+      const weight = validation.weight;
 
       // Найти товар, для которого ожидается вес
       const offerId = Object.keys(state.offers)
@@ -5393,31 +5415,26 @@ function registerCommands(
         return;
       }
 
-      const weightText = text.trim().replace(',', '.');
+      // ЖЁСТКАЯ валидация веса: поддерживаем форматы "12,5" и "12.5",
+      // максимум 1 цифра после запятой/точки, лимит MAX_WEIGHT_GRAMS г
+      const validation = validateWeightInput(text);
 
-      // Строгая проверка числа
-      if (!/^\d+(?:\.\d+)?$/.test(weightText)) {
+      if (!validation.ok) {
+        const errorText = validation.reason === 'limit'
+          ? `❌ Вес должен быть больше 0 и не больше <b>${MAX_WEIGHT_GRAMS} г (10 кг)</b>.`
+          : `❌ Некорректный формат веса.`;
+
         await bot.sendMessage(
           userId,
-          `❌ Введите корректное положительное число (например, <b>12.5</b>).\n` +
-          `Лимит: не больше <b>${MAX_WEIGHT_GRAMS} г (10 кг)</b>.`,
+          `${errorText}\n\n` +
+          `Введите вес ещё раз для артикула <code>${escapeHtml(adminState.offerId)}</code>:\n\n` +
+          WEIGHT_RULES_TEXT,
           { parse_mode: 'HTML' }
         );
         return;
       }
 
-      const weight = Number(weightText);
-
-      // Строгое ограничение: максимум MAX_WEIGHT_GRAMS г (10 кг)
-      if (!Number.isFinite(weight) || weight <= 0 || weight > MAX_WEIGHT_GRAMS) {
-        await bot.sendMessage(
-          userId,
-          `❌ Вес должен быть от 1 до <b>${MAX_WEIGHT_GRAMS} г (10 кг)</b>.\n` +
-          `Введите число ещё раз (например, <b>12.5</b>).`,
-          { parse_mode: 'HTML' }
-        );
-        return;
-      }
+      const weight = validation.weight;
 
       // Проверяем обязательные данные состояния
       if (!adminState.data.material || !adminState.data.color) {
@@ -5732,4 +5749,5 @@ module.exports = {
   escapeHtml,
   exportMonthlyEarnings,
   cleanCooldowns,
+  validateWeightInput,
 };

@@ -4148,13 +4148,31 @@ function registerCommands(
   // --- "/clear_product_stats" Команда для администратора: очистка статистики заказа ---
   bot.onText(/\/clear_product_stats (\S+)/, async (msg, match) => {
     const userId = msg.from.id.toString();
-    if (!isAdmin(userId)) return bot.sendMessage(msg.chat.id, '⛔ Только администратор.');
+    if (!isAdmin(userId)) {
+      return bot.sendMessage(msg.chat.id, '⛔ Только администратор.', { parse_mode: 'HTML' });
+    }
     const offerId = match[1];
     try {
-      await db.db.run('DELETE FROM product_stats WHERE offer_id = ?', offerId);
-      bot.sendMessage(msg.chat.id, `✅ Запись для <code>${escapeHtml(offerId)}</code> удалена.`, { parse_mode: 'HTML' });
+      const result = await db.db.run('DELETE FROM product_stats WHERE offer_id = ?', offerId);
+      if (result.changes > 0) {
+        await bot.sendMessage(
+          msg.chat.id,
+          `✅ Статистика для offer_id: <code>${escapeHtml(offerId)}</code> удалена.`,
+          { parse_mode: 'HTML' }
+        );
+      } else {
+        await bot.sendMessage(
+          msg.chat.id,
+          `ℹ️ Статистика для offer_id: <code>${escapeHtml(offerId)}</code> не найдена.`,
+          { parse_mode: 'HTML' }
+        );
+      }
     } catch (err) {
-      bot.sendMessage(msg.chat.id, `❌ Ошибка: ${err.message}`);
+      await bot.sendMessage(
+        msg.chat.id,
+        `❌ Ошибка: ${escapeHtml(err.message)}`,
+        { parse_mode: 'HTML' }
+      );
     }
   });
 

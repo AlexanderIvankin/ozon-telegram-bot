@@ -2,11 +2,12 @@ require('dotenv').config();
 const { TelegramClient } = require('telegram');
 const { StringSession } = require('telegram/sessions');
 const fs = require('fs');
+const db = require('./db');
 
 const apiId = Number(process.env.TG_API_ID);
 const apiHash = process.env.TG_API_HASH;
 const MODELS_CHAT_ID = process.env.MODELS_CHAT_ID.trim();
-const BOT_USERNAME = process.env.BOT_USERNAME.trim();
+const BOT_USERNAME = process.env.DOWNLOAD_BOT_USERNAME.trim();
 const SESSION_FILE = 'session.txt';
 
 const logFile = fs.createWriteStream('resend_models.log', { flags: 'a' });
@@ -38,24 +39,27 @@ async function run() {
   const me = await client.getMe();
   console.log(`✅ Авторизован как ${me.username || me.firstName}`);
 
+  await db.initDB();
+  console.log('🗄️ База данных инициализирована');
+
   const botPeer = await client.getInputEntity(BOT_USERNAME);
   console.log('🤖 Бот найден');
 
-  // Получаем сущность канала
   const chatEntity = await client.getInputEntity(MODELS_CHAT_ID);
 
-  let offsetId = 0;
+  // Идём от СТАРЫХ к НОВЫМ (reverse: true)
+  let offsetId = 0; // начинаем с самого первого сообщения
   let totalProcessed = 0;
   let totalForwarded = 0;
   let hasMore = true;
 
-  console.log('📥 Начинаем чтение истории канала...');
+  console.log('📥 Начинаем чтение истории канала (от старых к новым)...');
 
   while (hasMore) {
     const messages = await client.getMessages(chatEntity, {
       limit: 100,
       offsetId: offsetId,
-      reverse: false // от новых к старым
+      reverse: true // ← ключевое изменение: от старых к новым
     });
 
     if (!messages || messages.length === 0) {
@@ -63,17 +67,13 @@ async function run() {
       break;
     }
 
-    console.log(`📄 Обработано сообщений: ${messages.length}, последний ID: ${messages[messages.length - 1]?.id || 'нет'}`);
+    console.log(`📄 Получено сообщений: ${messages.length}, первое ID: ${messages[0]?.id}, последнее ID: ${messages[messages.length - 1]?.id}`);
 
     for (const msg of messages) {
       totalProcessed++;
-      // Пропускаем, если нет документа
       if (!msg.document) {
         continue;
       }
-
-      // Можно также проверить, есть ли в caption offer_id (необязательно, бот сам отфильтрует)
-      // if (!msg.caption || !msg.caption.includes('offer_id')) continue;
 
       try {
         await client.forwardMessages(botPeer, {
@@ -83,7 +83,6 @@ async function run() {
         totalForwarded++;
         console.log(`✅ Переслано сообщение ${msg.id}`);
         logFile.write(`[OK] Переслано ${msg.id}\n`);
-        // Небольшая задержка, чтобы не превысить лимиты
         await new Promise(resolve => setTimeout(resolve, 2000));
       } catch (err) {
         console.error(`❌ Ошибка пересылки ${msg.id}:`, err.message);
@@ -91,13 +90,15 @@ async function run() {
       }
     }
 
+    // Для следующей итерации берём ID последнего сообщения в текущем пакете
     const lastMsg = messages[messages.length - 1];
     if (lastMsg && lastMsg.id) {
-      offsetId = lastMsg.id;
+      offsetId = lastMsg.id; // теперь offsetId указывает на последнее полученное сообщение
     } else {
       hasMore = false;
     }
 
+    // Если мы получили меньше, чем limit, значит это последняя страница
     if (messages.length < 100) {
       hasMore = false;
     }

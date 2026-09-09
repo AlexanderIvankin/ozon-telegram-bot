@@ -214,6 +214,23 @@ function registerCommands(
     }
   }
 
+  // Вспомогательная функция для понятного сообщения модератору/админу
+  // при СЕТЕВЫХ ошибках обновления меню (кнопок). Раньше такие сбои
+  // (например, EFATAL: AggregateError из-за keep-alive соединений без таймаута)
+  // уходили в общий catch и показывались как пугающая «Внутренняя ошибка».
+  async function sendTelegramError(chatId, context) {
+    try {
+      await bot.sendMessage(
+        chatId,
+        `⚠️ ${context}\n\nПроизошла сетевая ошибка при обращении к <b>Telegram</b>. ` +
+        `Попробуйте ещё раз.`,
+        { parse_mode: 'HTML' }
+      );
+    } catch (e) {
+      // Если даже это сообщение не ушло — ничего не поделать, молча игнорируем
+    }
+  }
+
   // Деактивирует клавиатуру у сообщения (убирает кнопки)
   async function disableKeyboard(chatId, messageId) {
     if (!chatId || !messageId) return;
@@ -224,6 +241,28 @@ function registerCommands(
       );
     } catch (e) {
       // Игнорируем ошибки
+    }
+  }
+
+  // Возвращает заказ в НАЧАЛО очереди, если он всё ещё актуален в API (awaiting_packaging).
+  // Нужно, чтобы снятый/отменённый заказ гарантированно вернулся в очередь, даже если
+  // глобальная блокировка очереди (safeCheckAndOfferNewOrders) в данный момент занята.
+  async function returnOrderToQueue(orderId) {
+    try {
+      if (orderState.pendingNewOrders.some(o => o.posting_number === orderId)) {
+        return false;
+      }
+      const freshOrder = await ozon.fetchAwaitingOrdersById(orderId);
+      if (!freshOrder) {
+        console.log(`[QUEUE] Заказ ${orderId} не возвращён в очередь: больше не в awaiting_packaging`);
+        return false;
+      }
+      orderState.pendingNewOrders.unshift(freshOrder);
+      console.log(`[QUEUE] Заказ ${orderId} возвращён в очередь (заказов в очереди: ${orderState.pendingNewOrders.length})`);
+      return true;
+    } catch (err) {
+      console.warn(`[QUEUE] Не удалось вернуть заказ ${orderId} в очередь:`, err.message);
+      return false;
     }
   }
 
@@ -990,6 +1029,7 @@ function registerCommands(
               { parse_mode: 'HTML' }
             );
           }
+          await returnOrderToQueue(orderId);
           await safeCheckAndOfferNewOrders();
           if (!orderState.currentOrderProcessing && orderState.pendingNewOrders.length) {
             await safeProcessNextOrder();
@@ -1090,11 +1130,19 @@ function registerCommands(
         }
         kb.push([{ text: '🔙 Назад', callback_data: `back_${orderId}` }]);
 
-        await bot.editMessageText(header, {
-          chat_id: msg.chat.id,
-          message_id: msg.message_id,
-          reply_markup: { inline_keyboard: kb }
-        });
+        try {
+          await bot.editMessageText(header, {
+            chat_id: msg.chat.id,
+            message_id: msg.message_id,
+            reply_markup: { inline_keyboard: kb }
+          });
+        } catch (err) {
+          console.warn(`[PRIORITY] Ошибка обновления меню для заказа ${orderId}:`, err.message);
+          await sendTelegramError(
+            msg.chat.id,
+            `Не удалось обновить меню выбора приоритетных сотрудников для заказа <code>${escapeHtml(orderId)}</code>.`
+          );
+        }
         return;
       }
 
@@ -1142,11 +1190,19 @@ function registerCommands(
           kb.push([{ text: label, callback_data: `assign_${orderId}_${emp.id}` }]);
         }
         kb.push([{ text: '🔙 Назад', callback_data: `back_${orderId}` }]);
-        await bot.editMessageText(header, {
-          chat_id: msg.chat.id,
-          message_id: msg.message_id,
-          reply_markup: { inline_keyboard: kb }
-        });
+        try {
+          await bot.editMessageText(header, {
+            chat_id: msg.chat.id,
+            message_id: msg.message_id,
+            reply_markup: { inline_keyboard: kb }
+          });
+        } catch (err) {
+          console.warn(`[OTHERS] Ошибка обновления меню для заказа ${orderId}:`, err.message);
+          await sendTelegramError(
+            msg.chat.id,
+            `Не удалось обновить меню выбора сотрудников для заказа <code>${escapeHtml(orderId)}</code>.`
+          );
+        }
         return;
       }
 
@@ -1172,9 +1228,17 @@ function registerCommands(
       if (data.startsWith('back_')) {
         const orderId = data.substring(5);
         await safeDeleteMessage(msg.chat.id, msg.message_id);
-        const order = await ozon.fetchAwaitingOrdersById(orderId);
-        if (order && typeof showOrderMenu === 'function') {
-          await showOrderMenu(order);
+        try {
+          const order = await ozon.fetchAwaitingOrdersById(orderId);
+          if (order && typeof showOrderMenu === 'function') {
+            await showOrderMenu(order);
+          }
+        } catch (err) {
+          console.warn(`[BACK] Ошибка отображения заказа ${orderId}:`, err.message);
+          await sendTelegramError(
+            msg.chat.id,
+            `Не удалось снова показать меню заказа <code>${escapeHtml(orderId)}</code>.`
+          );
         }
         return;
       }
@@ -1242,6 +1306,7 @@ function registerCommands(
         });
         await bot.sendMessage(msg.chat.id, `✅ Заказ <code>${escapeHtml(orderId)}</code> снят.`, { parse_mode: 'HTML' });
 
+        await returnOrderToQueue(orderId);
         await safeCheckAndOfferNewOrders();
         if (!orderState.currentOrderProcessing && orderState.pendingNewOrders.length) {
           await safeProcessNextOrder();
@@ -2949,9 +3014,17 @@ function registerCommands(
 
       kb.push([{ text: '❌ Отмена', callback_data: `cancel_assign_${postingNumber}` }]);
 
-      await bot.sendMessage(msg.chat.id, `👥 Выберите сотрудника для заказа ${postingNumber}:`, {
-        reply_markup: { inline_keyboard: kb }
-      });
+      try {
+        await bot.sendMessage(msg.chat.id, `👥 Выберите сотрудника для заказа ${postingNumber}:`, {
+          reply_markup: { inline_keyboard: kb }
+        });
+      } catch (err) {
+        console.warn(`[ADMIN_ASSIGN] Ошибка отправки списка сотрудников для заказа ${postingNumber}:`, err.message);
+        await sendTelegramError(
+          msg.chat.id,
+          `Не удалось отправить список сотрудников для заказа <code>${escapeHtml(postingNumber)}</code>.`
+        );
+      }
     }
   });
 

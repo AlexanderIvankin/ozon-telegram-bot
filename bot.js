@@ -30,7 +30,21 @@ const { escapeHtml } = require('./utils');
 const debugMode = require('./debugMode');
 
 
-const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
+// ВАЖНО: node-telegram-bot-api по умолчанию НЕ задаёт таймаут на запросы к Telegram API
+// (в _request() используется `options.forever = true` без `timeout`). Зависший сетевой
+// запрос (пропавшие пакеты, оборванный TCP, зависший DNS) мог «заморозить» обработку
+// очереди навсегда: queueProcessing оставался true, и заказы переставали возвращаться
+// в очередь. Задаём жёсткий таймаут на КАЖДЫЙ запрос (переопределяется через
+// TELEGRAM_REQUEST_TIMEOUT_MS в .env).
+const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {
+    polling: true,
+    request: {
+        timeout: process.env.TELEGRAM_REQUEST_TIMEOUT_MS
+            ? parseInt(process.env.TELEGRAM_REQUEST_TIMEOUT_MS, 10)
+            : 60000, // 60 секунд на каждый запрос к Telegram
+        forever: false
+    }
+});
 
 process.on('unhandledRejection', (reason, promise) => {
     console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
@@ -169,33 +183,81 @@ function stopInactivityTimer() {
     }
 }
 
+// Блокировка очереди. Это не просто булев флаг, а флаг + время захвата:
+// если операция «зависла» (например, сетевой запрос к Telegram/API не вернулся),
+// блокировка не может оставаться захваченной навсегда.
 let queueProcessing = false;
+let queueProcessingSince = null; // Date.now() в момент захвата блокировки
+
+// Если блокировка держится дольше этого времени — считаем её «протухшей»
+// и принудительно сбрасываем перед новой операцией очереди.
+const QUEUE_STALE_LOCK_MS = 5 * 60 * 1000;      // 5 минут
+// Жёсткий лимит времени на ОДНУ операцию очереди. Если операция не завершилась
+// за это время — отпускаем блокировку (операция продолжит работу в фоне,
+// но очередь больше не будет заблокирована).
+const QUEUE_OP_TIMEOUT_MS = 10 * 60 * 1000;     // 10 минут
+
+// Запускает операцию, но не даёт ей держать блокировку дольше QUEUE_OP_TIMEOUT_MS.
+async function withQueueOpTimeout(promise, label) {
+    let timer = null;
+    const timeoutPromise = new Promise((resolve) => {
+        timer = setTimeout(() => {
+            console.warn(
+                `[QUEUE] Операция ${label} не завершилась за ` +
+                `${QUEUE_OP_TIMEOUT_MS / 60000} мин. Блокировка очереди снимается, ` +
+                `операция продолжит работу в фоне.`
+            );
+            resolve(null);
+        }, QUEUE_OP_TIMEOUT_MS);
+    });
+    try {
+        return await Promise.race([promise, timeoutPromise]);
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+// true, если блокировку можно (и нужно) сбросить как зависшую
+function isQueueLockStale() {
+    return queueProcessing && queueProcessingSince &&
+        (Date.now() - queueProcessingSince) > QUEUE_STALE_LOCK_MS;
+}
 
 // Обёртка для processNextOrder с блокировкой
 async function safeProcessNextOrder() {
     if (queueProcessing) {
-        console.log('[QUEUE] Уже обрабатывается, пропускаем processNextOrder');
-        return;
+        if (!isQueueLockStale()) {
+            console.log('[QUEUE] Уже обрабатывается, пропускаем processNextOrder');
+            return;
+        }
+        console.warn('[QUEUE] Блокировка очереди «протухла», принудительно сбрасываем');
     }
     queueProcessing = true;
+    queueProcessingSince = Date.now();
     try {
-        await processNextOrder();
+        await withQueueOpTimeout(processNextOrder(), 'processNextOrder');
     } finally {
         queueProcessing = false;
+        queueProcessingSince = null;
     }
 }
 
 // Обёртка для checkAndOfferNewOrders с блокировкой
 async function safeCheckAndOfferNewOrders() {
     if (queueProcessing) {
-        console.log('[QUEUE] Уже обрабатывается, пропускаем checkAndOfferNewOrders');
-        return;
+        if (!isQueueLockStale()) {
+            console.log('[QUEUE] Уже обрабатывается, пропускаем checkAndOfferNewOrders');
+            return;
+        }
+        console.warn('[QUEUE] Блокировка очереди «протухла», принудительно сбрасываем');
     }
     queueProcessing = true;
+    queueProcessingSince = Date.now();
     try {
-        await checkAndOfferNewOrders();
+        await withQueueOpTimeout(checkAndOfferNewOrders(), 'checkAndOfferNewOrders');
     } finally {
         queueProcessing = false;
+        queueProcessingSince = null;
     }
 }
 
@@ -372,15 +434,19 @@ async function cleanExpiredAssignments(activeOrderIds) {
             }
 
             // Всегда уведомляем модератора
-            const moderatorId = process.env.MODERATOR_ID;
-            if (moderatorId) {
-                await bot.sendMessage(
-                    moderatorId,
-                    `🔄 Заказ <code>${escapeHtml(orderId)}</code> автоматически снят с сотрудника ` +
-                    `<b>${escapeHtml(assignment.employee_name || 'не найден')}</b> ` +
-                    `(сотрудник отсутствует или уволен).`,
-                    { parse_mode: 'HTML' }
-                );
+            try {
+                const moderatorId = process.env.MODERATOR_ID;
+                if (moderatorId) {
+                    await bot.sendMessage(
+                        moderatorId,
+                        `🔄 Заказ <code>${escapeHtml(orderId)}</code> автоматически снят с сотрудника ` +
+                        `<b>${escapeHtml(assignment.employee_name || 'не найден')}</b> ` +
+                        `(сотрудник отсутствует или уволен).`,
+                        { parse_mode: 'HTML' }
+                    );
+                }
+            } catch (e) {
+                console.warn(`[CLEAN] Не удалось уведомить модератора по заказу ${orderId}:`, e.message);
             }
             continue;
         }
@@ -410,14 +476,18 @@ async function cleanExpiredAssignments(activeOrderIds) {
         } catch (e) { }
 
         // Уведомляем модератора
-        const moderatorId = process.env.MODERATOR_ID;
-        if (moderatorId) {
-            await bot.sendMessage(
-                moderatorId,
-                `🔄 Заказ <code>${escapeHtml(orderId)}</code> автоматически снят с сотрудника ` +
-                `<b>${escapeHtml(assignment.employee_name)}</b>, так как он больше не в статусе awaiting_packaging.`,
-                { parse_mode: 'HTML' }
-            );
+        try {
+            const moderatorId = process.env.MODERATOR_ID;
+            if (moderatorId) {
+                await bot.sendMessage(
+                    moderatorId,
+                    `🔄 Заказ <code>${escapeHtml(orderId)}</code> автоматически снят с сотрудника ` +
+                    `<b>${escapeHtml(assignment.employee_name)}</b>, так как он больше не в статусе awaiting_packaging.`,
+                    { parse_mode: 'HTML' }
+                );
+            }
+        } catch (e) {
+            console.warn(`[CLEAN] Не удалось уведомить модератора по заказу ${orderId}:`, e.message);
         }
     }
 }

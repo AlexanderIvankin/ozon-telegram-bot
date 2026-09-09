@@ -34,15 +34,18 @@ const debugMode = require('./debugMode');
 // (в _request() используется `options.forever = true` без `timeout`). Зависший сетевой
 // запрос (пропавшие пакеты, оборванный TCP, зависший DNS) мог «заморозить» обработку
 // очереди навсегда: queueProcessing оставался true, и заказы переставали возвращаться
-// в очередь. Задаём жёсткий таймаут на КАЖДЫЙ запрос (переопределяется через
+// в очередь. Поэтому задаём жёсткий таймаут на КАЖДЫЙ запрос (переопределяется через
 // TELEGRAM_REQUEST_TIMEOUT_MS в .env).
+// forever: true включает keep-alive-агент: long-poll getUpdates ходит по стабильному
+// переиспользуемому соединению. При forever: false каждая попытка поллинга открывает
+// свежее TCP/TLS-соединение, и на нестабильных маршрутах это даёт поток ETIMEDOUT.
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {
     polling: true,
     request: {
         timeout: process.env.TELEGRAM_REQUEST_TIMEOUT_MS
             ? parseInt(process.env.TELEGRAM_REQUEST_TIMEOUT_MS, 10)
             : 60000, // 60 секунд на каждый запрос к Telegram
-        forever: false
+        forever: true
     }
 });
 
@@ -54,6 +57,45 @@ process.on('unhandledRejection', (reason, promise) => {
         try {
             bot.sendMessage(moderatorId, `⚠️ Критическая ошибка: ${reason}`);
         } catch (e) { }
+    }
+});
+
+// --- Обработчик ошибок long-poll (getUpdates) ---
+// Без слушателя 'polling_error' библиотека на КАЖДУЮ неудачную попытку поллинга
+// (интервал ~300 мс) печатает гигантский дамп ('%j') — сотни строк в логах, выглядит
+// как «бот не поднялся». Слушатель позволяет логировать компактно и уведомлять
+// модератора при затяжной аварии связи, не спамя при этом.
+let pollingErrorCount = 0;
+let lastPollingErrorLog = 0;
+let pollingNotifyBlockedUntil = 0;
+const POLLING_LOG_THROTTLE_MS = 10000;           // компактный лог не чаще раза в 10 сек
+const POLLING_NOTIFY_INTERVAL_MS = 5 * 60 * 1000; // уведомление модератору не чаще раза в 5 мин
+
+bot.on('polling_error', (error) => {
+    pollingErrorCount++;
+    const now = Date.now();
+
+    // Компактный лог с троттлингом, чтобы не забивать логи сотнями строк
+    if (now - lastPollingErrorLog >= POLLING_LOG_THROTTLE_MS) {
+        lastPollingErrorLog = now;
+        console.warn(`[POLLING] Ошибка long-poll (всего подряд: ${pollingErrorCount}): ${error.message}`);
+    }
+
+    // Уведомляем модератора не чаще раза в 5 минут (только при затяжной аварии)
+    if (now >= pollingNotifyBlockedUntil) {
+        pollingNotifyBlockedUntil = now + POLLING_NOTIFY_INTERVAL_MS;
+        const moderatorId = process.env.MODERATOR_ID;
+        if (moderatorId) {
+            try {
+                bot.sendMessage(
+                    moderatorId,
+                    `⚠️ Нет связи с Telegram API (long-poll). Ошибок подряд: ${pollingErrorCount}.\n` +
+                    `Бот продолжает попытки восстановления...`,
+                    { parse_mode: 'HTML' }
+                );
+            } catch (e) { /* ignore */ }
+        }
+        pollingErrorCount = 0; // следующий отсчёт — для новой «пачки», если она продолжится
     }
 });
 

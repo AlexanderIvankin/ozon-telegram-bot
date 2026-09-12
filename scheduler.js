@@ -548,7 +548,7 @@ async function runAwaitingDeliverReminder(db, ozon, bot, delayHours) {
         if (bot && tg_user_id) {
             try {
                 const reminderInfo = reminderCount > 0
-                    ? `\n🔔 Ранее вам уже напоминали об этом заказе: <b>${reminderCount} раз(а)</b>.`
+                    ? `\n\n🔔 Ранее вам уже напоминали об этом заказе: <b>${reminderCount} раз(а)</b>.`
                     : '';
 
                 const employeeMsg =
@@ -558,7 +558,7 @@ async function runAwaitingDeliverReminder(db, ozon, bot, delayHours) {
                     `но всё ещё находится в статусе «ожидает отправки».` +
                     reminderInfo +
                     `\n\n⚠️ Пожалуйста, отправьте заказ как можно скорее, ` +
-                    `иначе заработок <b>${amount.toFixed(2)} руб.</b> может быть отменён.` +
+                    `иначе заработок <b>${amount.toFixed(2)} руб.</b> может быть отменён.\n\n` +
                     detailsText;
 
                 await bot.sendMessage(
@@ -587,10 +587,10 @@ async function runAwaitingDeliverReminder(db, ozon, bot, delayHours) {
                     `(ID <code>${employee_id}</code>) ` +
                     `завершил заказ <code>${escapeHtml(order_id)}</code> ` +
                     `<b>${daysPassed} дн. назад</b>, ` +
-                    `но заказ всё ещё в статусе «ожидает отправки».\n` +
-                    `🔔 Напоминаний отправлено: <b>${reminderCount + 1}</b>` +
+                    `но заказ всё ещё в статусе «ожидает отправки».\n\n` +
+                    `🔔 Напоминаний об этом заказе отправлено: <b>${reminderCount + 1}</b>` +
                     `\n\n💰 Заработок по заказу: ` +
-                    `<b>${amount.toFixed(2)} руб.</b>` +
+                    `<b>${amount.toFixed(2)} руб.</b>\n\n` +
                     detailsText;
 
                 await bot.sendMessage(

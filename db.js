@@ -75,6 +75,20 @@ async function initDB() {
     )
 `);
 
+    const assignmentsInfo = await database.all("PRAGMA table_info(assignments)");
+
+    const hasDeliverReminderSentAt = assignmentsInfo.some(col => col.name === 'deliver_reminder_sent_at');
+    if (!hasDeliverReminderSentAt) {
+        await database.run('ALTER TABLE assignments ADD COLUMN deliver_reminder_sent_at INTEGER');
+        console.log('[DB] Добавлена колонка deliver_reminder_sent_at в assignments');
+    }
+
+    const hasDeliverReminderCount = assignmentsInfo.some(col => col.name === 'deliver_reminder_count');
+    if (!hasDeliverReminderCount) {
+        await database.run('ALTER TABLE assignments ADD COLUMN deliver_reminder_count INTEGER DEFAULT 0');
+        console.log('[DB] Добавлена колонка deliver_reminder_count в assignments');
+    }
+
     // Таблица складов
     await database.exec(`
         CREATE TABLE IF NOT EXISTS warehouses (

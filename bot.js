@@ -770,6 +770,13 @@ process.on('SIGTERM', gracefulShutdown);
     scheduler.startCooldownCleaner();
     // Ежедневный бэкап базы данных bot.db
     scheduler.startDailyBackupChecker(bot);
+    // Ежедневная проверка неотправленных заказов
+    if (process.env.DELIVER_REMINDER_ENABLED === 'true') {
+        scheduler.startAwaitingDeliverReminderChecker(db, ozon, bot);
+        console.log('✅ Проверка awaiting_deliver включена');
+    } else {
+        console.log('⏭️ Проверка awaiting_deliver отключена (DELIVER_REMINDER_ENABLED != true)');
+    }
     // Ежедневная очистка акций (по умолчанию в 3:00)
     if (process.env.CLEAN_PROMOTIONS === 'true') {
         scheduler.startDailyPromotionCleaner(ozon, bot);

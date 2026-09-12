@@ -5,7 +5,7 @@ const axios = require('axios');
 const bwipjs = require('bwip-js');
 const { syncEmployeesFromExcel, exportTeamInfoXlsx, exportTeamInfoXlsxAll } = require('./syncEmployees');
 const { getAdminCommandsOnly, getAdminStartMessage, getEmployeeCommandsOnly, getEmployeeStartMessage, getUnauthorizedMessage } = require('./helpText');
-const { getVersionedFileName, mergePdfs, escapeHtml, stripHtml, formatLocalTimestamp, formatDateDDMMYYYY } = require('./utils');
+const { getVersionedFileName, formatOrderDetails, mergePdfs, escapeHtml, stripHtml, formatPhone, formatLocalTimestamp, formatDateDDMMYYYY } = require('./utils');
 const { finishingOrders, pendingFinishConfirmations } = require('./state');
 require('dotenv').config();
 
@@ -325,18 +325,6 @@ function registerCommands(
     }
   }
 
-  function formatPhone(phone) {
-    if (!phone) return '';
-    const digits = phone.replace(/\D/g, '');
-    if (digits.length === 11) {
-      return `+${digits[0]} (${digits.slice(1, 4)}) ${digits.slice(4, 7)}-${digits.slice(7, 9)}-${digits.slice(9)}`;
-    } else if (digits.length === 10) {
-      return `+7 (${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6, 8)}-${digits.slice(8)}`;
-    } else {
-      return phone;
-    }
-  }
-
   // Вспомогательная функция для отправки PDF
   async function sendPdf(chatId, pdfBuffer, caption, filename) {
     const tempDir = path.join(__dirname, 'temp');
@@ -441,81 +429,6 @@ function registerCommands(
     }
 
     return { total: totalEarnings, details: earningsDetails, allHaveStats };
-  }
-
-  /**
- * Форматирует детали заказа в HTML-строку для отправки.
- * @param {Object} details - объект, возвращённый ozon.getOrderDetails()
- * @param {Object} db - объект базы данных для получения названия склада (опционально)
- * @returns {Promise<string>} - строка с HTML-разметкой
- */
-  async function formatOrderDetails(details, db = null) {
-    let reply = `📄 <b>Детали заказа <code>${escapeHtml(details.posting_number)}</code></b>\n\n`;
-
-    // Основная информация
-    if (details.substatus) {
-      reply += `Статус: (${escapeHtml(details.substatus)})\n`;
-    }
-    if (details.order_number) {
-      reply += `<b>Номер заказа:</b> <code>${escapeHtml(details.order_number)}</code>\n`;
-    }
-    if (details.delivery_method) {
-      reply += `<b>Метод доставки:</b> ${escapeHtml(details.delivery_method.name || '—')}\n`;
-      if (details.delivery_method.warehouse_id && db) {
-        const warehouseName = await db.getWarehouseNameById(String(details.delivery_method.warehouse_id));
-        reply += `<b>Склад:</b> ${escapeHtml(warehouseName)} (ID: <code>${escapeHtml(details.delivery_method.warehouse_id)}</code>)\n`;
-      } else if (details.delivery_method.warehouse_id) {
-        reply += `<b>Склад ID:</b> <code>${escapeHtml(details.delivery_method.warehouse_id)}</code>\n`;
-      }
-    }
-
-    // Товары
-    if (details.products && details.products.length) {
-      reply += `\n<b>Товары:</b>\n`;
-      for (let i = 0; i < details.products.length; i++) {
-        const p = details.products[i];
-        reply += `${i + 1}. ${escapeHtml(p.name || '—')}`;
-        if (p.sku) reply += ` (<b>SKU:</b> <code>${escapeHtml(p.sku)}</code>)`;
-        if (p.offer_id) reply += `, <b>offer_id:</b> <code>${escapeHtml(p.offer_id)}</code>`;
-        reply += ` — ${escapeHtml(p.quantity)} шт.\n`;
-        if (p.price && p.price.amount) {
-          reply += `   Цена: ${escapeHtml(p.price.amount)} ${escapeHtml(p.price.currency || 'RUB')}\n`;
-        }
-      }
-    } else {
-      reply += `\n<b>Товары:</b> не указаны\n`;
-    }
-
-    // Получатель
-    if (details.customer) {
-      reply += `\n<b>Получатель:</b> ${escapeHtml(details.customer.name || '—')}`;
-      if (details.customer.phone) {
-        reply += `, тел: ${escapeHtml(details.customer.phone)}`;
-      }
-      reply += `\n`;
-      if (details.customer.address) {
-        const addr = details.customer.address;
-        let addrStr = '';
-        if (addr.address_tail) addrStr += addr.address_tail;
-        if (addr.city) addrStr += (addrStr ? ', ' : '') + addr.city;
-        if (addr.region) addrStr += (addrStr ? ', ' : '') + addr.region;
-        if (addr.zip_code) addrStr += (addrStr ? ', ' : '') + addr.zip_code;
-        if (addrStr) {
-          reply += `<b>Адрес:</b> ${escapeHtml(addrStr)}\n`;
-        }
-      }
-    }
-
-    // Дополнительно
-    if (details.tracking_number) {
-      reply += `\n<b>Трек-номер:</b> ${escapeHtml(details.tracking_number)}\n`;
-    }
-    if (details.in_process_at) {
-      const date = new Date(details.in_process_at).toLocaleString();
-      reply += `\n<b>Дата создания:</b> ${escapeHtml(date)}\n`;
-    }
-
-    return reply;
   }
 
   // --- Вспомогательные функции для административного заполнения статистики (без Markdown) ---

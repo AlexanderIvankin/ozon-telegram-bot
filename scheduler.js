@@ -5,7 +5,7 @@ const { createDbBackup } = require('./db');
 const { getLocalTime, getLocalDate, formatOrderDetails, escapeHtml } = require('./utils');
 const debugMode = require('./debugMode');
 
-// Ежедневная синхронизация telegram username
+// Ежедневная синхронизация @username
 let tgUsernameSyncInterval = null;
 let lastTgUsernameSyncDate = null;
 let isTgUsernameSyncRunning = false;

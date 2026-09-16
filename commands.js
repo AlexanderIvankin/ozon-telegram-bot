@@ -2769,7 +2769,7 @@ function registerCommands(
     }
   });
 
-  // --- "/sync_tg_usernames" Команда для администратора: принудительная синхронизация telegram username всех сотрудников ---
+  // --- "/sync_tg_usernames" Команда для администратора: принудительная синхронизация @username всех сотрудников ---
   bot.onText(/\/sync_tg_usernames/, async (msg) => {
     const userId = msg.from.id.toString();
     if (!isAdmin(userId)) {
@@ -2779,7 +2779,7 @@ function registerCommands(
       updateModeratorActivity();
     }
 
-    await bot.sendMessage(msg.chat.id, '🔄 Синхронизация telegram username всех сотрудников...');
+    await bot.sendMessage(msg.chat.id, '🔄 Синхронизация @username всех сотрудников...');
 
     try {
       const result = await syncTgUsernames(db, bot, {

@@ -145,6 +145,54 @@ async function syncEmployeesFromExcel(db) {
 }
 
 /**
+ * Синхронизирует tg_username у сотрудников через Telegram Bot API.
+ * @param {Object} db
+ * @param {Object} bot
+ * @param {Object} [options]
+ * @param {boolean} [options.includeFired=true] - включать уволенных
+ * @param {boolean} [options.onlyMissing=false] - только те, у кого tg_username пуст
+ * @param {number}  [options.delayMs=100]      - пауза между запросами
+ * @returns {Promise<{total, updated, unchanged, failed, failedIds}>}
+ */
+async function syncTgUsernames(db, bot, options = {}) {
+    const {
+        includeFired = true,
+        onlyMissing = false,
+        delayMs = 100,
+    } = options;
+
+    const employees = await db.getEmployeesForTgUsernameSync({ includeFired, onlyMissing });
+    console.log(`[SYNC_USERNAMES] Найдено сотрудников для проверки: ${employees.length}`);
+
+    let updated = 0, unchanged = 0, failed = 0;
+    const failedIds = [];
+
+    for (const emp of employees) {
+        try {
+            const chat = await bot.getChat(emp.tg_user_id);
+            const username = chat && chat.username ? chat.username : null;
+
+            if (username && username !== emp.tg_username) {
+                await db.updateEmployeeTgUsername(emp.tg_user_id, username);
+                updated++;
+                console.log(`[SYNC_USERNAMES] Обновлён: ${emp.name} → @${username}`);
+            } else {
+                unchanged++;
+            }
+        } catch (err) {
+            // Бот никогда не взаимодействовал с пользователем — это норма
+            failed++;
+            failedIds.push({ tg_user_id: emp.tg_user_id, name: emp.name, reason: err.message });
+        }
+
+        await new Promise(r => setTimeout(r, delayMs));
+    }
+
+    console.log(`[SYNC_USERNAMES] Готово: обновлено ${updated}, без изменений ${unchanged}, ошибок ${failed}`);
+    return { total: employees.length, updated, unchanged, failed, failedIds };
+}
+
+/**
  * Экспортирует список сотрудников в team-info.xlsx (активные) или employees-db.xlsx (все).
  * @param {Object} db - объект базы данных (с полем .db)
  * @param {boolean} includeFired - включать ли уволенных
@@ -297,4 +345,4 @@ async function exportTeamInfoXlsxAll(db, ozon) {
     return exportTeamInfoXlsx(db, ozon, true, fileName);
 }
 
-module.exports = { syncEmployeesFromExcel, exportTeamInfoXlsx, exportTeamInfoXlsxAll };
+module.exports = { syncEmployeesFromExcel, syncTgUsernames, exportTeamInfoXlsx, exportTeamInfoXlsxAll };

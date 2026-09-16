@@ -23,7 +23,7 @@ const TelegramBot = require('node-telegram-bot-api');
 const db = require('./db');
 const ozon = require('./ozon');
 const scheduler = require('./scheduler');
-const { syncEmployeesFromExcel } = require('./syncEmployees');
+const { syncEmployeesFromExcel, syncTgUsernames } = require('./syncEmployees');
 const { finishingOrders, pendingFinishConfirmations } = require('./state');
 const { registerCommands, restorePendingForms, clearOrderState } = require('./commands');
 const { escapeHtml } = require('./utils');
@@ -371,10 +371,15 @@ async function cleanExpiredAssignments(activeOrderIds) {
 
     // LEFT JOIN — чтобы видеть назначения на отсутствующих сотрудников
     const assignments = await db.db.all(
-        'SELECT a.order_id, a.employee_id, e.tg_user_id, e.name as employee_name, ' +
-        'e.is_fired, a.status as local_status ' +
-        'FROM assignments a LEFT JOIN employees e ON a.employee_id = e.id ' +
-        'WHERE a.status = "assigned"'
+        `SELECT a.order_id, a.employee_id, e.tg_user_id,
+            CASE WHEN e.tg_username IS NOT NULL AND e.tg_username != ''
+                 THEN e.name || ' (@' || e.tg_username || ')'
+                 ELSE e.name
+            END AS employee_name,
+            e.is_fired, a.status as local_status
+     FROM assignments a
+     LEFT JOIN employees e ON a.employee_id = e.id
+     WHERE a.status = "assigned"`
     );
 
     for (const assignment of assignments) {
@@ -767,7 +772,35 @@ process.on('SIGTERM', gracefulShutdown);
             console.error('[STARTUP] Ошибка checkAndOfferNewOrders:', err);
         }
     }, 5000);
+
+    // Автоматическая синхронизация username сотрудников при старте
+    // (запускаем с задержкой, чтобы не мешать инициализации)
+    if (process.env.SYNC_USERNAMES_ON_START !== 'false') {
+        setTimeout(async () => {
+            try {
+                console.log('[STARTUP] Автосинхронизация username...');
+                const result = await syncTgUsernames(db, bot, {
+                    includeFired: true,
+                    onlyMissing: false,
+                });
+                console.log(`[STARTUP] Username синхронизированы: обновлено ${result.updated}, ошибок ${result.failed}`);
+            } catch (err) {
+                console.error('[STARTUP] Ошибка автосинхронизации username:', err);
+            }
+        }, 30000); // 30 секунд после старта
+    }
+
+    // Ежедневная синхронизация username (по умолчанию в 4:00)
+    if (process.env.USERNAME_SYNC_ENABLED === 'true') {
+        scheduler.startDailyTgUsernameSyncChecker(db, bot);
+        console.log('✅ Синхронизация username включена');
+    } else {
+        console.log('⏭️ Синхронизация username отключена (USERNAME_SYNC_ENABLED != true)');
+    }
+
+    // Очистка кулдаунов на команды для сотрудинков
     scheduler.startCooldownCleaner();
+
     // Ежедневный бэкап базы данных bot.db
     scheduler.startDailyBackupChecker(bot);
     // Ежедневная проверка неотправленных заказов

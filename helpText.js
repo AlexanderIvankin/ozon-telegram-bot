@@ -26,6 +26,7 @@ function getAdminCommandsOnly(debugMode) {
   adminMessagePart1 += `/employee_stats <id_сотрудника> — статистика сотрудника (заказы, сумма)\n`;
   adminMessagePart1 += `/employee_orders <id_сотрудника> — показать активные заказы сотрудника\n\n`;
 
+  adminMessagePart1 += `/sync_tg_usernames — принудильная синхронизация @username всех сотрудников из Telegram\n`;
   adminMessagePart1 += `/sync_warehouses — принудильная синхронизация списка складов Ozon\n\n`;
 
   adminMessagePart1 += `/admin_assign_order <номер_заказа> [id_сотрудника] — назначить заказ сотруднику (если ID не указан – показать список сотрудников)\n`;

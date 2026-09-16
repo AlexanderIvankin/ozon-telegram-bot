@@ -3,7 +3,7 @@ const path = require('path');
 const ExcelJS = require('exceljs');
 const axios = require('axios');
 const bwipjs = require('bwip-js');
-const { syncEmployeesFromExcel, exportTeamInfoXlsx, exportTeamInfoXlsxAll } = require('./syncEmployees');
+const { syncEmployeesFromExcel, syncTgUsernames, exportTeamInfoXlsx, exportTeamInfoXlsxAll } = require('./syncEmployees');
 const { getAdminCommandsOnly, getAdminStartMessage, getEmployeeCommandsOnly, getEmployeeStartMessage, getUnauthorizedMessage } = require('./helpText');
 const { getVersionedFileName, formatOrderDetails, mergePdfs, escapeHtml, stripHtml, formatPhone, formatLocalTimestamp, formatDateDDMMYYYY } = require('./utils');
 const { finishingOrders, pendingFinishConfirmations } = require('./state');
@@ -1561,7 +1561,7 @@ function registerCommands(
         }
 
         // 3. Завершаем заказ (обновляем статус в assignments)
-        await db.completeOrder(postingNumber);
+        await db.completeOrder(postingNumber, { orderAmount });
 
         await dbConn.run('COMMIT');
 
@@ -1774,7 +1774,8 @@ function registerCommands(
 
       await db.assignOrderToEmployee(
         orderId,
-        employeeId
+        employeeId,
+        { products: orderDetails.products || [] }
       );
 
       assignedInDb = true;
@@ -2437,6 +2438,11 @@ function registerCommands(
   bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from.id.toString();
+
+    if (msg.from.username) {
+      await db.updateEmployeeTgUsername(userId, msg.from.username);
+    }
+
     const isAdministrator = isAdmin(userId);
     const employee = await db.getEmployee(userId);
 
@@ -2624,11 +2630,15 @@ function registerCommands(
     }
 
     const assignments = await db.db.all(`
-        SELECT a.order_id, e.name as employee_name
-        FROM assignments a
-        JOIN employees e ON a.employee_id = e.id
-        WHERE a.status = 'assigned'
-    `);
+    SELECT a.order_id,
+           CASE WHEN e.tg_username IS NOT NULL AND e.tg_username != ''
+                THEN e.name || ' (@' || e.tg_username || ')'
+                ELSE e.name
+           END AS employee_name
+    FROM assignments a
+    JOIN employees e ON a.employee_id = e.id
+    WHERE a.status = 'assigned'
+`);
 
     if (!assignments.length) {
       return bot.sendMessage(msg.chat.id, 'Нет активных заказов.');
@@ -2756,6 +2766,41 @@ function registerCommands(
         `❌ Ошибка синхронизации: <b>${escapeHtml(err.message)}</b>`,
         { parse_mode: 'HTML' }
       );
+    }
+  });
+
+  // --- "/sync_tg_usernames" Команда для администратора: принудительная синхронизация telegram username всех сотрудников ---
+  bot.onText(/\/sync_tg_usernames/, async (msg) => {
+    const userId = msg.from.id.toString();
+    if (!isAdmin(userId)) {
+      return bot.sendMessage(msg.chat.id, '⛔ Только администратор.', { parse_mode: 'HTML' });
+    }
+    if (isModerator(userId) && typeof updateModeratorActivity === 'function') {
+      updateModeratorActivity();
+    }
+
+    await bot.sendMessage(msg.chat.id, '🔄 Синхронизация telegram username всех сотрудников...');
+
+    try {
+      const result = await syncTgUsernames(db, bot, {
+        includeFired: true,
+        onlyMissing: false,
+      });
+
+      let reply = `✅ Синхронизация завершена.\n\n` +
+        `• Всего сотрудников: <b>${result.total}</b>\n` +
+        `• Обновлено: <b>${result.updated}</b>\n` +
+        `• Без изменений: <b>${result.unchanged}</b>\n` +
+        `• Ошибок: <b>${result.failed}</b>`;
+
+      if (result.failed > 0) {
+        reply += `\n\n<i>Ошибки означают, что пользователь ещё не написал боту ни одного сообщения.</i>`;
+      }
+
+      await bot.sendMessage(msg.chat.id, reply, { parse_mode: 'HTML' });
+    } catch (err) {
+      console.error('[SYNC_USERNAMES] Ошибка:', err);
+      await bot.sendMessage(msg.chat.id, `❌ Ошибка: ${escapeHtml(err.message)}`, { parse_mode: 'HTML' });
     }
   });
 
@@ -2954,7 +2999,14 @@ function registerCommands(
     const postingNumber = match[1];
     // Находим активное назначение
     const assignment = await db.db.get(
-      'SELECT a.*, e.name as employee_name FROM assignments a JOIN employees e ON a.employee_id = e.id WHERE a.order_id = ? AND a.status = "assigned"',
+      `SELECT a.*,
+            CASE WHEN e.tg_username IS NOT NULL AND e.tg_username != ''
+                 THEN e.name || ' (@' || e.tg_username || ')'
+                 ELSE e.name
+            END AS employee_name
+     FROM assignments a
+     JOIN employees e ON a.employee_id = e.id
+     WHERE a.order_id = ? AND a.status = "assigned"`,
       postingNumber
     );
     if (!assignment) {

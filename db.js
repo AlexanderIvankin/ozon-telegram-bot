@@ -10,6 +10,18 @@ const DB_FILENAME = `bot${DB_VERSION}.db`;
 
 let database; // внутреннее хранилище соединения
 
+/**
+ * Декорирует имя сотрудника: "Name (@tg_username)" или просто "Name".
+ * Не мутирует исходный объект.
+ */
+function decorateEmployeeName(employee) {
+    if (!employee) return employee;
+    if (employee.tg_username && !employee.name.includes(`(@${employee.tg_username})`)) {
+        return { ...employee, name: `${employee.name} (@${employee.tg_username})` };
+    }
+    return employee;
+}
+
 async function initDB() {
     database = await open({
         filename: path.join(__dirname, DB_FILENAME),
@@ -35,6 +47,7 @@ async function initDB() {
     const hasEarningsFactor = tableInfo.some(col => col.name === 'earnings_factor');
     const hasCapacity = tableInfo.some(col => col.name === 'capacity');
     const hasTakingOrders = tableInfo.some(col => col.name === 'taking_orders');
+    const hasTgUsername = tableInfo.some(col => col.name === 'tg_username');
 
     if (!hasEmail) {
         await database.run('ALTER TABLE employees ADD COLUMN email TEXT');
@@ -63,6 +76,11 @@ async function initDB() {
         console.log('[DB] Добавлена колонка taking_orders в employees');
     }
 
+    if (!hasTgUsername) {
+        await database.run('ALTER TABLE employees ADD COLUMN tg_username TEXT');
+        console.log('[DB] Добавлена колонка tg_username в employees');
+    }
+
     // Таблица назначенных заказов
     await database.exec(`
     CREATE TABLE IF NOT EXISTS assignments (
@@ -87,6 +105,19 @@ async function initDB() {
     if (!hasDeliverReminderCount) {
         await database.run('ALTER TABLE assignments ADD COLUMN deliver_reminder_count INTEGER DEFAULT 0');
         console.log('[DB] Добавлена колонка deliver_reminder_count в assignments');
+    }
+
+    if (!assignmentsInfo.some((col) => col.name === 'order_amount')) {
+        await database.run('ALTER TABLE assignments ADD COLUMN order_amount REAL');
+        console.log('[DB] Добавлена колонка order_amount в assignments');
+    }
+    if (!assignmentsInfo.some((col) => col.name === 'offer_ids')) {
+        await database.run('ALTER TABLE assignments ADD COLUMN offer_ids TEXT');
+        console.log('[DB] Добавлена колонка offer_ids в assignments');
+    }
+    if (!assignmentsInfo.some((col) => col.name === 'products_json')) {
+        await database.run('ALTER TABLE assignments ADD COLUMN products_json TEXT');
+        console.log('[DB] Добавлена колонка products_json в assignments');
     }
 
     // Таблица складов
@@ -346,22 +377,87 @@ async function addEmployee(tgUserId, name, phone = '') {
     }
 }
 
+/**
+ * Обновляет tg_username сотрудника (например, при получении значения из Telegram).
+ * @param {string} tgUserId
+ * @param {string|null} tgUsername - без «@», или null/пусто — тогда ничего не делаем
+ */
+async function updateEmployeeTgUsername(tgUserId, tgUsername) {
+    if (!tgUsername) return;
+    const current = await database.get(
+        'SELECT tg_username FROM employees WHERE tg_user_id = ?',
+        tgUserId
+    );
+    if (!current) return;
+    if (current.tg_username === tgUsername) return;
+    await database.run(
+        'UPDATE employees SET tg_username = ? WHERE tg_user_id = ?',
+        tgUsername, tgUserId
+    );
+    console.log(`[DB] Обновлён tg_username для ${tgUserId}: @${tgUsername}`);
+}
+
 // Получить сотрудника по tg_user_id (строковый ID)
 async function getEmployee(tgUserId) {
-    return database.get('SELECT * FROM employees WHERE tg_user_id = ?', tgUserId);
+    const emp = await database.get('SELECT * FROM employees WHERE tg_user_id = ?', tgUserId);
+    return decorateEmployeeName(emp);
 }
 
 // Получить сотрудника по tg_user_id
 async function getEmployeeById(employeeId) {
-    return database.get('SELECT * FROM employees WHERE id = ?', employeeId);
+    const emp = await database.get('SELECT * FROM employees WHERE id = ?', employeeId);
+    return decorateEmployeeName(emp);
 }
 
-// Назначить заказ сотруднику
-async function assignOrderToEmployee(orderId, employeeId) {
+/**
+ * Возвращает список сотрудников для синхронизации username.
+ * @param {Object} options
+ * @param {boolean} options.includeFired - включать уволенных (по умолчанию true)
+ * @param {boolean} options.onlyMissing - только те, у кого tg_username ещё не заполнен
+ */
+async function getEmployeesForTgUsernameSync({ includeFired = true, onlyMissing = false } = {}) {
+    const conditions = [];
+    if (!includeFired) conditions.push('is_fired = 0');
+    if (onlyMissing) conditions.push('(tg_username IS NULL OR tg_username = "")');
+
+    let sql = 'SELECT id, tg_user_id, name, tg_username FROM employees';
+    if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ');
+    return database.all(sql);
+}
+
+/**
+ * Назначить заказ сотруднику.
+ * @param {Object} snapshot - «слепок» заказа
+ * @param {Array}  snapshot.products - состав заказа (для offer_ids и products_json)
+ */
+async function assignOrderToEmployee(orderId, employeeId, snapshot = {}) {
+    const { products = null } = snapshot;
+    let offerIdsStr = null;
+    let productsJsonStr = null;
+
+    if (Array.isArray(products)) {
+        offerIdsStr = Array.from(
+            new Set(
+                products
+                    .map(p => String(p.offer_id || '').trim())
+                    .filter(Boolean)
+            )
+        ).join(' ') || null;
+
+        productsJsonStr = JSON.stringify(
+            products.map(p => ({
+                offer_id: p.offer_id || null,
+                name: p.name || null,
+                quantity: p.quantity || 1,
+            }))
+        );
+    }
+
     await database.run(
-        `INSERT OR REPLACE INTO assignments (order_id, employee_id, assigned_at, status)
-         VALUES (?, ?, ?, ?)`,
-        orderId, employeeId, Date.now(), 'assigned'
+        `INSERT OR REPLACE INTO assignments
+            (order_id, employee_id, assigned_at, status, offer_ids, products_json)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        orderId, employeeId, Date.now(), 'assigned', offerIdsStr, productsJsonStr
     );
 }
 
@@ -401,11 +497,20 @@ async function autoCancelOrder(orderId, employeeId) {
     return true;
 }
 
-// Завершить заказ
-async function completeOrder(orderId) {
+/**
+ * Завершить заказ.
+ * @param {Object} snapshot - «слепок» заказа
+ * @param {number} snapshot.orderAmount - сумма заказа на момент завершения
+ */
+async function completeOrder(orderId, snapshot = {}) {
+    const { orderAmount = null } = snapshot;
     const result = await database.run(
-        `UPDATE assignments SET status = 'completed', completed_at = ? WHERE order_id = ? AND status = 'assigned'`,
-        Date.now(), orderId
+        `UPDATE assignments
+         SET status = 'completed', completed_at = ?, order_amount = ?
+         WHERE order_id = ? AND status = 'assigned'`,
+        Date.now(),
+        orderAmount === undefined ? null : orderAmount,
+        orderId
     );
     console.log(`[DB] completeOrder: заказ ${orderId}, изменено строк: ${result.changes || 0}`);
 }
@@ -413,8 +518,10 @@ async function completeOrder(orderId) {
 // Получить всех сотрудников со статистикой активных заказов (опицональный фильтр по: приоритетным warehouse_id, активным сотрудникам includeAll, уволенным сотрудникам includeFired)
 async function getAllEmployeesWithStats(warehouseId = null, includeAll = false, includeFired = false) {
     let sql = `
-        SELECT e.id, e.tg_user_id, e.name, e.phone, e.capacity, e.earnings_factor, e.is_fired, e.taking_orders,
-               (SELECT COUNT(*) FROM assignments a WHERE a.employee_id = e.id AND a.status = 'assigned') as active_count
+        SELECT e.id, e.tg_user_id, e.name, e.tg_username, e.phone, e.capacity,
+               e.earnings_factor, e.is_fired, e.taking_orders,
+               (SELECT COUNT(*) FROM assignments a
+                WHERE a.employee_id = e.id AND a.status = 'assigned') as active_count
         FROM employees e
     `;
     const params = [];
@@ -436,7 +543,8 @@ async function getAllEmployeesWithStats(warehouseId = null, includeAll = false, 
     sql += ' ORDER BY e.id';
 
     const rows = await database.all(sql, params);
-    return rows;
+
+    return rows.map(decorateEmployeeName);
 }
 
 // Получить список активных заказов сотрудника (для админа)
@@ -948,6 +1056,8 @@ module.exports = {
     initDB,
     getDB,
     addEmployee,
+    updateEmployeeTgUsername,
+    getEmployeesForTgUsernameSync,
     getEmployee,
     getEmployeeById,
     assignOrderToEmployee,

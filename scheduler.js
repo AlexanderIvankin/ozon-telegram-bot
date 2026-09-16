@@ -1,8 +1,83 @@
 const path = require('path');
+const { syncTgUsernames } = require('./syncEmployees');
 const { exportMonthlyEarnings, cleanCooldowns } = require('./commands');
 const { createDbBackup } = require('./db');
 const { getLocalTime, getLocalDate, formatOrderDetails, escapeHtml } = require('./utils');
 const debugMode = require('./debugMode');
+
+// Ежедневная синхронизация telegram username
+let tgUsernameSyncInterval = null;
+let lastTgUsernameSyncDate = null;
+let isTgUsernameSyncRunning = false;
+
+/**
+ * Раз в сутки (в заданное время) синхронизирует tg_username всех сотрудников.
+ * @param {Object} db
+ * @param {Object} bot
+ */
+function startDailyTgUsernameSyncChecker(db, bot) {
+    if (tgUsernameSyncInterval) {
+        clearInterval(tgUsernameSyncInterval);
+        tgUsernameSyncInterval = null;
+    }
+
+    isTgUsernameSyncRunning = false;
+
+    const rawHour = process.env.USERNAME_SYNC_HOUR;
+    const rawMinute = process.env.USERNAME_SYNC_MINUTE;
+
+    const targetHour = (rawHour !== undefined && rawHour !== '' && Number.isInteger(parseInt(rawHour, 10)))
+        ? parseInt(rawHour, 10) : 4;
+    const targetMinute = (rawMinute !== undefined && rawMinute !== '' && Number.isInteger(parseInt(rawMinute, 10)))
+        ? parseInt(rawMinute, 10) : 0;
+
+    tgUsernameSyncInterval = setInterval(async () => {
+        if (isTgUsernameSyncRunning) return;
+
+        const localTime = getLocalTime();
+
+        if (
+            localTime.hours < targetHour ||
+            (localTime.hours === targetHour && localTime.minutes < targetMinute)
+        ) {
+            return;
+        }
+
+        const localDate = getLocalDate();
+        const today =
+            `${localDate.getFullYear()}-` +
+            `${String(localDate.getMonth() + 1).padStart(2, '0')}-` +
+            `${String(localDate.getDate()).padStart(2, '0')}`;
+
+        if (lastTgUsernameSyncDate === today) return;
+
+        isTgUsernameSyncRunning = true;
+
+        try {
+            const result = await syncTgUsernames(db, bot, {
+                includeFired: true,
+                onlyMissing: false,
+            });
+
+            lastTgUsernameSyncDate = today;
+            console.log(`[SCHEDULER] Синхронизация username: обновлено ${result.updated}, ошибок ${result.failed}`);
+        } catch (err) {
+            console.error('[SCHEDULER] Ошибка синхронизации username:', err);
+        } finally {
+            isTgUsernameSyncRunning = false;
+        }
+    }, 60 * 1000);
+
+    console.log(`[SCHEDULER] Синхронизация username запланирована на ${targetHour}:${String(targetMinute).padStart(2, '0')}`);
+}
+
+function stopDailyTgUsernameSyncChecker() {
+    if (tgUsernameSyncInterval) {
+        clearInterval(tgUsernameSyncInterval);
+        tgUsernameSyncInterval = null;
+    }
+    isTgUsernameSyncRunning = false;
+}
 
 // Синхронизация складов
 let warehouseSyncInterval = null;
@@ -914,6 +989,7 @@ function stopMonthlyExportChecker() {
 
 // Остановка всех планировщиков
 function stopAll() {
+    stopDailyTgUsernameSyncChecker();
     stopWarehouseSyncChecker();
     stopOrderChecker();
     stopCooldownCleaner();
@@ -926,6 +1002,9 @@ function stopAll() {
 }
 
 module.exports = {
+    startDailyTgUsernameSyncChecker,
+    stopDailyTgUsernameSyncChecker,
+
     startWarehouseSyncChecker,
     stopWarehouseSyncChecker,
 

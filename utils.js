@@ -161,6 +161,89 @@ function formatPhone(phone) {
   }
 }
 
+// ============================================================================
+// Валидация/парсинг полей сотрудников (телефон, e-mail, Telegram ID, числа).
+// Те же правила, что и в веб-версии (SyncService), — единый формат в БД.
+// ============================================================================
+
+/**
+ * Парсит телефон в 11 цифр вида '7XXXXXXXXXX'.
+ * Поддерживает: '+7 (999) 123-45-67', '79991234567', '89991234567' → 7,
+ * '9991234567' (10 цифр без кода страны) → 7 + 10.
+ * @param {string|number} raw
+ * @returns {string|null}
+ */
+function parsePhone(raw) {
+  let digits = String(raw ?? '').replace(/\D/g, '');
+  if (!digits) return null;
+  if (digits.length === 11 && digits[0] === '8') digits = '7' + digits.slice(1);
+  if (digits.length === 10) digits = '7' + digits;
+  if (digits.length !== 11 || digits[0] !== '7') return null;
+  return digits;
+}
+
+/**
+ * Красивый формат телефона '+7 (999) 123-45-67' из любого распознаваемого.
+ * @param {string|number} raw
+ * @returns {string|null}
+ */
+function formatPhonePretty(raw) {
+  const digits = parsePhone(raw);
+  if (!digits) return null;
+  return `+7 (${digits.slice(1, 4)}) ${digits.slice(4, 7)}-${digits.slice(7, 9)}-${digits.slice(9)}`;
+}
+
+// Только латиница/цифры/._%+- в локальной части; кириллица/пробелы не допускаются.
+const EMAIL_RE = /^[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(\.[A-Za-z0-9\-]+)+$/;
+
+/**
+ * Парсит email: trim + lower-case; null, если пусто или невалидно.
+ * @param {string} raw
+ * @returns {string|null}
+ */
+function parseEmail(raw) {
+  const s = String(raw ?? '').trim().toLowerCase();
+  if (!s) return null;
+  return EMAIL_RE.test(s) ? s : null;
+}
+
+/**
+ * Парсит Telegram ID: только последовательность цифр.
+ * @param {string|number} raw
+ * @returns {string|null}
+ */
+function parseTgUserId(raw) {
+  const s = String(raw ?? '').trim();
+  if (!s) return null;
+  return /^\d+$/.test(s) ? s : null;
+}
+
+/**
+ * Парсит число принтеров: целое >= 1.
+ * @param {string|number} raw
+ * @returns {number|null}
+ */
+function parseCapacity(raw) {
+  const s = String(raw ?? '').trim();
+  if (!s || !/^\d+$/.test(s)) return null;
+  const n = Number(s);
+  return Number.isInteger(n) && n >= 1 ? n : null;
+}
+
+/**
+ * Парсит коэффициент заработка: положительное число, максимум 2 знака
+ * после запятой/точки. Принимает '99,99' и '99.99'.
+ * @param {string|number} raw
+ * @returns {number|null}
+ */
+function parseEarningsFactor(raw) {
+  if (raw === null || raw === undefined) return null;
+  const s = String(raw).trim().replace(/,/g, '.');
+  if (!s || !/^\d+(\.\d{1,2})?$/.test(s)) return null;
+  const n = Number(s);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 /**
  * Форматирует дату для имени файла: YYYY-MM-DD_HH-MM-SS в указанном часовом поясе
  */
@@ -268,6 +351,12 @@ module.exports = {
   escapeHtml,
   stripHtml,
   formatPhone,
+  parsePhone,
+  formatPhonePretty,
+  parseEmail,
+  parseTgUserId,
+  parseCapacity,
+  parseEarningsFactor,
   formatLocalTimestamp,
   formatDateDDMMYYYY,
   getLocalDate,

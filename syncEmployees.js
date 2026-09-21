@@ -1,10 +1,19 @@
 const XLSX = require('xlsx');
 const ExcelJS = require('exceljs');
 const path = require('path');
-const { colToLetter, getVersionedFileName } = require('./utils');
+const {
+    colToLetter,
+    getVersionedFileName,
+    formatPhonePretty,
+    parseEmail,
+    parseTgUserId,
+    parseCapacity,
+    parseEarningsFactor,
+    escapeHtml,
+} = require('./utils');
 const debugMode = require('./debugMode');
 
-async function syncEmployeesFromExcel(db) {
+async function syncEmployeesFromExcel(db, bot = null) {
     const fileName = getVersionedFileName('team-info', '.xlsx');
     const filePath = path.join(__dirname, fileName);
     console.log('[SYNC] Загрузка сотрудников из', filePath);
@@ -44,31 +53,86 @@ async function syncEmployeesFromExcel(db) {
     console.log(`[SYNC] Найдено ${warehouseColumns.length} колонок складов`);
 
     // --- Парсим сотрудников, начиная с третьей строки (индекс 2) ---
+    // Все поля проходят парсинг/валидацию:
+    //   • tg_user_id — обязателен, только цифры;
+    //   • email      — опционален, латиница/цифры/._%+- ;
+    //   • phone      — '+7 (999) 123-45-67' / '79991234567' / '89991234567' /
+    //                  '9991234567' (10 цифр) → единый красивый формат;
+    //   • capacity   — целое >= 1;
+    //   • factor     — положительное число, максимум 2 знака ('99,99' / '99.99').
+    // Некорректные значения заменяются дефолтами (tg_user_id — строка
+    // пропускается; email/phone — ''; capacity — 1; factor — 1.0), а проблемы
+    // уходят одним сообщением модератору в конце синхронизации.
     const employeesData = [];
+    const problemRows = []; // { name, problems: [{ field, raw, note }] }
     for (let i = 2; i < rows.length; i++) {
         const row = rows[i];
-        if (!row || row.length < 6) continue; // как минимум A-F (name, email, tg, phone, capacity, factor)
+        if (!row || row.length < 6) continue; // минимум A–F
 
-        let name = row[0] ? String(row[0]).trim() : '';
+        const name = row[0] ? String(row[0]).trim() : '';
         if (!name) continue;
 
-        let email = row[1] ? String(row[1]).trim() : ''; // новый столбец
+        const emailRaw = row[1] ? String(row[1]).trim() : '';
+        const tgRaw = row[2] ? String(row[2]).trim() : '';
+        const phoneRaw = row[3] ? String(row[3]).trim() : '';
+        const capacityRaw = row[4];
+        const factorRaw = row[5];
 
-        let tgUserId = row[2] ? String(row[2]).trim() : '';
-        if (!tgUserId) continue;
+        const email = parseEmail(emailRaw);          // null, если пусто/невалидно
+        const tgUserId = parseTgUserId(tgRaw);       // только цифры
+        const phonePretty = phoneRaw ? formatPhonePretty(phoneRaw) : '';
+        const capacity = parseCapacity(capacityRaw);
+        const earningsFactor = parseEarningsFactor(factorRaw);
+        const hasCapacityValue = String(capacityRaw ?? '').trim() !== '';
+        const hasFactorValue = String(factorRaw ?? '').trim() !== '';
 
-        let phone = row[3] ? String(row[3]).trim() : '';
-        let capacity = row[4] ? parseInt(row[4]) : 1;
-        if (isNaN(capacity)) capacity = 1;
+        // Основной идентификатор в боте — tg_user_id. Без него строку пропускаем.
+        if (!tgUserId) {
+            problemRows.push({
+                name,
+                problems: [{
+                    field: 'tg_user_id',
+                    raw: tgRaw,
+                    note: 'обязательный Telegram ID не распознан (ожидается последовательность цифр) — строка пропущена',
+                }],
+            });
+            continue;
+        }
 
-        let earningsFactor = parseFloat(String(row[5]).replace(',', '.'));
-        if (isNaN(earningsFactor) || earningsFactor <= 0) earningsFactor = 1.0;
+        const rowProblems = [];
+        if (emailRaw && !email) {
+            rowProblems.push({
+                field: 'email',
+                raw: emailRaw,
+                note: 'не распознан (кириллица/пробелы/неверный формат) — email очищен',
+            });
+        }
+        if (phoneRaw && !phonePretty) {
+            rowProblems.push({
+                field: 'phone',
+                raw: phoneRaw,
+                note: 'не распознан (нужно 11 цифр: +7/7/8… или 10 цифр без кода страны) — телефон очищен',
+            });
+        }
+        if (hasCapacityValue && capacity === null) {
+            rowProblems.push({
+                field: 'capacity',
+                raw: String(capacityRaw).trim(),
+                note: 'ожидается целое число >= 1 — заменено на 1',
+            });
+        }
+        if (hasFactorValue && earningsFactor === null) {
+            rowProblems.push({
+                field: 'earnings_factor',
+                raw: String(factorRaw).trim(),
+                note: 'ожидается положительное число с максимум 2 знаками после запятой (99,99 или 99.99) — заменено на 1.0',
+            });
+        }
 
-        // Собираем склады сотрудника по динамическим колонкам
+        // Собираем склады
         const employeeWarehouses = [];
         for (const colInfo of warehouseColumns) {
-            const col = colInfo.colIndex;
-            const val = row[col];
+            const val = row[colInfo.colIndex];
             if (val === '+' || val === '➕' || val === '✔') {
                 employeeWarehouses.push(colInfo.warehouseId);
             }
@@ -77,12 +141,14 @@ async function syncEmployeesFromExcel(db) {
         employeesData.push({
             tgUserId,
             name,
-            email,
-            phone,
-            capacity,
-            earningsFactor,
-            warehouses: employeeWarehouses
+            email: email || '',           // опционально
+            phone: phonePretty || '',      // канонический или ''
+            capacity: capacity ?? 1,
+            earningsFactor: earningsFactor ?? 1.0,
+            warehouses: employeeWarehouses,
         });
+
+        if (rowProblems.length) problemRows.push({ name, problems: rowProblems });
     }
 
     console.log(`[SYNC] Найдено сотрудников: ${employeesData.length}`);
@@ -137,6 +203,49 @@ async function syncEmployeesFromExcel(db) {
 
         await dbConn.run('COMMIT');
         console.log('[SYNC] Синхронизация сотрудников завершена');
+
+        // --- Оповещение модератора о проблемных данных в Excel ---
+        if (problemRows.length && bot) {
+            const moderatorId = process.env.MODERATOR_ID;
+            if (moderatorId) {
+                const flat = problemRows.flatMap((p) =>
+                    p.problems.map((pr) => ({ name: p.name, field: pr.field, raw: pr.raw, note: pr.note }))
+                );
+                console.warn(`[SYNC] В Excel найдено проблемных значений: ${flat.length}`);
+                for (const pr of flat) {
+                    console.warn(`[SYNC]   • ${pr.name || '(без имени)'}: ${pr.field} «${pr.raw}» — ${pr.note}`);
+                }
+
+                // Группируем по сотруднику для читаемости в Telegram
+                let msg = `⚠️ <b>Синхронизация team-info.xlsx: проблемы в данных</b>\n\n`;
+                msg += `Всего проблем: <b>${flat.length}</b>\n\n`;
+
+                const byName = new Map();
+                for (const pr of flat) {
+                    if (!byName.has(pr.name)) byName.set(pr.name, []);
+                    byName.get(pr.name).push(pr);
+                }
+                let shown = 0;
+                for (const [name, list] of byName) {
+                    if (shown >= 20) {
+                        msg += `\n…и ещё ${byName.size - shown} сотрудник(ов) — см. логи.`;
+                        break;
+                    }
+                    msg += `<b>${escapeHtml(name || '(без имени)')}</b>\n`;
+                    for (const pr of list) {
+                        msg += `  • <code>${escapeHtml(pr.field)}</code>: «${escapeHtml(pr.raw || '—')}» — ${escapeHtml(pr.note)}\n`;
+                    }
+                    msg += `\n`;
+                    shown++;
+                }
+
+                try {
+                    await bot.sendMessage(moderatorId, msg, { parse_mode: 'HTML' });
+                } catch (err) {
+                    console.error('[SYNC] Не удалось отправить сообщение модератору:', err.message);
+                }
+            }
+        }
     } catch (err) {
         await dbConn.run('ROLLBACK');
         console.error('[SYNC] Ошибка синхронизации:', err);
@@ -301,7 +410,7 @@ async function exportTeamInfoXlsx(db, ozon, includeFired = false, outputFileName
             emp.name,
             emp.email || '',
             String(emp.tg_user_id),
-            emp.phone || '',
+            formatPhonePretty(emp.phone) || emp.phone || '',
             emp.capacity,
             earningsFactor,
             '', // разделитель

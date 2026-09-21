@@ -1359,7 +1359,7 @@ function registerCommands(
 
           const warehouses = await ozon.fetchWarehousesFromOzon();
           if (warehouses.length) await db.syncWarehouses(warehouses);
-          await syncEmployeesFromExcel(db);
+          await syncEmployeesFromExcel(db, bot);
           await safeCheckAndOfferNewOrders();
           if (orderState.pendingNewOrders.length) {
             orderState.currentOrderProcessing = null;
@@ -3460,7 +3460,7 @@ function registerCommands(
         const targetFileName = getVersionedFileName('team-info', '.xlsx');
         const targetPath = path.join(__dirname, targetFileName);
         fs.renameSync(tempPath, targetPath);
-        await syncEmployeesFromExcel(db);
+        await syncEmployeesFromExcel(db, bot);
         await bot.sendMessage(
           msg.chat.id,
           '✅ Список активных сотрудников и приоритеты складов успешно обновлены из загруженного файла.'

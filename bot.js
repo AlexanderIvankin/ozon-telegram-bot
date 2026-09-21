@@ -745,7 +745,7 @@ process.on('SIGTERM', gracefulShutdown);
         await db.syncWarehouses(warehouses);
     }
     scheduler.startWarehouseSyncChecker(ozon, db, bot, WAREHOUSE_SYNC_INTERVAL_HOURS);
-    await syncEmployeesFromExcel(db);
+    await syncEmployeesFromExcel(db, bot);
     scheduler.startOrderChecker(SYNC_ORDERS_TIME, safeCheckAndOfferNewOrders);
     startInactivityTimer();
     console.log(debugMode.getDebugModeStatusMessage());
